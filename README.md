@@ -206,7 +206,64 @@ npm run build
 }
 ```
 
-配置后重启 Claude Desktop，即可在对话界面中使用 `send_task` 和 `read_result` 工具。
+配置后重启 Claude Desktop，即可在对话界面中使用 `send_task`、`wait_task` 与 `read_result` 等工具。
+
+---
+
+## 在 ChatGPT (macOS 桌面端 / Codex) 中配置
+
+本 MCP Server 原生支持通过 Model Context Protocol (MCP) 接入 **ChatGPT macOS 官方桌面客户端**（集成了 OpenAI Codex 运行时）。
+
+### 方式一：命令行一键添加（推荐）
+
+在终端中执行以下命令，即可直接将 `agent-bridge` 注册到 ChatGPT / Codex：
+
+```bash
+codex mcp add agent-bridge \
+  --env AGENT_BRIDGE_ROOT="$HOME/agent-bridge" \
+  -- node "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+```
+
+检查注册状态：
+```bash
+codex mcp get agent-bridge
+```
+
+### 方式二：配置文件手动配置 (`~/.codex/config.toml`)
+
+ChatGPT macOS 桌面端使用 `~/.codex/config.toml` 作为其 MCP 配置文件。在文件中添加以下内容：
+
+```toml
+[mcp_servers.agent-bridge]
+command = "node"
+args = [
+  "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+]
+
+[mcp_servers.agent-bridge.env]
+AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
+```
+
+### 方式三：ChatGPT 桌面端图形界面配置
+
+1. 打开 **ChatGPT** macOS 桌面客户端。
+2. 打开 **设置（Settings）**（快捷键 `Cmd + ,`）-> 侧边栏选择 **MCP Servers**（或 **Developer**）。
+3. 点击 **Add server**：
+   - **Name**: `agent-bridge`
+   - **Type**: `STDIO`
+   - **Command**: `node`
+   - **Arguments**: `/Users/news/code/mcp/agent-bridge-mcp/dist/index.js`
+   - **Environment Variables**: `AGENT_BRIDGE_ROOT=/Users/news/agent-bridge`
+4. 保存并重启客户端。
+
+### 使用与验证
+
+配置生效后，在 ChatGPT macOS 桌面端中新建对话即可自动发现 MCP 工具：
+- `send_task`：派发任务 Prompt 并指定 Agent（如 `codex`）。
+- `wait_task`：自动等待任务完成（超时 1-25 秒可调，任务完成时将同步触发 macOS 原生桌面通知）。
+- `read_result`：读取任务完整执行结果。
+- `get_task_status`：查看任务排队与执行状态。
+- `cancel_task`：安全取消正在执行的任务。
 
 ---
 
