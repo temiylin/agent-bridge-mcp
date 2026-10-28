@@ -4,7 +4,8 @@ import http from "node:http";
 import path from "node:path";
 import { createAgentAdminServer } from "../scripts/agent-admin.mjs";
 
-const TEST_ROOT = "/tmp/agent-bridge-admin-test";
+const TEST_ROOT_BASE = "/tmp/agent-bridge-admin-test";
+let TEST_ROOT: string;
 const PRESET = {
   command: "codex",
   args: ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check"],
@@ -32,9 +33,8 @@ function requestStatusWithHeaders(url: string, headers: http.OutgoingHttpHeaders
 }
 
 async function main() {
-  assert.equal(process.env.AGENT_BRIDGE_ROOT, TEST_ROOT, "Tests must only use the isolated /tmp root.");
-  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
-  fs.mkdirSync(TEST_ROOT, { recursive: true });
+  assert.equal(process.env.AGENT_BRIDGE_ROOT, TEST_ROOT_BASE, "Tests must only use the isolated /tmp root.");
+  TEST_ROOT = fs.mkdtempSync(`${TEST_ROOT_BASE}-`);
   const originalRegistry = {
     existing: { command: "existing-agent", args: ["run"], input: "stdin" },
   };
