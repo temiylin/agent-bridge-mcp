@@ -73,6 +73,7 @@ async function runTests() {
     "repo_status",
     "worker_alive_summary",
     "list_tasks_summary",
+    "agent_registry_summary",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

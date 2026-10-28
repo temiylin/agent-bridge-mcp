@@ -130,6 +130,14 @@ $AGENT_BRIDGE_ROOT/
   - **绝不返回** `prompt`、`results` 或 `logs` 中的任何正文，杜绝敏感信息泄露。
   - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
 
+#### `agent_registry_summary`
+- **功能**：只读解析 `$AGENT_BRIDGE_ROOT/agents.json`，获取本地注册的 Agent 清单及其启用状态。
+- **参数**：无输入参数（不接受客户端传入参数或命令）。
+- **行为与安全约束**：
+  - 仅返回已注册 Agent 的名称与启用标记，结构为 `[{ name: string, enabled: true }]`。
+  - **信息安全白名单**：**绝不返回**底层的 `command`、`args`、`input` 或任何本地可执行文件路径，杜绝暴露宿主机敏感执行环境。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
