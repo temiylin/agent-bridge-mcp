@@ -12,6 +12,7 @@
     "dist"
   ],
   "scripts": {
+    "setup": "node scripts/setup.mjs setup",
     "build": "tsc && chmod +x dist/index.js dist/worker.js",
     "start": "node dist/index.js",
     "worker": "node dist/worker.js",
