@@ -1,6 +1,26 @@
 # agent-bridge-mcp
 
-通用本地 MCP Server：用于远程 AI 助手（如 Claude Desktop）与本地 AI Agent 之间的任务派发与结果读取桥接。
+通用本地 MCP Server：用于远程 AI 助手（如 ChatGPT、Codex、Claude Desktop）与本地电脑/本地 AI Agent 之间的安全控制桥梁。
+
+---
+
+## ⚡️ 极速一键部署（发给朋友让 Codex 自动安装）
+
+你的朋友**不需要购买任何服务器**，所有流量均由你的专属云端中继网关（`bridge.krow.top`）安全分发。
+
+朋友只要在 **Codex Desktop** 中打开本仓库，并对 Codex 发送指令：
+> **“帮我部署下”**
+
+Codex 会自动读取并执行 `npm run auto-setup`，完成以下所有动作：
+1. 自动构建本地核心程序；
+2. 自动生成属于该电脑唯一的加密设备识别码（如 `dev_friend_xxxx`）；
+3. 自动将 MCP 工具挂载到对方的本地 Codex（`codex mcp add`）；
+4. 自动在后台静默建立长连接，开机自启；
+5. 自动在对方桌面上生成专属的 `agent-bridge-plugin.zip`（供 ChatGPT 普通聊天一键导入）。
+
+**对方什么都不用管，敲完一句话即可全部就绪！**
+
+---
 
 ## 项目简介
 

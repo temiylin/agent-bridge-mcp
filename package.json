@@ -12,7 +12,8 @@
     "dist"
   ],
   "scripts": {
-    "setup": "node scripts/setup.mjs setup",
+    "setup": "node scripts/auto-setup.mjs",
+    "auto-setup": "node scripts/auto-setup.mjs",
     "agents:ui": "node scripts/agent-admin.mjs",
     "build": "tsc && chmod +x dist/index.js dist/worker.js",
     "start": "node dist/index.js",
