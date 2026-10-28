@@ -62,7 +62,20 @@ async function runTests() {
   console.log("Available tools:", JSON.stringify(toolsResult.tools.map(t => ({ name: t.name, description: t.description })), null, 2));
 
   // Assertions for Test 0
-  assert.equal(toolsResult.tools.length, 2, "Expected exactly 2 tools registered");
+  const expectedTools = new Set([
+    "send_task",
+    "read_result",
+    "get_task_status",
+    "cancel_task",
+    "read_task_output",
+    "read_result_page",
+  ]);
+  const actualTools = new Set(toolsResult.tools.map((t) => t.name));
+  assert.deepStrictEqual(
+    [...actualTools].sort(),
+    [...expectedTools].sort(),
+    "Tool set must match expected ops-enabled set"
+  );
   assert.ok(toolsResult.tools.some(t => t.name === "send_task"), "Expected send_task tool to be registered");
   assert.ok(toolsResult.tools.some(t => t.name === "read_result"), "Expected read_result tool to be registered");
   console.log("✓ Assertion passed: Both send_task and read_result tools are registered.");
