@@ -51,11 +51,12 @@ async function main() {
     } catch {}
   }
 
-  if (!deviceToken) {
-    const rawHost = os.hostname().replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "device";
-    const rand = randomBytes(3).toString("hex");
-    deviceToken = `dev_${rawHost}_${rand}`;
+  // 校验 Token 强度：长度必须 >= 40 字符且不含主机名暴露。若属于旧版弱 Token，则平滑升级为 24 字节高强加密串 (192-bit 熵值)
+  if (!deviceToken || deviceToken.length < 40 || !deviceToken.startsWith("dev_")) {
+    const rand = randomBytes(24).toString("hex");
+    deviceToken = `dev_${rand}`;
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({ deviceToken, createdAt: new Date().toISOString() }, null, 2));
+    console.log(`🔒 设备凭证已升级为高强随机加密串 (192-bit 熵值)`);
   }
   console.log(`✅ 设备识别码已锁定: \x1b[32m\x1b[1m${deviceToken}\x1b[0m\n`);
 

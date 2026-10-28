@@ -42,7 +42,6 @@ const server = http.createServer(async (req, res) => {
           status: "online",
           version: "1.0.0",
           devicesOnlineCount: devices.size,
-          registeredTokens: Array.from(devices.keys()).map((k) => (k.length > 4 ? k.slice(0, 4) + "***" : "***")),
           timestamp: new Date().toISOString(),
         },
         null,
@@ -74,11 +73,6 @@ const server = http.createServer(async (req, res) => {
       if (subpath) targetDeviceToken = subpath;
     }
 
-    // D. Smart fallback: if only 1 device is connected and no token specified
-    if (!targetDeviceToken && devices.size === 1) {
-      targetDeviceToken = Array.from(devices.keys())[0];
-    }
-
     // Read body
     let bodyText = "";
     for await (const chunk of req) {
@@ -93,9 +87,9 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // If no target device can be determined
+    // Strict authentication: If no target device token specified, reject with 401 Unauthorized
     if (!targetDeviceToken) {
-      res.statusCode = 400;
+      res.statusCode = 401;
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       res.end(
         JSON.stringify({
@@ -104,7 +98,7 @@ const server = http.createServer(async (req, res) => {
           error: {
             code: -32000,
             message:
-              "No device token specified. Please set Bearer Token in ChatGPT settings, or use /mcp?device=<YOUR_TOKEN>",
+              "Unauthorized: No valid device token specified. Please configure your device URL as /mcp/<DEVICE_TOKEN> or provide Authorization: Bearer <DEVICE_TOKEN>.",
           },
         })
       );
@@ -190,7 +184,8 @@ wss.on("connection", (ws, req) => {
 
   if (token) {
     devices.set(token, { ws, connectedAt: new Date().toISOString() });
-    console.log(`[Device Registered via URL] Token=${token}, Total active devices=${devices.size}`);
+    const masked = token.length > 8 ? `${token.slice(0, 8)}...` : "***";
+    console.log(`[Device Registered via URL] Token=${masked} (len=${token.length}), Total active devices=${devices.size}`);
     ws.send(JSON.stringify({ type: "registered", token, status: "online" }));
   }
 
@@ -199,9 +194,10 @@ wss.on("connection", (ws, req) => {
       const msg = JSON.parse(data.toString());
 
       if (msg.type === "register") {
-        token = msg.token || token || `dev_${randomUUID().slice(0, 8)}`;
+        token = msg.token || token || `dev_${randomUUID().replace(/-/g, "")}`;
         devices.set(token, { ws, info: msg.info || {}, connectedAt: new Date().toISOString() });
-        console.log(`[Device Registered via Message] Token=${token}, Total active devices=${devices.size}`);
+        const masked = token.length > 8 ? `${token.slice(0, 8)}...` : "***";
+        console.log(`[Device Registered via Message] Token=${masked} (len=${token.length}), Total active devices=${devices.size}`);
         ws.send(JSON.stringify({ type: "registered", token, status: "online" }));
         return;
       }
