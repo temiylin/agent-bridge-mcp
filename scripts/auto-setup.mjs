@@ -60,22 +60,39 @@ async function main() {
   }
   console.log(`✅ 设备识别码已锁定: \x1b[32m\x1b[1m${deviceToken}\x1b[0m\n`);
 
-  // 3. 自动将 MCP 注册到 Codex 中
-  console.log("[3/5] 正在自动挂载到本地 Codex 系统...");
+  // 3. 自动将 MCP 注册到本地 AI 客户端 (Codex / Antigravity AGY)
+  console.log("[3/5] 正在自动挂载到本地 AI 客户端 (Codex / AGY)...");
+  let mountedAny = false;
   try {
     const hasCodex = spawnSync("which", ["codex"]).status === 0;
     if (hasCodex) {
-      // 先尝试移除旧的，再添加新的
       try {
         execSync("codex mcp remove agent-bridge", { stdio: "pipe" });
       } catch {}
       execSync(`codex mcp add agent-bridge --url "${RELAY_HTTP}/${deviceToken}"`, { stdio: "inherit" });
       console.log("✅ 已成功挂载到 Codex！在 Codex 中已可直接调用。");
-    } else {
-      console.log("ℹ️ 未检测到 codex CLI 命令行工具，跳过 CLI 挂载。");
+      mountedAny = true;
     }
   } catch (err) {
-    console.warn("⚠️ 自动挂载 Codex 遇到提示 (可稍后手动重试):", err.message);
+    console.warn("⚠️ 挂载 Codex 提示:", err.message);
+  }
+
+  try {
+    const hasAgy = spawnSync("which", ["agy"]).status === 0;
+    if (hasAgy) {
+      try {
+        execSync("agy mcp remove agent-bridge", { stdio: "pipe" });
+      } catch {}
+      execSync(`agy mcp add agent-bridge "${RELAY_HTTP}/${deviceToken}"`, { stdio: "inherit" });
+      console.log("✅ 已成功挂载到 Antigravity (AGY)！在 AGY 中已可直接调用。");
+      mountedAny = true;
+    }
+  } catch (err) {
+    console.warn("⚠️ 挂载 AGY 提示:", err.message);
+  }
+
+  if (!mountedAny) {
+    console.log("ℹ️ 未检测到 codex 或 agy 命令行工具，跳过本地 CLI 挂载。");
   }
   console.log();
 
@@ -189,10 +206,10 @@ async function main() {
   console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
   console.log(`📦 本机专属插件包:   \x1b[35m\x1b[1m${desktopZip}\x1b[0m`);
   console.log("---------------------------------------------------------------");
-  console.log("1️⃣  【在 Codex 中】:");
-  console.log("    现在直接在 Codex 窗口提问，即可自动调用本地工具！无需任何多余操作。");
+  console.log("1️⃣  【在本地 AI 客户端 (Codex / Antigravity AGY) 中】:");
+  console.log("    现在直接在 Codex 或 AGY 对话窗口提问，即可自动调用本地工具！无需任何多余操作。");
   console.log();
-  console.log("2️⃣  【在 ChatGPT 普通聊天窗口中】(任选一种方式):");
+  console.log("2️⃣  【在云端 ChatGPT 普通聊天窗口中】(任选一种方式):");
   console.log("    方式 A (最推荐 - 一键免配置):");
   console.log("      打开 ChatGPT -> 设置 -> Connectors/MCP -> 点击左下角「上传插件压缩包」");
   console.log("      选择桌面上的「agent-bridge-plugin.zip」即可！");
