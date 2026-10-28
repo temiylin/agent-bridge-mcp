@@ -153,6 +153,42 @@ $AGENT_BRIDGE_ROOT/
   - **隐私防泄漏白名单**：**绝不返回**环境变量（`process.env`）、进程命令行参数、用户主目录内容或任何文件正文。
   - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
 
+#### `list_directory`
+- **功能**：只读列出本地指定绝对路径目录下的文件与子目录列表及基础元数据。
+- **参数**：
+  - `path`（string，必填）：要列出的目录绝对路径。
+  - `show_hidden`（boolean，可选，默认 false）：是否包含隐藏文件（以 `.` 开头的文件/目录）。
+- **行为与安全约束**：
+  - 严格校验绝对路径与目录存在性；非绝对路径或非目录返回 `isError: true`。
+  - **敏感凭据路径拦截**：严格禁止访问 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.config/gcloud`、`~/.azure`、`/etc/shadow` 等系统凭据目录，遇敏感路径安全拒绝并返回 `isError: true`。
+  - 目录项按“子目录在前、随后按字母顺序”排序，返回字段包含 `name`、`type`（`file` | `directory` | `symlink` | `other`）、`sizeBytes` 与 `modifiedAt`。
+  - **数量限制**：单次最多返回 300 项，超出截断并置 `hasMore: true`，防止目录爆炸造成内存冲击。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `read_file`
+- **功能**：安全读取本地指定绝对路径文本文件的切片内容（支持偏移与长度分块，保护大文件与二进制文件）。
+- **参数**：
+  - `path`（string，必填）：文件的绝对路径。
+  - `offset`（number，可选，默认 0）：读取起始字节偏移。
+  - `length`（number，可选，默认 8000，上限 64000）：单次读取字节数。
+- **行为与安全约束**：
+  - 严格校验绝对路径与普通文件存在性；禁止读取目录、套接字等特殊文件。
+  - **敏感凭据文件拦截**：严格禁止读取 `~/.ssh/*`、`~/.aws/*`、`/etc/shadow`、`/etc/master.passwd`、`/etc/sudoers` 以及各类私钥/证书文件（如 `id_rsa`、`*.pem`、`*.key`、`*.p12`、`*.keystore`）。
+  - **底层流式分块读取**：使用文件描述符进行字节区间定位读取（`fs.readSync`），绝不将超大文件整文件加载进内存。
+  - **二进制防护**：自动扫描切片中的空字节（`\0`），若检测为二进制文件则抑制正文返回，返回 `isBinary: true` 与友好提示，杜绝二进制乱码与内存污染。
+  - 返回字段包含 `path`、`totalBytes`、`offset`、`bytesRead`、`eof` 以及文本 `content`。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `get_file_info`
+- **功能**：只读获取本地指定路径的文件/目录详细元数据与权限信息（不读取文件正文）。
+- **参数**：
+  - `path`（string，必填）：文件或目录的绝对路径。
+- **行为与安全约束**：
+  - 严格校验绝对路径与存在性。
+  - **敏感凭据路径拦截**：同样受敏感凭据路径与私钥文件黑名单保护。
+  - 使用 `fs.lstatSync` 获取元数据，返回字段包含：`exists`、`isFile`、`isDirectory`、`isSymbolicLink`、`sizeBytes`、`modifiedAt`、`accessedAt`、`createdAt` 以及八进制权限字符串 `permissions`（如 `"644"`、`"755"`）。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。

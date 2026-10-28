@@ -24,6 +24,7 @@
     "test:list-tasks": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-list-tasks-test -- tsx test/list-tasks-test.ts",
     "test:agent-registry": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-agent-registry-test -- tsx test/agent-registry-test.ts",
     "test:device-info": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-device-info-test -- tsx test/device-info-test.ts",
+    "test:local-fs": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-local-fs-test -- tsx test/local-fs-test.ts",
     "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
     "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"
   },
