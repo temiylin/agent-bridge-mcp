@@ -1,0 +1,142 @@
+import os from "node:os";
+import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { audit } from "./audit.js";
+import { BridgeLogger } from "./logger.js";
+
+export function registerDeviceInfoTool(
+  server: McpServer,
+  rootDir: string,
+  logger: BridgeLogger
+): void {
+  server.tool(
+    "device_info",
+    "Get read-only system and hardware environment overview (hostname, OS, CPU, memory, disk, process count, network interfaces, runtime versions).",
+    {},
+    async () => {
+      audit(rootDir, { tool: "device_info" });
+
+      try {
+        // 1. Hostname & OS
+        const hostname = os.hostname();
+        const platform = os.platform();
+        const release = os.release();
+        const osVersion = os.version();
+
+        // 2. CPU & Memory
+        const cpus = os.cpus();
+        const cpuInfo = {
+          architecture: os.arch(),
+          model: cpus[0]?.model || "unknown",
+          cores: cpus.length,
+        };
+
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        const memoryInfo = {
+          totalBytes: totalMem,
+          freeBytes: freeMem,
+          usedPercentage: totalMem > 0 ? Number((((totalMem - freeMem) / totalMem) * 100).toFixed(1)) : 0,
+        };
+
+        // 3. Disk Space (using Node native statfsSync)
+        let diskInfo: { totalBytes: number; freeBytes: number; availableBytes: number; freePercentage: number } | null = null;
+        try {
+          const stat = fs.statfsSync("/");
+          const totalBytes = Number(stat.blocks) * Number(stat.bsize);
+          const freeBytes = Number(stat.bfree) * Number(stat.bsize);
+          const availableBytes = Number(stat.bavail) * Number(stat.bsize);
+          diskInfo = {
+            totalBytes,
+            freeBytes,
+            availableBytes,
+            freePercentage: totalBytes > 0 ? Number(((freeBytes / totalBytes) * 100).toFixed(1)) : 0,
+          };
+        } catch (err: any) {
+          logger.warn(`device_info: statfsSync error: ${err?.message || String(err)}`);
+        }
+
+        // 4. Running Processes Count (strictly count only, no parameters or process names)
+        let runningProcessCount = 0;
+        try {
+          const psResult = spawnSync("ps", ["-A", "-o", "pid="], {
+            shell: false,
+            timeout: 3000,
+            encoding: "utf8",
+          });
+          if (psResult.status === 0 && typeof psResult.stdout === "string") {
+            runningProcessCount = psResult.stdout.trim().split("\n").filter(Boolean).length;
+          }
+        } catch (err: any) {
+          logger.warn(`device_info: error counting processes: ${err?.message || String(err)}`);
+        }
+
+        // 5. Network Interfaces (address, family, internal only - NO MAC or credentials)
+        const networkSummary: Record<string, Array<{ address: string; family: string; internal: boolean }>> = {};
+        const interfaces = os.networkInterfaces();
+        for (const [name, addrs] of Object.entries(interfaces)) {
+          if (addrs) {
+            networkSummary[name] = addrs.map((a) => ({
+              address: a.address,
+              family: a.family,
+              internal: a.internal,
+            }));
+          }
+        }
+
+        // 6. Runtime Versions
+        const nodeVersion = process.version;
+        let gitVersion = "unknown";
+        try {
+          const gitRes = spawnSync("git", ["--version"], {
+            shell: false,
+            timeout: 3000,
+            encoding: "utf8",
+          });
+          if (gitRes.status === 0 && typeof gitRes.stdout === "string") {
+            gitVersion = gitRes.stdout.trim();
+          }
+        } catch {}
+
+        const result = {
+          hostname,
+          os: {
+            platform,
+            release,
+            version: osVersion,
+          },
+          cpu: cpuInfo,
+          memory: memoryInfo,
+          disk: diskInfo,
+          runningProcessCount,
+          network: networkSummary,
+          runtimes: {
+            node: nodeVersion,
+            git: gitVersion,
+          },
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`device_info: unexpected error: ${err?.message || String(err)}`);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error retrieving device_info: ${err?.message || String(err)}`,
+            },
+          ],
+        };
+      }
+    }
+  );
+}

@@ -13,6 +13,7 @@ import { registerRepoStatusTool } from "./repo-status.js";
 import { registerWorkerAliveTool } from "./worker-alive.js";
 import { registerListTasksTool } from "./list-tasks.js";
 import { registerAgentRegistryTool } from "./agent-registry.js";
+import { registerDeviceInfoTool } from "./device-info.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -229,6 +230,7 @@ registerRepoStatusTool(server, rootDir, logger);
 registerWorkerAliveTool(server, rootDir, logger);
 registerListTasksTool(server, rootDir, logger);
 registerAgentRegistryTool(server, rootDir, logger);
+registerDeviceInfoTool(server, rootDir, logger);
 
 // Connect over stdio transport
 async function main() {

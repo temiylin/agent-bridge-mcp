@@ -74,6 +74,7 @@ async function runTests() {
     "worker_alive_summary",
     "list_tasks_summary",
     "agent_registry_summary",
+    "device_info",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
