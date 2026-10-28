@@ -99,6 +99,17 @@ $AGENT_BRIDGE_ROOT/
   - 返回对象包含文本切片 `content`、`nextOffset` 以及 `eof` 标记。
   - 专门用于处理超大结果文件，保持 `read_result` 一次性读取功能完整且不被修改。
 
+#### `repo_status`
+- **功能**：只读查询指定本地 Git 仓库的分支、工作区状态摘要、关键引用哈希与最近 10 条提交摘要。
+- **参数**：无输入参数（不接受客户端传入路径或命令）。
+- **仓库路径来源**：严格仅从服务端环境变量 `AGENT_BRIDGE_REPO` 读取；若未设置、非绝对路径、目录不存在或不含 `.git`，均安全返回 `isError: true`。
+- **行为与安全约束**：
+  - 仅执行代码中严格硬编码的 4 条只读 git 子命令（`status --short --branch`, `rev-parse --abbrev-ref HEAD`, `rev-parse develop main origin/develop origin/main`, `log --oneline -n 10`），禁止任何其他 git 子命令。
+  - 显式设置 `shell: false` 与 5000ms 超时，杜绝 Shell 注入；命令环境变量附加 `GIT_OPTIONAL_LOCKS=0`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`。
+  - 输出最大长度限制为 8000 字符，超出截断并附加说明。
+  - **隐私保护**：绝不返回任何代码 diff、文件内容、Prompt 或结果正文。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
@@ -177,6 +188,8 @@ npm run build
 - `AGENT_BRIDGE_ROOT`：指定数据根目录路径。
   - 默认值：`~/agent-bridge`（自动展开为当前用户主目录）。
   - 自定义示例：`export AGENT_BRIDGE_ROOT=/custom/path/agent-bridge`。
+- `AGENT_BRIDGE_REPO`：指定只读仓库状态工具 `repo_status` 所绑定的本地 Git 仓库绝对路径。
+  - 示例：`export AGENT_BRIDGE_REPO=/path/to/your/git/repo`。
 
 ---
 
