@@ -133,6 +133,70 @@ async function runHttpTest() {
     assert.ok(callBody.includes("arm64") || callBody.includes("architecture"), "Result must contain CPU/Hardware info");
     assert.ok(callBody.includes("totalBytes"), "Result must contain memory/disk totalBytes info");
     console.log("✓ Assertion passed: device_info called successfully over HTTP/SSE!");
+
+    // 7. Test Accept: application/json (standard client probe without text/event-stream)
+    console.log("\n[Test 7] Testing POST /mcp with standard Accept: application/json (like ChatGPT probe)");
+    const chatgptProbeResp = await fetch(`http://${testHost}:${testPort}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 701,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "chatgpt-validator", version: "1.0.0" },
+        },
+      }),
+    });
+    assert.strictEqual(chatgptProbeResp.status, 200, "Must return 200 even with Accept: application/json");
+    const probeJson = await chatgptProbeResp.json();
+    assert.strictEqual(probeJson.id, 701);
+    assert.ok(probeJson.result?.capabilities?.tools, "Must advertise tools capability");
+    console.log("✓ Assertion passed: Accept: application/json normalized and accepted, tools capability advertised.");
+
+    // 8. Test Stateless tools/list (no session ID provided at all)
+    console.log("\n[Test 8] Testing POST /mcp stateless tools/list (no session ID)");
+    const statelessListResp = await fetch(`http://${testHost}:${testPort}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 801,
+        method: "tools/list",
+        params: {},
+      }),
+    });
+    assert.strictEqual(statelessListResp.status, 200, "Stateless tools/list must return 200");
+    const statelessListJson = await statelessListResp.json();
+    assert.strictEqual(statelessListJson.id, 801);
+    assert.ok(Array.isArray(statelessListJson.result?.tools), "Tools list must be returned");
+    assert.strictEqual(statelessListJson.result.tools.length, 15, "Must return all 15 tools");
+    console.log(`✓ Assertion passed: Stateless tools/list succeeded, returned ${statelessListJson.result.tools.length} tools.`);
+
+    // 9. Test Classic SSE transport (/sse)
+    console.log("\n[Test 9] Testing GET /sse (Classic SSE transport)");
+    const sseResp = await fetch(`http://${testHost}:${testPort}/sse`);
+    assert.strictEqual(sseResp.status, 200, "GET /sse must return 200");
+    assert.ok(sseResp.headers.get("content-type")?.includes("text/event-stream"), "SSE must return text/event-stream");
+    
+    // Read the endpoint event
+    const reader = sseResp.body?.getReader();
+    if (reader) {
+      const decoder = new TextDecoder();
+      const chunk = await reader.read();
+      const sseText = decoder.decode(chunk.value);
+      assert.ok(sseText.includes("event: endpoint"), "SSE stream must emit endpoint event");
+      console.log("✓ Assertion passed: Classic SSE transport emitted endpoint event.");
+      await reader.cancel();
+    }
   } finally {
     console.log("\n[Cleanup] Closing HTTP server...");
     await handle.close();

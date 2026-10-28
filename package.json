@@ -18,6 +18,7 @@
     "start": "node dist/index.js",
     "serve": "node dist/index.js --http",
     "serve:mcp": "node dist/index.js --http --port 38080",
+    "bridge:chatgpt": "node scripts/start-chatgpt-bridge.mjs",
     "worker": "node dist/worker.js",
     "test": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-test -- tsx test/test-runner.ts",
     "test:http": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-http-test -- tsx test/http-server-test.ts",
