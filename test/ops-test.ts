@@ -501,6 +501,82 @@ Run long task to test wait_task
     );
     console.log("✓ Test L passed: notifications disabled properly and no prompt secret leaked.\n");
 
+    // -------------------------------------------------
+    // [Test M] Verify notification content does not leak prompt secret when AGENT_BRIDGE_NOTIFY=1
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test M] Verify notification content does not leak prompt secret when AGENT_BRIDGE_NOTIFY=1");
+    console.log("-------------------------------------------------");
+
+    // Terminate initial worker (which was started with AGENT_BRIDGE_NOTIFY=0)
+    workerProcess.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Spawn dedicated test worker with AGENT_BRIDGE_NOTIFY=1
+    const notifyWorker = spawn("node", ["dist/worker.js"], {
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_ROOT: TEST_ROOT,
+        AGENT_BRIDGE_POLL_MS: "100",
+        AGENT_BRIDGE_TIMEOUT_MS: "30000",
+        AGENT_BRIDGE_NOTIFY: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      const tNotifyId = "task_ops_notify_m_007";
+      const notifyTaskContent = `# Task with Secret Prompt
+- **Task ID**: ${tNotifyId}
+- **Agent**: echo-stdin
+- **Created At**: ${new Date().toISOString()}
+
+---
+
+## Prompt
+
+Task instructions: ${UNIQUE_PROMPT_SECRET}
+`;
+      fs.writeFileSync(path.join(tasksDir, `${tNotifyId}.md`), notifyTaskContent, "utf8");
+
+      // Wait until result file is produced
+      const resultPath = path.join(resultsDir, `${tNotifyId}.md`);
+      for (let i = 0; i < 50; i++) {
+        if (fs.existsSync(resultPath)) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.ok(fs.existsSync(resultPath), "Task with notification should complete");
+
+      // Allow osascript child process to complete and flush to worker.log
+      await new Promise((r) => setTimeout(r, 1000));
+
+      const currentWorkerLog = fs.readFileSync(path.join(logsDir, "worker.log"), "utf8");
+      const notifySuccessLines = currentWorkerLog
+        .split("\n")
+        .filter((line) => line.includes("Notification sent successfully:") && line.includes(tNotifyId));
+
+      if (process.platform === "darwin" && notifySuccessLines.length > 0) {
+        const notifyMessage = notifySuccessLines[0];
+        console.log("Captured notification log:", notifyMessage);
+        assert.ok(
+          !notifyMessage.includes(UNIQUE_PROMPT_SECRET),
+          "Notification message must NOT contain UNIQUE_PROMPT_SECRET"
+        );
+        assert.ok(
+          notifyMessage.includes(tNotifyId) && notifyMessage.includes("echo-stdin"),
+          "Notification message should contain taskId and agent name"
+        );
+        console.log("✓ Test M passed: notification message verified and prompt secret not leaked.\n");
+      } else {
+        console.log("无法验证通知文本（当前环境未生成成功通知日志）");
+        console.log("✓ Test M finished: no assertion possible on notification message.\n");
+      }
+    } finally {
+      notifyWorker.kill("SIGTERM");
+      await new Promise((r) => setTimeout(r, 300));
+      if (!notifyWorker.killed) notifyWorker.kill("SIGKILL");
+    }
+
     console.log("=================================================");
     console.log("  All ops test assertions passed successfully!   ");
     console.log("=================================================");

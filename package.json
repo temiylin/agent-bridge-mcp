@@ -17,10 +17,10 @@
     "start": "node dist/index.js",
     "worker": "node dist/worker.js",
     "test": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-test -- tsx test/test-runner.ts",
-    "test:worker": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-test -- tsx test/worker-test.ts",
+    "test:worker": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-test AGENT_BRIDGE_NOTIFY=0 -- tsx test/worker-test.ts",
     "test:ops": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-ops-test -- tsx test/ops-test.ts",
-    "test:e2e-codex": "tsx test/e2e-codex.ts",
-    "test:e2e-codex-write": "tsx test/e2e-codex-write.ts"
+    "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
+    "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"
   },
   "keywords": [
     "mcp",
