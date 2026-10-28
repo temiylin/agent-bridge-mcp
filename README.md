@@ -190,16 +190,18 @@ npm run build
 
 ### 配置示例 JSON
 
+请把占位符替换为你本机的绝对路径，例如 `/Users/<用户名>/...`。
+
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
       "command": "node",
       "args": [
-        "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
+        "<你的绝对路径>/code/mcp/agent-bridge-mcp/dist/index.js"
       ],
       "env": {
-        "AGENT_BRIDGE_ROOT": "$HOME/agent-bridge"
+        "AGENT_BRIDGE_ROOT": "<你的绝对路径>/agent-bridge"
       }
     }
   }
