@@ -99,6 +99,96 @@ $AGENT_BRIDGE_ROOT/
   - 返回对象包含文本切片 `content`、`nextOffset` 以及 `eof` 标记。
   - 专门用于处理超大结果文件，保持 `read_result` 一次性读取功能完整且不被修改。
 
+#### `repo_status`
+- **功能**：只读查询指定本地 Git 仓库的分支、工作区状态摘要、关键引用哈希与最近 10 条提交摘要。
+- **参数**：无输入参数（不接受客户端传入路径或命令）。
+- **仓库路径来源**：严格仅从服务端环境变量 `AGENT_BRIDGE_REPO` 读取；若未设置、非绝对路径、目录不存在或不含 `.git`，均安全返回 `isError: true`。
+- **行为与安全约束**：
+  - 仅执行代码中严格硬编码的 4 条只读 git 子命令（`status --short --branch`, `rev-parse --abbrev-ref HEAD`, `rev-parse develop main origin/develop origin/main`, `log --oneline -n 10`），禁止任何其他 git 子命令。
+  - 显式设置 `shell: false` 与 5000ms 超时，杜绝 Shell 注入；命令环境变量附加 `GIT_OPTIONAL_LOCKS=0`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`。
+  - 输出最大长度限制为 8000 字符，超出截断并附加说明。
+  - **隐私保护**：绝不返回任何代码 diff、文件内容、Prompt 或结果正文。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `worker_alive_summary`
+- **功能**：只读查询本地 Worker 进程的存活状态、PID 以及最后记录的活动时间戳。
+- **参数**：无输入参数（不接受客户端传入参数或命令）。
+- **行为与安全约束**：
+  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.pid`，仅使用 `process.kill(pid, 0)` 发送信号 0 进行无害的进程存在性探测，**绝不发送任何其他信号**，绝不停止或重启进程。
+  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.log` 尾部，提取最后一条带 ISO 时间戳的记录时间作为 `lastActivity`（注意：Worker 无心跳机制，该时间代表最后记录的操作活动）。
+  - 返回结构：`{ running: boolean, pid?: number, lastActivity?: string }`。
+  - 绝不暴露系统环境变量、主机信息或任务内容。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `list_tasks_summary`
+- **功能**：只读扫描 `$AGENT_BRIDGE_ROOT/status/` 目录，获取最近执行的任务元数据摘要列表。
+- **参数**：
+  - `limit`（number，可选，默认 20）：返回最近任务的最大条数，系统严格钳制在 1 到 50 之间。
+- **行为与安全约束**：
+  - 仅按 `startedAt` 时间戳倒序排列，最多返回 50 条。
+  - **字段白名单**：每条记录严格只返回 `taskId`、`state`、`agent`、`startedAt`、`finishedAt`、`exitCode`。
+  - **绝不返回** `prompt`、`results` 或 `logs` 中的任何正文，杜绝敏感信息泄露。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `agent_registry_summary`
+- **功能**：只读解析 `$AGENT_BRIDGE_ROOT/agents.json`，获取本地注册的 Agent 清单及其启用状态。
+- **参数**：无输入参数（不接受客户端传入参数或命令）。
+- **行为与安全约束**：
+  - 仅返回已注册 Agent 的名称与启用标记，结构为 `[{ name: string, enabled: true }]`。
+  - **信息安全白名单**：**绝不返回**底层的 `command`、`args`、`input` 或任何本地可执行文件路径，杜绝暴露宿主机敏感执行环境。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `device_info`
+- **功能**：只读查询宿主机系统与硬件环境概况（第 1 层只读能力，默认开启）。
+- **参数**：无输入参数（不接受客户端传入参数或命令）。
+- **查询范围**：
+  - 主机名、操作系统平台/版本/内核发布号。
+  - CPU 架构、型号与物理核心数；内存总量、空闲量与使用率。
+  - 根分区磁盘总量、空闲量、可用量与剩余空间百分比（通过 Node.js 原生 `fs.statfsSync` 获取）。
+  - 当前系统运行进程总数量（严格仅统计总数，绝不返回进程名称或命令行参数）。
+  - 网络接口摘要（仅返回网卡名称、IP 地址、协议族与是否内网，不含 MAC 地址或敏感凭证）。
+  - Node.js 与 Git 运行时版本。
+- **行为与安全约束**：
+  - **实现边界**：仅使用 Node 原生 API 与严格非 shell 的只读调用（`shell: false`），杜绝 Shell 注入。
+  - **隐私防泄漏白名单**：**绝不返回**环境变量（`process.env`）、进程命令行参数、用户主目录内容或任何文件正文。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `list_directory`
+- **功能**：只读列出本地指定绝对路径目录下的文件与子目录列表及基础元数据。
+- **参数**：
+  - `path`（string，必填）：要列出的目录绝对路径。
+  - `show_hidden`（boolean，可选，默认 false）：是否包含隐藏文件（以 `.` 开头的文件/目录）。
+- **行为与安全约束**：
+  - 严格校验绝对路径与目录存在性；非绝对路径或非目录返回 `isError: true`。
+  - **敏感凭据路径拦截**：严格禁止访问 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.config/gcloud`、`~/.azure`、`/etc/shadow` 等系统凭据目录，遇敏感路径安全拒绝并返回 `isError: true`。
+  - 目录项按“子目录在前、随后按字母顺序”排序，返回字段包含 `name`、`type`（`file` | `directory` | `symlink` | `other`）、`sizeBytes` 与 `modifiedAt`。
+  - **数量限制**：单次最多返回 300 项，超出截断并置 `hasMore: true`，防止目录爆炸造成内存冲击。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `read_file`
+- **功能**：安全读取本地指定绝对路径文本文件的切片内容（支持偏移与长度分块，保护大文件与二进制文件）。
+- **参数**：
+  - `path`（string，必填）：文件的绝对路径。
+  - `offset`（number，可选，默认 0）：读取起始字节偏移。
+  - `length`（number，可选，默认 8000，上限 64000）：单次读取字节数。
+- **行为与安全约束**：
+  - 严格校验绝对路径与普通文件存在性；禁止读取目录、套接字等特殊文件。
+  - **敏感凭据文件拦截**：严格禁止读取 `~/.ssh/*`、`~/.aws/*`、`/etc/shadow`、`/etc/master.passwd`、`/etc/sudoers` 以及各类私钥/证书文件（如 `id_rsa`、`*.pem`、`*.key`、`*.p12`、`*.keystore`）。
+  - **底层流式分块读取**：使用文件描述符进行字节区间定位读取（`fs.readSync`），绝不将超大文件整文件加载进内存。
+  - **二进制防护**：自动扫描切片中的空字节（`\0`），若检测为二进制文件则抑制正文返回，返回 `isBinary: true` 与友好提示，杜绝二进制乱码与内存污染。
+  - 返回字段包含 `path`、`totalBytes`、`offset`、`bytesRead`、`eof` 以及文本 `content`。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
+#### `get_file_info`
+- **功能**：只读获取本地指定路径的文件/目录详细元数据与权限信息（不读取文件正文）。
+- **参数**：
+  - `path`（string，必填）：文件或目录的绝对路径。
+- **行为与安全约束**：
+  - 严格校验绝对路径与存在性。
+  - **敏感凭据路径拦截**：同样受敏感凭据路径与私钥文件黑名单保护。
+  - 使用 `fs.lstatSync` 获取元数据，返回字段包含：`exists`、`isFile`、`isDirectory`、`isSymbolicLink`、`sizeBytes`、`modifiedAt`、`accessedAt`、`createdAt` 以及八进制权限字符串 `permissions`（如 `"644"`、`"755"`）。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
@@ -177,6 +267,8 @@ npm run build
 - `AGENT_BRIDGE_ROOT`：指定数据根目录路径。
   - 默认值：`~/agent-bridge`（自动展开为当前用户主目录）。
   - 自定义示例：`export AGENT_BRIDGE_ROOT=/custom/path/agent-bridge`。
+- `AGENT_BRIDGE_REPO`：指定只读仓库状态工具 `repo_status` 所绑定的本地 Git 仓库绝对路径。
+  - 示例：`export AGENT_BRIDGE_REPO=/path/to/your/git/repo`。
 
 ---
 
@@ -190,16 +282,18 @@ npm run build
 
 ### 配置示例 JSON
 
+请把占位符替换为你本机的绝对路径，例如 `/Users/<用户名>/...`。
+
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+        "<你的绝对路径>/code/mcp/agent-bridge-mcp/dist/index.js"
       ],
       "env": {
-        "AGENT_BRIDGE_ROOT": "/Users/news/agent-bridge"
+        "AGENT_BRIDGE_ROOT": "<你的绝对路径>/agent-bridge"
       }
     }
   }
@@ -221,7 +315,7 @@ npm run build
 ```bash
 codex mcp add agent-bridge \
   --env AGENT_BRIDGE_ROOT="$HOME/agent-bridge" \
-  -- node "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+  -- node "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
 ```
 
 检查注册状态：
@@ -237,11 +331,11 @@ ChatGPT macOS 桌面端使用 `~/.codex/config.toml` 作为其 MCP 配置文件�
 [mcp_servers.agent-bridge]
 command = "node"
 args = [
-  "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+  "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
 ]
 
 [mcp_servers.agent-bridge.env]
-AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
+AGENT_BRIDGE_ROOT = "$HOME/agent-bridge"
 ```
 
 ### 方式三：ChatGPT 桌面端图形界面配置
@@ -252,8 +346,8 @@ AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
    - **Name**: `agent-bridge`
    - **Type**: `STDIO`
    - **Command**: `node`
-   - **Arguments**: `/Users/news/code/mcp/agent-bridge-mcp/dist/index.js`
-   - **Environment Variables**: `AGENT_BRIDGE_ROOT=/Users/news/agent-bridge`
+   - **Arguments**: `$HOME/code/mcp/agent-bridge-mcp/dist/index.js`
+   - **Environment Variables**: `AGENT_BRIDGE_ROOT=$HOME/agent-bridge`
 4. 保存并重启客户端。
 
 ### 使用与验证
@@ -287,6 +381,20 @@ AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
 - `input`（`"stdin"` | `"arg"`，必填）：Prompt 传递方式：
   - `"stdin"`：提示词通过子进程标准输入传入。
   - `"arg"`：提示词作为最后一个命令行参数追加。
+
+### Agent 启停页面
+
+```bash
+npm run agents:ui
+```
+
+页面只监听本机 `127.0.0.1`，默认使用随机端口；启动后终端会打印带随机 token 的访问 URL。打开页面和提交修改都必须通过 token 校验。页面只提供脚本内置的预设 Agent，不接受客户端传入命令或参数。
+
+URL 中的 token 是本地页面的临时访问密码。不要把该 URL 分享给他人，也不要粘贴到聊天、截图或公开日志中。关闭服务后 token 即失效，每次启动都会生成新 token。浏览器历史可能保存该 URL，使用后可清理浏览记录。
+
+Agent 在 `$AGENT_BRIDGE_ROOT/agents.json` 中存在对应条目即为启用；停用会移除该条目。每次修改前，如果文件已存在，会在同目录生成 `agents.json.bak-<时间戳>` 备份，并以临时文件加重命名的方式更新。默认“自检”只检查预设命令是否在 PATH 中，不会启动 Agent；如需真实 Codex 自检，可用 `node scripts/agent-admin.mjs --probe` 显式启用，该操作会运行 Codex 并可能消耗额度。
+
+当前预设清单仅包含 `codex`。`agy` 尚未加入清单，待验证后添加。
 
 ### 2. 防重复执行机制 (`logs/processed.json`)
 Worker 采用 **processed.json 记录与结果文件存在性的双重检查** 防重复机制，确保任务执行的幂等性：
