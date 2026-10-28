@@ -9,6 +9,12 @@ import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
 import { audit } from "./audit.js";
 import { registerOpsTools } from "./ops-tools.js";
+import { registerRepoStatusTool } from "./repo-status.js";
+import { registerWorkerAliveTool } from "./worker-alive.js";
+import { registerListTasksTool } from "./list-tasks.js";
+import { registerAgentRegistryTool } from "./agent-registry.js";
+import { registerDeviceInfoTool } from "./device-info.js";
+import { registerLocalFsTools } from "./local-fs.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -221,6 +227,12 @@ server.tool(
 
 // Register Ops Tools: get_task_status, cancel_task, read_task_output, read_result_page
 registerOpsTools(server, rootDir, tasksDir, resultsDir, logsDir, logger);
+registerRepoStatusTool(server, rootDir, logger);
+registerWorkerAliveTool(server, rootDir, logger);
+registerListTasksTool(server, rootDir, logger);
+registerAgentRegistryTool(server, rootDir, logger);
+registerDeviceInfoTool(server, rootDir, logger);
+registerLocalFsTools(server, rootDir, logger);
 
 // Connect over stdio transport
 async function main() {

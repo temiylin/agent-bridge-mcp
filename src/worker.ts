@@ -33,6 +33,57 @@ export function logWorker(level: "INFO" | "WARN" | "ERROR", message: string): vo
   process.stderr.write(formatted);
 }
 
+/**
+ * Constructs the argument array for osascript notification.
+ */
+export function buildNotifyArgs(title: string, message: string): string[] {
+  return [
+    "-e",
+    "on run argv",
+    "-e",
+    "display notification (item 1 of argv) with title (item 2 of argv)",
+    "-e",
+    "end run",
+    message,
+    title,
+  ];
+}
+
+/**
+ * Sends a native macOS desktop notification using osascript.
+ * Skipped on win32/linux or if AGENT_BRIDGE_NOTIFY === "0".
+ */
+export function notify(title: string, message: string): void {
+  if (process.platform !== "darwin") {
+    logWorker("INFO", `Notification skipped on platform ${process.platform}: [${title}] ${message}`);
+    return;
+  }
+
+  if (process.env.AGENT_BRIDGE_NOTIFY === "0") {
+    logWorker("INFO", `Notification disabled by AGENT_BRIDGE_NOTIFY=0: [${title}] ${message}`);
+    return;
+  }
+
+  try {
+    const args = buildNotifyArgs(title, message);
+    const child = spawn("osascript", args, { shell: false });
+
+    child.on("error", (err) => {
+      logWorker("WARN", `Notification failed to spawn osascript: ${err.message}`);
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        logWorker("WARN", `osascript exited with code ${code}`);
+      } else {
+        logWorker("INFO", `Notification sent successfully: [${title}] ${message}`);
+      }
+    });
+  } catch (err: any) {
+    logWorker("WARN", `Notification error: ${err?.message || String(err)}`);
+  }
+}
+
 // Processed tasks tracker
 function loadProcessedTasks(): Record<string, string> {
   if (fs.existsSync(processedFilePath)) {
@@ -202,6 +253,7 @@ export async function processTaskFile(
     saveProcessedTask(processedMap, taskId, finishedAt);
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "cancelled", exitCode: 1 });
     logWorker("INFO", `Task ${taskId} cancelled before start by request`);
+    notify("agent-bridge", `Task ${taskId} cancelled (cancelled by request) [${agentName || "(none)"}]`);
     return true;
   }
 
@@ -232,6 +284,7 @@ export async function processTaskFile(
     saveProcessedTask(processedMap, taskId, finishedAt);
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("ERROR", `Task ${taskId} failed: agents.json not found`);
+    notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
     return true;
   }
 
@@ -264,6 +317,7 @@ export async function processTaskFile(
     saveProcessedTask(processedMap, taskId, finishedAt);
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("WARN", `Task ${taskId} failed: ${errorMsg}`);
+    notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
     return true;
   }
 
@@ -431,6 +485,7 @@ export async function processTaskFile(
   saveProcessedTask(processedMap, taskId, finishedAt);
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
+  notify("agent-bridge", `Task ${taskId} ${status} [${agentName}]`);
   return true;
 }
 
