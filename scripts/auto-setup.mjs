@@ -176,15 +176,26 @@ async function main() {
     console.warn("⚠️ 打包 zip 提示:", err.message);
   }
 
+  const deviceUrl = `${RELAY_HTTP}/${deviceToken}`;
+
   console.log("===============================================================");
-  console.log("🎉 全部部署大功告成！你现在拥有了完整的双重访问能力：");
+  console.log("🎉 全部部署大功告成！已为当前设备生成专属配置：");
   console.log("===============================================================");
+  console.log(`🔑 本机专属识别码:   \x1b[32m\x1b[1m${deviceToken}\x1b[0m`);
+  console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
+  console.log(`📦 本机专属插件包:   \x1b[35m\x1b[1m${desktopZip}\x1b[0m`);
+  console.log("---------------------------------------------------------------");
   console.log("1️⃣  【在 Codex 中】:");
   console.log("    现在直接在 Codex 窗口提问，即可自动调用本地工具！无需任何多余操作。");
   console.log();
-  console.log("2️⃣  【在 ChatGPT 普通聊天窗口中】:");
-  console.log("    打开 ChatGPT -> 设置 -> Connectors/MCP ->「上传插件压缩包」");
-  console.log("    直接选择你桌面上的「agent-bridge-plugin.zip」即可！");
+  console.log("2️⃣  【在 ChatGPT 普通聊天窗口中】(任选一种方式):");
+  console.log("    方式 A (最推荐 - 一键免配置):");
+  console.log("      打开 ChatGPT -> 设置 -> Connectors/MCP -> 点击左下角「上传插件压缩包」");
+  console.log("      选择桌面上的「agent-bridge-plugin.zip」即可！");
+  console.log();
+  console.log("    方式 B (手动输入 URL):");
+  console.log(`      MCP 服务器 URL 填入: ${deviceUrl}`);
+  console.log("      身份验证选择: 无 (None)");
   console.log("===============================================================\n");
 }
 

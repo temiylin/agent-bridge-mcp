@@ -62,15 +62,18 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
 
     ws.onopen = () => {
       logger.info(`✅ Successfully connected to Relay Hub at ${serverUrl}`);
+      const httpBase = process.env.RELAY_HTTP || serverUrl.replace(/^ws/, "http").replace(/\/ws$/, "/mcp");
+      const deviceUrl = `${httpBase}/${token}`;
       console.log(`\n===============================================================`);
       console.log(`🎉 已成功连接到 Agent Bridge 云端中继网关！`);
       console.log(`===============================================================`);
-      console.log(`📡 云端统一域名:   https://bridge.krow.top/mcp`);
-      console.log(`🔑 你的设备识别码: \x1b[32m\x1b[1m${token}\x1b[0m`);
+      console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
+      console.log(`🔑 你的设备识别码:     \x1b[32m\x1b[1m${token}\x1b[0m`);
       console.log(`---------------------------------------------------------------`);
       console.log(`💡 在 ChatGPT「添加自定义 MCP 服务器」中：`);
-      console.log(`   - 服务器 URL:   https://bridge.krow.top/mcp`);
-      console.log(`   - 身份验证:     Bearer Token (填入你的识别码: ${token})`);
+      console.log(`   - 服务器 URL:   ${deviceUrl}`);
+      console.log(`   - 身份验证:     无 (None)`);
+      console.log(`   (或 URL: ${httpBase}，身份验证: Bearer Token: ${token})`);
       console.log(`===============================================================\n`);
       options.onConnect?.();
     };
