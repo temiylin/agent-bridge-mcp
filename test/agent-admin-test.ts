@@ -46,6 +46,7 @@ async function main() {
   let failTempWrite = false;
   let failTempValidation = false;
   let failRestoreCopy = false;
+  let failRestoreBackupLookup = false;
   let failRestoreValidation = false;
   let failPostWriteValidation = false;
   let failTargetUnlink = false;
@@ -54,7 +55,12 @@ async function main() {
   let agentsJsonReadCount = 0;
   const fileSystem = {
     mkdirSync: fs.mkdirSync.bind(fs),
-    existsSync: fs.existsSync.bind(fs),
+    existsSync: (filePath: Parameters<typeof fs.existsSync>[0]) => {
+      if (failRestoreBackupLookup && typeof filePath === "string" && path.basename(filePath).startsWith("agents.json.bak-")) {
+        return false;
+      }
+      return fs.existsSync(filePath);
+    },
     lstatSync: fs.lstatSync.bind(fs),
     readFileSync: (filePath: Parameters<typeof fs.readFileSync>[0], options?: any) => {
       const fileName = String(filePath);
@@ -270,6 +276,22 @@ async function main() {
     assert.equal(successfulRecovery.status, 500, "Post-write validation failure must return an error even when recovery succeeds.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), rollbackOriginalText, "Successful recovery must restore the original registry content.");
 
+    failRestoreBackupLookup = true;
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 0;
+    const missingRestoreBackup = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failRestoreBackupLookup = false;
+    failPostWriteValidation = false;
+    assert.equal(missingRestoreBackup.status, 500, "Missing restore backup must return HTTP 500.");
+    const missingRestoreBackupBody = await missingRestoreBackup.json();
+    assert.match(missingRestoreBackupBody.error, /Backup file is missing/u);
+    assert.match(missingRestoreBackupBody.error, /agents\.json\.bak-/u);
+    fs.writeFileSync(agentsPath, rollbackOriginalText, "utf8");
+
     failRestoreValidation = true;
     failPostWriteValidation = true;
     agentsJsonReadCount = 0;
@@ -312,6 +334,16 @@ async function main() {
     assert.ok(!backupNamesBeforeRecoveryFailure.has(path.basename(backupPathMatch[1])), "Recovery failure test must create a new backup.");
 
     fs.unlinkSync(agentsPath);
+    failTempWrite = true;
+    const absentFileTempWriteFailure = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failTempWrite = false;
+    assert.equal(absentFileTempWriteFailure.status, 500, "Temporary write failure without an original file must return HTTP 500.");
+    assert.equal(fs.existsSync(agentsPath), false, "Failure before target creation must leave agents.json absent.");
+
     failPostWriteValidation = true;
     agentsJsonReadCount = 1;
     const absentFileRecovery = await fetch(`${baseUrl}/api/agents`, {
@@ -346,6 +378,7 @@ async function main() {
     failBackupCreation = false;
     failTempWrite = false;
     failTempValidation = false;
+    failRestoreBackupLookup = false;
     failTargetUnlink = false;
     failTempCleanup = false;
     failRestoreValidation = false;
