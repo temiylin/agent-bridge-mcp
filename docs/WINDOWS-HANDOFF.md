@@ -64,11 +64,28 @@
 
 ### B. 解决 Codex 在 Windows 上的 `.cmd` 包装执行问题（重点）
 - **问题分析**：在 Windows 上，许多全局 npm 包或 CLI 工具实际是 `.cmd` 或 `.bat` 批处理脚本（例如 `codex.cmd`）。Node.js 的 `child_process.spawn` 在 `shell: false` 下直接执行 `.cmd` 文件会报错 `EINVAL` 或找不到程序。
-- **严格约束**：**绝对不得为了方便而将 `shell` 设为 `true` 或使用字符串拼接执行命令！** 将未转义的用户 prompt 暴露给 Windows `cmd.exe` 会带来灾难性的命令注入漏洞（如 `&`、`|`、`%` 变量展开等）。
-- **可行方案选项**：
-  1. *选项 1（推荐）*：在 `src/worker.ts` 或 `agents.json` 中，定位并直接执行背后的真实 Node.js 脚本或原生可执行二进制文件（例如通过读取 `.cmd` 文件获取真实的目标 `.js` 文件，再用 `node` 启动）。
-  2. *选项 2*：若必须包装调用，在内部通过显式固定的数组参数调用（如 `powershell.exe -NoProfile -NonInteractive -File ...`），Prompt 仅能通过 `stdin` 流式传递，绝不通过命令行参数拼接。
-- **工作要求**：Windows AI 须在交接 PR 中说明所选方案及其安全分析。
+- **严格约束**：
+  - **代码不解析 `.cmd` 文件**；
+  - **Worker 必须始终维持 `shell: false`**，严禁使用 `shell: true` 或拼接字符串给 shell，以防止 Windows `cmd.exe` 变量展开或命令注入；Prompt 通过 `stdin` 流式写入或固定作为最后一个 argv 传递。
+- **解决方案规范**：
+  - 由用户在 `agents.json` 中直接配置可执行文件的绝对路径，或配置 `node` 绝对路径加脚本入口路径的参数数组。
+  - 示例配置（使用占位符，配置时请替换为本地实际绝对路径）：
+    ```json
+    {
+      "codex": {
+        "command": "C:\\Program Files\\nodejs\\node.exe",
+        "args": [
+          "C:\\Users\\<username>\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\dist\\cli.js",
+          "exec",
+          "--sandbox",
+          "workspace-write",
+          "--skip-git-repo-check"
+        ],
+        "input": "stdin"
+      }
+    }
+    ```
+- **工作要求**：Windows AI 必须先在 Windows 终端上通过 `where codex`、查看包装脚本或 npm 全局路径，**确认 Codex 的真实可执行入口文件绝对路径**，然后再写入说明与文档，**严禁猜测路径**。
 
 ### C. 验证 `stop` 子命令在 win32 上的 `taskkill` 行为
 - 在 `setup.mjs` 中，Windows 的 `stop` 实现为：
@@ -80,14 +97,13 @@
 - 验证 `fs.renameSync` 在 Windows 上的原子性：在 Windows 上，若目标文件被其他进程以共享方式打开，`fs.renameSync` 可能会抛出 `EPERM`。需确认 worker 写结果文件时不会因被杀软或系统索引锁定而崩溃。
 
 ### E. 运行测试套件（隔离执行）
-- 在 Windows 环境下，使用 `%TEMP%` 隔离临时目录运行：
+- 统一使用 `npm test` 与 `npm run test:worker` 进行测试：
   ```cmd
-  set AGENT_BRIDGE_ROOT=%TEMP%\agent-bridge-test
   npm test
-  set AGENT_BRIDGE_ROOT=%TEMP%\agent-bridge-worker-test
   npm run test:worker
   ```
-- 确认所有断言全部 PASS。
+- **说明**：测试脚本已通过 `scripts/run-env.mjs` 自动注入隔离环境变量（如 `AGENT_BRIDGE_ROOT`），在 Windows 上无需手动 `set` 或 export 环境变量，直接运行上述 npm 命令即可跨平台统一执行。
+- 确认所有测试断言全部 PASS。
 
 ### F. 真实 Codex 端到端验证（如本地已安装 Codex）
 - 执行 `npm run test:e2e-codex`。
@@ -110,11 +126,12 @@
 ## 5. 提交与 PR 规范
 
 - **分支规范**：
-  - Windows 的所有改动必须在一个新的特性分支上进行（如 `feat/windows-support`）。
-  - **PR 的基础分支（Base Branch）必须设为 `feat/worker-agent-registry`**，不得直接向 `main` 提交 PR。
+  - Windows 特性分支必须从 `origin/feat/windows-handoff` 创建（例如 `git checkout -b feat/windows-support origin/feat/windows-handoff`），**不得从 `feat/worker-agent-registry` 创建**。
+  - **PR 的基础分支（Base Branch）必须设为 `feat/windows-handoff`**。
+  - **分支合并流程说明**：Windows AI 提交的 PR 将合并入 `feat/windows-handoff`；待 Windows 验证完成后，`feat/windows-handoff` 统一合并到 `feat/worker-agent-registry`，最终再统一合并回 `main`。
 - **PR 描述要求**：
   - 必须完整附带 Windows 终端上的实测执行记录（包括 `node scripts/setup.mjs setup`、`npm test`、`npm run test:worker` 的完整终端输出与退出码）。
-  - 对 Windows 上处理 `.cmd` 启动的改动做出明确架构说明与安全论证。
+  - 对 Windows 上处理 `.cmd` 启动与注册表配置做出明确说明与验证记录。
 
 ---
 
