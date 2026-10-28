@@ -11,6 +11,7 @@ import { audit } from "./audit.js";
 import { registerOpsTools } from "./ops-tools.js";
 import { registerRepoStatusTool } from "./repo-status.js";
 import { registerWorkerAliveTool } from "./worker-alive.js";
+import { registerListTasksTool } from "./list-tasks.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -225,6 +226,7 @@ server.tool(
 registerOpsTools(server, rootDir, tasksDir, resultsDir, logsDir, logger);
 registerRepoStatusTool(server, rootDir, logger);
 registerWorkerAliveTool(server, rootDir, logger);
+registerListTasksTool(server, rootDir, logger);
 
 // Connect over stdio transport
 async function main() {

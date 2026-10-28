@@ -120,6 +120,16 @@ $AGENT_BRIDGE_ROOT/
   - 绝不暴露系统环境变量、主机信息或任务内容。
   - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
 
+#### `list_tasks_summary`
+- **功能**：只读扫描 `$AGENT_BRIDGE_ROOT/status/` 目录，获取最近执行的任务元数据摘要列表。
+- **参数**：
+  - `limit`（number，可选，默认 20）：返回最近任务的最大条数，系统严格钳制在 1 到 50 之间。
+- **行为与安全约束**：
+  - 仅按 `startedAt` 时间戳倒序排列，最多返回 50 条。
+  - **字段白名单**：每条记录严格只返回 `taskId`、`state`、`agent`、`startedAt`、`finishedAt`、`exitCode`。
+  - **绝不返回** `prompt`、`results` 或 `logs` 中的任何正文，杜绝敏感信息泄露。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
