@@ -1,54 +1,47 @@
 # Agent Bridge MCP
-
-> 企业级多租户 Model Context Protocol (MCP) 本地与远程桥接系统。支持无公网暴露、零配置穿透连接云端 AI（ChatGPT 网页版与桌面版、Codex CLI/IDE、Claude Desktop），实现系统只读监测、Git 状态审查与异步 AI Agent 任务调度。
+### Safely connect ChatGPT, Codex, and Claude to your local environment with zero open ports
 
 [![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-blue.svg)](https://modelcontextprotocol.io/)
 [![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-1.0-brightgreen.svg)](https://agent-plugins.org/)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/temiylin/agent-bridge-mcp)
+
+Control your local developer environment, inspect system health, explore Git repositories, and dispatch asynchronous autonomous agents directly from conversational AI — with zero port forwarding, end-to-end multi-tenant isolation, and strict read-only sandbox protection.
 
 ---
 
-## 🚀 Quick Start / 快速开始
-
-### 方案一：Codex AI 一键自主部署（推荐）
-如果你使用 **Codex Desktop** 或 **Codex CLI**，只需将本仓库提供给 Codex 并输入指令：
-
-> **“帮我部署下这个项目”**（或直接运行 `npm run auto-setup`）
-
-Codex 将自动执行全套初始化流程：
-1. **自动构建**：安装依赖并编译核心可执行组件；
-2. **凭证隔离**：自动为当前机器生成全局唯一的持久化设备凭据（Device Token）；
-3. **服务挂载**：自动执行 `codex mcp add` 将 15 个工具直接接入本地 Codex 系统；
-4. **后台守护**：配置系统级后台守护进程（macOS LaunchAgent），开机静默维持加密反向长连接；
-5. **成品生成**：在当前用户桌面自动生成绑定凭证的 `agent-bridge-plugin.zip` 安装包。
-
----
-
-### 方案二：ChatGPT (Web / Desktop) 插件一键导入
-1. 运行 `npm run pack:plugin`（或直接使用通过 `auto-setup` 生成在桌面的 `agent-bridge-plugin.zip`）；
-2. 打开 ChatGPT -> **设置 (Settings)** -> **Connectors / 插件 / MCP** -> 点击 **「添加自定义 MCP 服务器」**；
-3. 点击弹窗左下角 **「上传插件压缩包」**，选择 `agent-bridge-plugin.zip`；
-4. 导入即刻生效！在任意普通对话中可直接下达硬件与本地开发指令（例如：“查看这台 Mac 的负载与磁盘空间”）。
+## Table of Contents
+- [Features](#features)
+- [System Architecture](#system-architecture)
+- [How to Install](#how-to-install)
+  - [Option 1: Codex AI Autonomous Setup (Recommended)](#option-1-codex-ai-autonomous-setup-recommended)
+  - [Option 2: ChatGPT One-Click Plugin Upload](#option-2-chatgpt-web--desktop-one-click-plugin-upload)
+  - [Option 3: Claude Desktop Configuration](#option-3-claude-desktop-configuration)
+  - [Option 4: Standalone Self-Hosted HTTP / Streamable Server](#option-4-standalone-self-hosted-httpsse-server)
+- [Available Tools Reference](#available-tools-reference)
+- [Safety & Sandbox Guardrails](#safety--sandbox-guardrails)
+- [Local Agent Worker & Lifecycle](#local-agent-worker--lifecycle)
+- [Testing & Verification](#testing--verification)
+- [Configuration Reference](#configuration-reference)
+- [License](#license)
 
 ---
 
-### 方案三：Claude Desktop / 本地 Stdio 模式
-对于 Claude Desktop 或本地进程调用，在 `claude_desktop_config.json` 中配置：
-```json
-{
-  "mcpServers": {
-    "agent-bridge": {
-      "command": "node",
-      "args": ["/path/to/agent-bridge-mcp/dist/index.js"]
-    }
-  }
-}
-```
+## Features
+
+- **Multi-Surface AI Control** — Connect seamlessly from ChatGPT Web, ChatGPT Desktop (in ordinary conversations without Codex mode), OpenAI Codex IDE/CLI, and Anthropic Claude Desktop.
+- **Hardware & Resource Telemetry (`device_info`)** — Real-time read-only inspection of host specs, Apple Silicon / ARM64 architecture, unified memory usage, disk storage, and process counts.
+- **Git Repository Intelligence (`repo_status`)** — Instant read-only status reports on branches, uncommitted changes, working tree status, and recent commit history with zero modification risk.
+- **Safe Filesystem Exploration** — Read file snippets with byte-range pagination and stream directories with built-in protection against directory traversal and symlink escape attacks.
+- **Credentials & Private Key Blocklists** — Automatic blocking of accesses targeting `~/.ssh`, `~/.aws`, `~/.kube`, `/etc/shadow`, and private keys (`.pem`, `.key`, `.p12`).
+- **Asynchronous Agent Dispatch** — Dispatch long-running autonomous workflows to background worker agents (`send_task`), monitor execution progress (`get_task_status`), stream live stdout logs (`read_task_output`), and retrieve results (`read_result`).
+- **Zero-Port Tunneling & Multi-Tenant Relay Hub** — Local machines connect outbound via secure WebSocket tunnels to the cloud relay (`bridge.krow.top`). No inbound ports, no firewall openings, and strict per-device token isolation.
+- **Agent Plugins 1.0 Specification Compliance** — Pre-packaged with standard `plugin.json`, `mcp.json`, and `skills/` for one-click drag-and-drop installation into ChatGPT.
 
 ---
 
-## 🏛️ 系统架构 (Architecture)
+## System Architecture
 
 ```text
 [ ChatGPT (Cloud/Web/Desktop) ]       [ Codex IDE / CLI ]       [ Claude Desktop ]
@@ -59,389 +52,141 @@ Codex 将自动执行全套初始化流程：
 │   Cloud Relay Hub           │                │                         │
 │   (bridge.krow.top)         │                │                         │
 └──────────────┬──────────────┘                │                         │
-               │ (WSS 反向加密隧道)             │                         │
+               │ (WSS Outbound Tunnel)         │                         │
                ▼                               ▼                         ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        本地安全沙箱环境 (Local Sandbox)                  │
+│                        Local Machine Sandbox                           │
 │  ┌──────────────────────────────┐       ┌───────────────────────────┐  │
-│  │ 1. 只读系统与硬件探测        │       │ 3. 异步任务调度与结果     │  │
-│  │ 2. Git 状态与受控文件浏览    │       │ 4. 守护进程心跳监控       │  │
+│  │ 1. Read-only Telemetry       │       │ 3. Asynchronous Agent     │  │
+│  │ 2. Git & Safe Filesystem     │       │ 4. Worker Lifecycle & PID │  │
 │  └──────────────────────────────┘       └───────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 核心设计特性
+## How to Install
 
-- **多端全场景支持**：无缝兼容 ChatGPT 普通聊天会话、OpenAI Codex 编程环境与 Anthropic Claude Desktop。
-- **零公网暴露与双向隔离**：本地电脑仅向外发起 TLS 加密长连接，家庭/企业内网无需任何端口映射或公网 IP；多租户根据 Token 严格隔离，不同设备间绝对不可互访。
-- **纯只读与沙箱防御**：系统探测与文件浏览均具备 Path Traversal（路径穿越）拦截、符号链接逃逸防护、单次读取上限及二进制保护。
-- **标准插件包兼容**：遵循 Agent Plugins 1.0 国际规范，支持包含 Skills 指南、清单描述与 MCP 连接配置的 ZIP 格式一键拖拽式导入。
+<details open>
+<summary><b>Option 1: Codex AI Autonomous Setup (Recommended ⭐ Zero-Touch)</b></summary>
+<br>
 
-`agent-bridge-mcp` 提供了一个通用的本地桥接层，基于标准的 Model Context Protocol (MCP) 与 stdio 传输机制。通过基于文件的统一解耦格式，实现：
-- **任务派发 (`send_task`)**：远程 AI 助手通过 MCP 工具将任务 Prompt 写入待执行目录 `$AGENT_BRIDGE_ROOT/tasks/<task_id>.md`。
-- **结果读取 (`read_result`)**：本地 Agent 执行完成后将结果写入 `$AGENT_BRIDGE_ROOT/results/<task_id>.md`，远程 AI 助手通过 MCP 工具读取执行结果。若任务尚未完成，返回清晰的等待状态而非抛错崩溃。
+If you use **Codex Desktop** or the **Codex CLI**, open this repository and simply tell Codex:
 
-不依赖任何特定 Agent 的私有 API，不执行任何外部 Shell 命令，不合并代码，具备严格的安全路径校验。
+> **"帮我部署下这个项目"** (or run `npm run auto-setup`)
 
----
+Codex will read [`AGENTS.md`](AGENTS.md) and execute the turnkey automation script:
+1. Compiles project binaries and installs dependencies.
+2. Generates a persistent, unique Device Token (e.g., `dev_macbook_8f21`) locked to your machine.
+3. Automatically mounts the MCP server into local Codex using `codex mcp add`.
+4. Installs a background system service (macOS LaunchAgent) so your device reconnects automatically on boot.
+5. Generates your personalized `agent-bridge-plugin.zip` on your Desktop for one-click upload in ChatGPT.
 
-## 数据目录结构
+</details>
 
-数据根目录由环境变量 `AGENT_BRIDGE_ROOT` 指定，默认为 `~/agent-bridge`。服务启动或执行时会自动创建以下子目录：
+<details>
+<summary><b>Option 2: ChatGPT (Web / Desktop) One-Click Plugin Upload</b></summary>
+<br>
 
-```text
-$AGENT_BRIDGE_ROOT/
-  ├── tasks/      # 待执行任务：<task_id>.md
-  ├── results/    # 执行结果：<task_id>.md
-  ├── status/     # 任务状态信息：<task_id>.json
-  ├── control/    # 任务控制标志：<task_id>.cancel
-  └── logs/       # Server/Worker 操作日志与输出
-```
+1. Run `npm run pack:plugin` (or use the pre-built `~/Desktop/agent-bridge-plugin.zip` generated by auto-setup).
+2. Open **ChatGPT** -> **Settings** -> **Connectors / MCP** -> Click **Add Custom MCP Server**.
+3. In the lower-left corner of the modal, click **Upload Plugin Zip** (上传插件压缩包).
+4. Select `agent-bridge-plugin.zip`. All metadata, remote endpoints, and tool skills are loaded automatically.
+5. In any standard conversation, ask: *"Inspect this Mac's hardware and free disk space"* to invoke your local tools!
 
----
+</details>
 
-## 提供的 MCP 工具
+<details>
+<summary><b>Option 3: Claude Desktop Configuration</b></summary>
+<br>
 
-### 1. `send_task`
-- **功能**：派发新任务。
-- **参数**：
-  - `prompt`（string，必填）：任务的具体指令与提示词。
-  - `title`（string，可选）：任务标题。
-  - `agent`（string，可选）：目标 Agent 名称（必须在 `agents.json` 中登记；若未填写，写入文件后由 worker 标记失败）。
-- **行为**：
-  - 校验 `agents.json` 存在且格式合法。
-  - 自动生成唯一 `task_id`（时间戳 + 随机后缀）。
-  - 将任务信息写入 `$AGENT_BRIDGE_ROOT/tasks/<task_id>.md`，包含标题、创建时间、Task ID、Agent 名称与 Prompt。
-  - 返回生成的 `task_id` 与对应文件路径。
+Add `agent-bridge` to your Claude Desktop configuration file:
 
-### 2. `read_result`
-- **功能**：读取指定任务的执行结果。
-- **参数**：
-  - `task_id`（string，必填）：需要读取结果的任务 ID。
-- **行为**：
-  - 校验 `task_id` 合法性（严格限制只能包含字母、数字、`-`、`_`，防止路径穿越）。
-  - 读取 `$AGENT_BRIDGE_ROOT/results/<task_id>.md`。
-  - 若结果文件尚未生成，返回状态为等待中（Pending）的说明信息，不报错、不崩溃。
-  - 若结果文件已存在，返回文件中的完整结果内容。
-
----
-
-## 运行维护工具
-
-系统提供了一套完整的运维监控与生命周期管理能力，包括审计日志、任务状态追踪、任务取消、增量日志读取与分页结果读取。
-
-### 1. 运维与监控 MCP 工具
-
-#### `get_task_status`
-- **功能**：查询任务当前执行状态及生命周期元数据。
-- **参数**：
-  - `task_id`（string，必填）：任务 ID。
-- **行为**：
-  - 严格校验 `task_id` 安全性。
-  - 读取 `$AGENT_BRIDGE_ROOT/status/<task_id>.json`，返回包含 `state`（`queued` | `running` | `completed` | `failed` | `cancelled`）、`agent`、`startedAt`、`finishedAt`、`exitCode`、`error` 的完整元数据。
-  - 若状态文件不存在，自动基于 `tasks/` 判定为 `queued`，或基于 `results/` 判定为 `completed`；若均不存在则返回任务不存在。
-  - **注意**：本工具绝不返回任务结果正文或 prompt 内容。
-
-#### `cancel_task`
-- **功能**：请求取消正在排队或正在执行中的任务。
-- **参数**：
-  - `task_id`（string，必填）：任务 ID。
-- **行为**：
-  - 检查任务是否已存在于 `results/<task_id>.md` 或其状态已为 `completed`、`failed`、`cancelled`。若已处于终态，则安全忽略并返回已完成提示。
-  - 若任务尚未结束，向 `$AGENT_BRIDGE_ROOT/control/<task_id>.cancel` 写入控制取消标记文件。
-  - 任务取消由 Worker 轮询控制文件自主完成，MCP Server 自身绝不发送任何系统信号、不操作任何 PID。
-
-#### `read_task_output`
-- **功能**：增量分块读取任务执行过程中的标准输出日志。
-- **参数**：
-  - `task_id`（string，必填）：任务 ID。
-  - `offset`（number，可选，默认 0）：读取起始字节偏移。
-  - `length`（number，可选，默认 4000，取值范围 1 ~ 16000）：单次读取字节数。
-- **行为**：
-  - 读取 `$AGENT_BRIDGE_ROOT/logs/<task_id>.out` 文件（Worker 在执行期间实时将标准输出同步写入该文件）。
-  - 返回对象包含读取的文本 `content`、下一读取偏移量 `nextOffset`，以及是否到达文件末尾的 `eof` 标记。
-
-#### `read_result_page`
-- **功能**：分页切片读取任务的最终执行结果。
-- **参数**：
-  - `task_id`（string，必填）：任务 ID。
-  - `offset`（number，可选，默认 0）：读取起始字节偏移。
-  - `length`（number，可选，默认 4000）：单次读取字节数。
-- **行为**：
-  - 分块读取 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 文件。
-  - 返回对象包含文本切片 `content`、`nextOffset` 以及 `eof` 标记。
-  - 专门用于处理超大结果文件，保持 `read_result` 一次性读取功能完整且不被修改。
-
-#### `repo_status`
-- **功能**：只读查询指定本地 Git 仓库的分支、工作区状态摘要、关键引用哈希与最近 10 条提交摘要。
-- **参数**：无输入参数（不接受客户端传入路径或命令）。
-- **仓库路径来源**：严格仅从服务端环境变量 `AGENT_BRIDGE_REPO` 读取；若未设置、非绝对路径、目录不存在或不含 `.git`，均安全返回 `isError: true`。
-- **行为与安全约束**：
-  - 仅执行代码中严格硬编码的 4 条只读 git 子命令（`status --short --branch`, `rev-parse --abbrev-ref HEAD`, `rev-parse develop main origin/develop origin/main`, `log --oneline -n 10`），禁止任何其他 git 子命令。
-  - 显式设置 `shell: false` 与 5000ms 超时，杜绝 Shell 注入；命令环境变量附加 `GIT_OPTIONAL_LOCKS=0`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`。
-  - 输出最大长度限制为 8000 字符，超出截断并附加说明。
-  - **隐私保护**：绝不返回任何代码 diff、文件内容、Prompt 或结果正文。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `worker_alive_summary`
-- **功能**：只读查询本地 Worker 进程的存活状态、PID 以及最后记录的活动时间戳。
-- **参数**：无输入参数（不接受客户端传入参数或命令）。
-- **行为与安全约束**：
-  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.pid`，仅使用 `process.kill(pid, 0)` 发送信号 0 进行无害的进程存在性探测，**绝不发送任何其他信号**，绝不停止或重启进程。
-  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.log` 尾部，提取最后一条带 ISO 时间戳的记录时间作为 `lastActivity`（注意：Worker 无心跳机制，该时间代表最后记录的操作活动）。
-  - 返回结构：`{ running: boolean, pid?: number, lastActivity?: string }`。
-  - 绝不暴露系统环境变量、主机信息或任务内容。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `list_tasks_summary`
-- **功能**：只读扫描 `$AGENT_BRIDGE_ROOT/status/` 目录，获取最近执行的任务元数据摘要列表。
-- **参数**：
-  - `limit`（number，可选，默认 20）：返回最近任务的最大条数，系统严格钳制在 1 到 50 之间。
-- **行为与安全约束**：
-  - 仅按 `startedAt` 时间戳倒序排列，最多返回 50 条。
-  - **字段白名单**：每条记录严格只返回 `taskId`、`state`、`agent`、`startedAt`、`finishedAt`、`exitCode`。
-  - **绝不返回** `prompt`、`results` 或 `logs` 中的任何正文，杜绝敏感信息泄露。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `agent_registry_summary`
-- **功能**：只读解析 `$AGENT_BRIDGE_ROOT/agents.json`，获取本地注册的 Agent 清单及其启用状态。
-- **参数**：无输入参数（不接受客户端传入参数或命令）。
-- **行为与安全约束**：
-  - 仅返回已注册 Agent 的名称与启用标记，结构为 `[{ name: string, enabled: true }]`。
-  - **信息安全白名单**：**绝不返回**底层的 `command`、`args`、`input` 或任何本地可执行文件路径，杜绝暴露宿主机敏感执行环境。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `device_info`
-- **功能**：只读查询宿主机系统与硬件环境概况（第 1 层只读能力，默认开启）。
-- **参数**：无输入参数（不接受客户端传入参数或命令）。
-- **查询范围**：
-  - 主机名、操作系统平台/版本/内核发布号。
-  - CPU 架构、型号与物理核心数；内存总量、空闲量与使用率。
-  - 根分区磁盘总量、空闲量、可用量与剩余空间百分比（通过 Node.js 原生 `fs.statfsSync` 获取）。
-  - 当前系统运行进程总数量（严格仅统计总数，绝不返回进程名称或命令行参数）。
-  - 网络接口摘要（仅返回网卡名称、IP 地址、协议族与是否内网，不含 MAC 地址或敏感凭证）。
-  - Node.js 与 Git 运行时版本。
-- **行为与安全约束**：
-  - **实现边界**：仅使用 Node 原生 API 与严格非 shell 的只读调用（`shell: false`），杜绝 Shell 注入。
-  - **隐私防泄漏白名单**：**绝不返回**环境变量（`process.env`）、进程命令行参数、用户主目录内容或任何文件正文。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `list_directory`
-- **功能**：只读列出本地指定绝对路径目录下的文件与子目录列表及基础元数据。
-- **参数**：
-  - `path`（string，必填）：要列出的目录绝对路径。
-  - `show_hidden`（boolean，可选，默认 false）：是否包含隐藏文件（以 `.` 开头的文件/目录）。
-- **行为与安全约束**：
-  - 严格校验绝对路径与目录存在性；非绝对路径或非目录返回 `isError: true`。
-  - **敏感凭据路径拦截**：严格禁止访问 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.config/gcloud`、`~/.azure`、`/etc/shadow` 等系统凭据目录，遇敏感路径安全拒绝并返回 `isError: true`。
-  - 目录项按“子目录在前、随后按字母顺序”排序，返回字段包含 `name`、`type`（`file` | `directory` | `symlink` | `other`）、`sizeBytes` 与 `modifiedAt`。
-  - **数量限制**：单次最多返回 300 项，超出截断并置 `hasMore: true`，防止目录爆炸造成内存冲击。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `read_file`
-- **功能**：安全读取本地指定绝对路径文本文件的切片内容（支持偏移与长度分块，保护大文件与二进制文件）。
-- **参数**：
-  - `path`（string，必填）：文件的绝对路径。
-  - `offset`（number，可选，默认 0）：读取起始字节偏移。
-  - `length`（number，可选，默认 8000，上限 64000）：单次读取字节数。
-- **行为与安全约束**：
-  - 严格校验绝对路径与普通文件存在性；禁止读取目录、套接字等特殊文件。
-  - **敏感凭据文件拦截**：严格禁止读取 `~/.ssh/*`、`~/.aws/*`、`/etc/shadow`、`/etc/master.passwd`、`/etc/sudoers` 以及各类私钥/证书文件（如 `id_rsa`、`*.pem`、`*.key`、`*.p12`、`*.keystore`）。
-  - **底层流式分块读取**：使用文件描述符进行字节区间定位读取（`fs.readSync`），绝不将超大文件整文件加载进内存。
-  - **二进制防护**：自动扫描切片中的空字节（`\0`），若检测为二进制文件则抑制正文返回，返回 `isBinary: true` 与友好提示，杜绝二进制乱码与内存污染。
-  - 返回字段包含 `path`、`totalBytes`、`offset`、`bytesRead`、`eof` 以及文本 `content`。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-#### `get_file_info`
-- **功能**：只读获取本地指定路径的文件/目录详细元数据与权限信息（不读取文件正文）。
-- **参数**：
-  - `path`（string，必填）：文件或目录的绝对路径。
-- **行为与安全约束**：
-  - 严格校验绝对路径与存在性。
-  - **敏感凭据路径拦截**：同样受敏感凭据路径与私钥文件黑名单保护。
-  - 使用 `fs.lstatSync` 获取元数据，返回字段包含：`exists`、`isFile`、`isDirectory`、`isSymbolicLink`、`sizeBytes`、`modifiedAt`、`accessedAt`、`createdAt` 以及八进制权限字符串 `permissions`（如 `"644"`、`"755"`）。
-  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
-
-### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
-- **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
-- **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
-- **隐私与安全声明**：**审计日志严格不含 prompt 和结果正文**。每行均为紧凑的一行 JSON，仅包含受限字段：
-  - `tool`（调用的工具名称，如 `send_task`、`read_result`、`worker_exec` 等）
-  - `taskId`（任务 ID）
-  - `agent`（执行的 Agent 名称，可选）
-  - `state`（任务状态变化，可选）
-  - `exitCode`（进程退出码，可选）
-  - `ts`（ISO 8601 时间戳）
-
-### 3. 任务取消机制
-- **完全解耦设计**：MCP Server 与系统底层进程彻底隔离，MCP Server 不调用系统底层信号（如 `kill`），也不接触任何系统 PID。
-- **Worker 自主终止流程**：
-  1. MCP Client 调用 `cancel_task` 时，Server 仅安全写入标记文件 `$AGENT_BRIDGE_ROOT/control/<task_id>.cancel`。
-  2. Worker 在开始执行任务前会先检查该标记；若存在，则直接取消并标记为 `cancelled`，不启动子进程。
-  3. 若任务正在执行中，Worker 内部每秒轮询该标记文件；一旦检测到取消文件，Worker 自主清理标记并向自己启动的子进程发送 `SIGTERM` 信号。
-  4. 若子进程在 5 秒内仍未退出，Worker 发送 `SIGKILL` 强制终止。
-  5. 任务状态被原子写入 `$AGENT_BRIDGE_ROOT/status/<task_id>.json`，状态标注为 `cancelled`。
-
----
-
-## 完成通知与 wait_task
-
-### 1. `wait_task` 工具
-- **功能**：轮询等待指定任务完成并直接返回结果，超时则返回当前运行状态。
-- **参数**：
-  - `task_id`（string，必填）：任务 ID。
-  - `timeout_seconds`（number，可选，默认 20）：等待超时秒数。
-- **钳制规则**：取值范围限制在 1 到 25 秒之间（最小值 1，最大值 25）。若传入超出范围的值（如小于 1 或大于 25），系统自动钳制到合法边界并在返回中附加说明。
-- **行为**：
-  - 每 1 秒轮询检查 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 文件是否存在。
-  - 若在超时时间内结果文件已生成，立即返回完整结果文件内容。
-  - 若达到超时时间仍未完成，返回当前任务状态，并明确说明“仍在执行，可再次调用 wait_task”。
-  - 单次调用阻塞耗时严格限制在 `timeout_seconds + 1` 秒以内。
-  - 自动记录审计日志（仅记录 `tool`、`taskId`、`state`，不泄露结果或 prompt 内容）。
-
-### 2. macOS 桌面完成通知
-- **生效平台**：仅在 **macOS (`process.platform === "darwin"`)** 环境下生效。在 Windows 或 Linux 环境下 Worker 会自动跳过通知并记录日志。
-- **通知机制**：Worker 在任务进入完成（`completed`）、失败（`failed`）、取消（`cancelled`）或超时（`timeout`）等收尾阶段时，通过 `osascript` 唤起 macOS 系统原生桌面通知。
-- **通知禁用方式**：如需关闭桌面通知，只需设置环境变量：
-  ```bash
-  export AGENT_BRIDGE_NOTIFY=0
-  ```
-  设置后 Worker 将跳过通知并仅在 `worker.log` 中记录 `Notification disabled by AGENT_BRIDGE_NOTIFY=0`。
-- **隐私保护**：通知消息仅包含 `task_id`、执行状态与 `agent` 名称，**严禁且绝不包含** Prompt 指令或结果文本。
-
----
-
-## 安全约束
-
-1. **严格字符白名单**：`task_id` 只允许 `[a-zA-Z0-9_-]`，任何包含路径分隔符（如 `/`、`\`）、相对跳转（`..`）或其他非法字符的请求将被直接拒绝并报错返回。
-2. **根目录路径隔离**：所有文件的最终解析路径都经过二次校验，必须严格位于 `AGENT_BRIDGE_ROOT` 内的 `tasks/` 或 `results/` 子目录下。
-3. **只读写安全文本**：本服务仅执行标准文件写入与读取，杜绝一切 Shell 命令执行、文件删除、网络外连或代码自动合并操作。
-4. **标准 stdio 隔离**：日志严格输出至 `stderr` 与 `logs/server.log`，绝不污染 `stdout` 的 JSON-RPC 通信流。
-
----
-
-## 安装与构建
-
-### 1. 安装依赖
-```bash
-npm install
-```
-
-### 2. 编译 TypeScript
-```bash
-npm run build
-```
-编译产物将生成在 `dist/` 目录下，入口文件为 `dist/index.js`。
-
----
-
-## 环境变量配置
-
-- `AGENT_BRIDGE_ROOT`：指定数据根目录路径。
-  - 默认值：`~/agent-bridge`（自动展开为当前用户主目录）。
-  - 自定义示例：`export AGENT_BRIDGE_ROOT=/custom/path/agent-bridge`。
-- `AGENT_BRIDGE_REPO`：指定只读仓库状态工具 `repo_status` 所绑定的本地 Git 仓库绝对路径。
-  - 示例：`export AGENT_BRIDGE_REPO=/path/to/your/git/repo`。
-
----
-
-## 在 Claude Desktop 中配置
-
-在 Claude Desktop 的配置文件中添加本 MCP Server：
-
-### 配置文件位置
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-### 配置示例 JSON
-
-请把占位符替换为你本机的绝对路径，例如 `/Users/<用户名>/...`。
 
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
       "command": "node",
-      "args": [
-        "<你的绝对路径>/code/mcp/agent-bridge-mcp/dist/index.js"
-      ],
+      "args": ["/absolute/path/to/agent-bridge-mcp/dist/index.js"],
       "env": {
-        "AGENT_BRIDGE_ROOT": "<你的绝对路径>/agent-bridge"
+        "AGENT_BRIDGE_ROOT": "/Users/<your-username>/agent-bridge"
       }
     }
   }
 }
 ```
+Restart Claude Desktop to activate the tools.
 
-配置后重启 Claude Desktop，即可在对话界面中使用 `send_task`、`wait_task` 与 `read_result` 等工具。
+</details>
+
+<details>
+<summary><b>Option 4: Standalone Self-Hosted HTTP/SSE Server</b></summary>
+<br>
+
+To host an independent local HTTP endpoint on port 38080:
+
+```bash
+npm run serve:mcp
+```
+- Local MCP Streamable HTTP endpoint: `http://localhost:38080/mcp`
+- Health check & tool audit: `http://localhost:38080/health`
+
+</details>
 
 ---
 
-## 在 ChatGPT (macOS 桌面端 / Codex) 中配置
+## Available Tools Reference
 
-本 MCP Server 原生支持通过 Model Context Protocol (MCP) 接入 **ChatGPT macOS 官方桌面客户端**（集成了 OpenAI Codex 运行时）。
+The server exposes **15 dedicated tools** partitioned into functional categories:
 
-### 方式一：命令行一键添加（推荐）
-
-在终端中执行以下命令，即可直接将 `agent-bridge` 注册到 ChatGPT / Codex：
-
-```bash
-codex mcp add agent-bridge \
-  --env AGENT_BRIDGE_ROOT="$HOME/agent-bridge" \
-  -- node "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
-```
-
-检查注册状态：
-```bash
-codex mcp get agent-bridge
-```
-
-### 方式二：配置文件手动配置 (`~/.codex/config.toml`)
-
-ChatGPT macOS 桌面端使用 `~/.codex/config.toml` 作为其 MCP 配置文件。在文件中添加以下内容：
-
-```toml
-[mcp_servers.agent-bridge]
-command = "node"
-args = [
-  "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
-]
-
-[mcp_servers.agent-bridge.env]
-AGENT_BRIDGE_ROOT = "$HOME/agent-bridge"
-```
-
-### 方式三：ChatGPT 桌面端图形界面配置
-
-1. 打开 **ChatGPT** macOS 桌面客户端。
-2. 打开 **设置（Settings）**（快捷键 `Cmd + ,`）-> 侧边栏选择 **MCP Servers**（或 **Developer**）。
-3. 点击 **Add server**：
-   - **Name**: `agent-bridge`
-   - **Type**: `STDIO`
-   - **Command**: `node`
-   - **Arguments**: `$HOME/code/mcp/agent-bridge-mcp/dist/index.js`
-   - **Environment Variables**: `AGENT_BRIDGE_ROOT=$HOME/agent-bridge`
-4. 保存并重启客户端。
-
-### 使用与验证
-
-配置生效后，在 ChatGPT macOS 桌面端中新建对话即可自动发现 MCP 工具：
-- `send_task`：派发任务 Prompt 并指定 Agent（如 `codex`）。
-- `wait_task`：自动等待任务完成（超时 1-25 秒可调，任务完成时将同步触发 macOS 原生桌面通知）。
-- `read_result`：读取任务完整执行结果。
-- `get_task_status`：查看任务排队与执行状态。
-- `cancel_task`：安全取消正在执行的任务。
+| Tool Name | Scope | Purpose | Safety Guardrails |
+| :--- | :--- | :--- | :--- |
+| `device_info` | Telemetry | Live CPU, M-series Silicon, RAM, disk, processes, OS specs | Read-only; zero env-var / process parameter exposure |
+| `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no diffs |
+| `list_directory` | Filesystem | List files and folders with size and modified timestamp | Blocks credentials (`~/.ssh`, `~/.aws`); 300 items max |
+| `read_file` | Filesystem | Paginated text reading with byte offset and length limits | Blocks private keys; binary file null-byte suppression |
+| `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
+| `send_task` | Agent Dispatch | Write prompt and dispatch asynchronous task to local worker | Validates registry; sanitized `task_id` naming |
+| `read_result` | Agent Dispatch | Read Markdown result file for a completed task | Path traversal check; non-blocking pending status |
+| `read_result_page` | Agent Dispatch | Chunked paging reader for oversized result documents | Offset & length limits to prevent context overflow |
+| `get_task_status` | Lifecycle | Check task lifecycle state (`queued`, `running`, `completed`) | Metadata only; suppresses prompt/result content |
+| `read_task_output` | Lifecycle | Stream live execution stdout logs during agent execution | Byte offset chunking (1–16000 bytes) |
+| `cancel_task` | Lifecycle | Safely request cancellation of queued or executing tasks | Non-destructive control file signaling |
+| `wait_task` | Lifecycle | Block and wait for task completion with configurable timeout | Clamped between 1–25 seconds; desktop notification |
+| `worker_alive_summary`| Diagnostics | Probe if the local background worker process is running | Harmless POSIX signal 0 probe; no process termination |
+| `list_tasks_summary` | Diagnostics | Summary list of recent task executions and outcomes | Metadata whitelist; strictly bounds output count |
+| `agent_registry_summary`| Diagnostics | List available agents configured in `agents.json` | Whitelist only; suppresses command paths & args |
 
 ---
 
-## 本地 Worker 任务执行器
+## Safety & Sandbox Guardrails
 
-`agent-bridge-worker` 是一个独立的常驻轮询进程，负责从 `$AGENT_BRIDGE_ROOT/tasks` 目录中取出待执行任务，根据注册表启动对应 Agent 执行，并将结果原子写回 `$AGENT_BRIDGE_ROOT/results`。
+1. **Path Traversal Interception**:
+   Every file operation sanitizes paths using `path.resolve` and verifies they do not traverse beyond allowed directory roots. Identifiers (`task_id`) are strictly whitelisted to `^[a-zA-Z0-9_-]+$`.
+2. **Credential Blacklists**:
+   File inspection explicitly forbids querying sensitive locations:
+   - Directories: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `/etc/shadow`, `/etc/sudoers`.
+   - Files: `id_rsa`, `*.pem`, `*.key`, `*.p12`, `*.keystore`, `.env`.
+3. **No Shell Injections**:
+   External commands (such as Git status probes) are executed with `shell: false` and explicitly fixed argument arrays. No arbitrary user shell execution is permitted.
+4. **Binary File Protection**:
+   The `read_file` tool scans byte chunks for null bytes (`\0`). If binary content is detected, text output is suppressed to prevent buffer corruption and terminal garbage.
+5. **Audit Logging**:
+   All tool invocations are atomically recorded to `$AGENT_BRIDGE_ROOT/logs/audit.log` with tool names and ISO timestamps. Prompt and result bodies are never stored in audit logs to prevent secret leakage.
 
-### 1. Agent 注册表 (`$AGENT_BRIDGE_ROOT/agents.json`)
-必须在数据根目录下配置可用 Agent 注册表（agents.json），格式如下：
+---
+
+## Local Agent Worker & Lifecycle
+
+The repository includes a background worker (`agent-bridge-worker`) that watches for queued tasks in `$AGENT_BRIDGE_ROOT/tasks`, executes them through configured agents, and writes outputs to `$AGENT_BRIDGE_ROOT/results`.
+
+### Agent Registry Configuration (`$AGENT_BRIDGE_ROOT/agents.json`)
+
+Configure available execution agents in `agents.json`:
+
 ```json
 {
   "codex": {
@@ -451,80 +196,54 @@ AGENT_BRIDGE_ROOT = "$HOME/agent-bridge"
   }
 }
 ```
-- `command`（string，必填）：可执行命令名称或系统 PATH / 绝对路径。
-- `args`（string[]，必填）：命令行参数数组（如非交互执行参数、沙箱参数等）。
-- `input`（`"stdin"` | `"arg"`，必填）：Prompt 传递方式：
-  - `"stdin"`：提示词通过子进程标准输入传入。
-  - `"arg"`：提示词作为最后一个命令行参数追加。
 
-### Agent 启停页面
+- `command`: Executable command name or absolute path.
+- `args`: Command-line arguments for non-interactive execution.
+- `input`: `"stdin"` (pipe prompt to child stdin) or `"arg"` (append prompt as CLI argument).
+
+### Running the Worker
 
 ```bash
-npm run agents:ui
-```
-
-页面只监听本机 `127.0.0.1`，默认使用随机端口；启动后终端会打印带随机 token 的访问 URL。打开页面和提交修改都必须通过 token 校验。页面只提供脚本内置的预设 Agent，不接受客户端传入命令或参数。
-
-URL 中的 token 是本地页面的临时访问密码。不要把该 URL 分享给他人，也不要粘贴到聊天、截图或公开日志中。关闭服务后 token 即失效，每次启动都会生成新 token。浏览器历史可能保存该 URL，使用后可清理浏览记录。
-
-Agent 在 `$AGENT_BRIDGE_ROOT/agents.json` 中存在对应条目即为启用；停用会移除该条目。每次修改前，如果文件已存在，会在同目录生成 `agents.json.bak-<时间戳>` 备份，并以临时文件加重命名的方式更新。默认“自检”只检查预设命令是否在 PATH 中，不会启动 Agent；如需真实 Codex 自检，可用 `node scripts/agent-admin.mjs --probe` 显式启用，该操作会运行 Codex 并可能消耗额度。
-
-当前预设清单仅包含 `codex`。`agy` 尚未加入清单，待验证后添加。
-
-### 2. 防重复执行机制 (`logs/processed.json`)
-Worker 采用 **processed.json 记录与结果文件存在性的双重检查** 防重复机制，确保任务执行的幂等性：
-1. **记录已处理任务**：Worker 在处理完任务后，会将 `task_id` 与其完成时间（ISO 字符串）写入 `$AGENT_BRIDGE_ROOT/logs/processed.json`。
-2. **双重防重复检查**：
-   - **第一重（内存与 processed.json）**：轮询任务前检查 `task_id` 是否已存在于 `processed.json` 中，若已记录则直接跳过。
-   - **第二重（结果文件存在性）**：检查 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 是否已存在，若存在同样判定为已完成并跳过，避免重复执行。
-
-### 3. 启动 Worker
-```bash
-# 使用默认根目录 ~/agent-bridge
+# Run worker with default directory ~/agent-bridge
 npm run worker
 
-# 或指定环境变量
-AGENT_BRIDGE_ROOT=/custom/path AGENT_BRIDGE_POLL_MS=3000 npm run worker
+# Run with custom polling interval (default 1000ms)
+AGENT_BRIDGE_POLL_MS=3000 npm run worker
 ```
 
 ---
 
-## 本地测试说明
+## Testing & Verification
 
-### 1. 自动化集成测试
-项目内置了完整的端到端自动化测试脚本，模拟 MCP Client 通过 stdio 传输与 Server 交互：
+The project includes automated integration suites:
 
 ```bash
+# Run stdio comprehensive test runner
 npm test
+
+# Run HTTP / Streamable transport test suite
+npm run test:http
+
+# Run operations & filesystem safety tests
+npm run test:ops
+npm run test:local-fs
 ```
 
-该测试覆盖：
-- 工具列表发现 (`tools/list`)
-- 任务派发 (`send_task`) 及 `tasks/<task_id>.md` 文件生成验证
-- 未生成结果时的状态读取 (`read_result` pending 状态验证)
-- 手动写入模拟结果后的结果读取 (`read_result` 内容匹配验证)
-- 不存在的 `task_id` 查询容错验证
-- 针对 `../etc/passwd` 等路径穿越攻击的拒绝拦截验证
+---
 
-### 2. 手动测试流程验证 `read_result`
+## Configuration Reference
 
-1. **派发任务**：在客户端（或测试脚本）调用 `send_task`，获取返回的 `task_id`（例如 `task_1793154494790_ua2g0w`）。
-2. **验证任务文件**：
-   ```bash
-   cat ~/agent-bridge/tasks/task_1793154494790_ua2g0w.md
-   ```
-3. **测试未完成状态**：直接调用 `read_result` 传入该 `task_id`，将返回：
-   ```text
-   Status: Pending. Result not ready yet for task "task_1793154494790_ua2g0w". (Result file "..." does not exist)
-   ```
-4. **手动创建结果文件模拟本地 Agent 完成任务**：
-   ```bash
-   mkdir -p ~/agent-bridge/results
-   cat << 'EOF' > ~/agent-bridge/results/task_1793154494790_ua2g0w.md
-   # Execution Result
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `AGENT_BRIDGE_ROOT` | `~/agent-bridge` | Base directory for tasks, results, status, and logs |
+| `AGENT_BRIDGE_REPO` | `.` | Git repository root inspected by `repo_status` |
+| `AGENT_BRIDGE_NOTIFY`| `1` | Set to `0` to disable macOS native completion notifications |
+| `RELAY_SERVER` | `wss://bridge.krow.top/ws` | Cloud Relay Hub WebSocket endpoint |
+| `RELAY_HTTP` | `https://bridge.krow.top/mcp` | Cloud Relay Hub HTTP gateway endpoint |
+| `DEVICE_TOKEN` | Generated | Unique device token for multi-tenant routing |
 
-   Task completed successfully by local agent.
-   - Output: All tests passed.
-   EOF
-   ```
-5. **再次调用 `read_result`**：传入该 `task_id`，即可读取到上述 Markdown 结果内容。
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
