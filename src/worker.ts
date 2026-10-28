@@ -34,6 +34,22 @@ export function logWorker(level: "INFO" | "WARN" | "ERROR", message: string): vo
 }
 
 /**
+ * Constructs the argument array for osascript notification.
+ */
+export function buildNotifyArgs(title: string, message: string): string[] {
+  return [
+    "-e",
+    "on run argv",
+    "-e",
+    "display notification (item 1 of argv) with title (item 2 of argv)",
+    "-e",
+    "end run",
+    message,
+    title,
+  ];
+}
+
+/**
  * Sends a native macOS desktop notification using osascript.
  * Skipped on win32/linux or if AGENT_BRIDGE_NOTIFY === "0".
  */
@@ -49,20 +65,8 @@ export function notify(title: string, message: string): void {
   }
 
   try {
-    const child = spawn(
-      "osascript",
-      [
-        "-e",
-        "on run argv",
-        "-e",
-        "display notification (item 1 of argv) with title (item 2 of argv)",
-        "-e",
-        "end run",
-        message,
-        title,
-      ],
-      { shell: false }
-    );
+    const args = buildNotifyArgs(title, message);
+    const child = spawn("osascript", args, { shell: false });
 
     child.on("error", (err) => {
       logWorker("WARN", `Notification failed to spawn osascript: ${err.message}`);
