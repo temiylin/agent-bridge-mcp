@@ -9,6 +9,7 @@ import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
 import { audit } from "./audit.js";
 import { registerOpsTools } from "./ops-tools.js";
+import { registerRepoStatusTool } from "./repo-status.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -221,6 +222,7 @@ server.tool(
 
 // Register Ops Tools: get_task_status, cancel_task, read_task_output, read_result_page
 registerOpsTools(server, rootDir, tasksDir, resultsDir, logsDir, logger);
+registerRepoStatusTool(server, rootDir, logger);
 
 // Connect over stdio transport
 async function main() {
