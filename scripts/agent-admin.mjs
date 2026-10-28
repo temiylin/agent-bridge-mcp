@@ -205,9 +205,21 @@ function writeRegistry(rootDir, registry, fileSystem) {
     assertRegistry(JSON.parse(fileSystem.readFileSync(filePath, "utf8")));
   } catch (error) {
     try {
-      if (targetReplaced && backupPath && fileSystem.existsSync(backupPath)) fileSystem.copyFileSync(backupPath, filePath);
-      else if (!existed && fileSystem.existsSync(filePath)) fileSystem.unlinkSync(filePath);
-    } catch {}
+      if (targetReplaced && backupPath) {
+        if (!fileSystem.existsSync(backupPath)) throw new Error("Backup file is missing.");
+        fileSystem.copyFileSync(backupPath, filePath);
+        assertRegistry(JSON.parse(fileSystem.readFileSync(filePath, "utf8")));
+      } else if (!existed && fileSystem.existsSync(filePath)) {
+        fileSystem.unlinkSync(filePath);
+      }
+    } catch (recoveryError) {
+      try {
+        if (fileSystem.existsSync(tempPath)) fileSystem.unlinkSync(tempPath);
+      } catch {}
+      const originalError = error instanceof Error ? error.message : String(error);
+      const restoreError = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      throw new Error(`agents.json write failed: ${originalError}; recovery failed using backup "${backupPath || "(no backup available)"}": ${restoreError}`, { cause: recoveryError });
+    }
     try {
       if (fileSystem.existsSync(tempPath)) fileSystem.unlinkSync(tempPath);
     } catch {}

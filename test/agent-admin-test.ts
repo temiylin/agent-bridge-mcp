@@ -42,12 +42,30 @@ async function main() {
   fs.writeFileSync(agentsPath, JSON.stringify(originalRegistry, null, 2), "utf8");
 
   let failRename = false;
+  let failRestoreCopy = false;
+  let failPostWriteValidation = false;
+  let agentsJsonReadCount = 0;
   const fileSystem = {
     mkdirSync: fs.mkdirSync.bind(fs),
     existsSync: fs.existsSync.bind(fs),
     lstatSync: fs.lstatSync.bind(fs),
-    readFileSync: fs.readFileSync.bind(fs),
-    copyFileSync: fs.copyFileSync.bind(fs),
+    readFileSync: (filePath: Parameters<typeof fs.readFileSync>[0], options?: any) => {
+      if (failPostWriteValidation && filePath === agentsPath) {
+        agentsJsonReadCount += 1;
+        if (agentsJsonReadCount === 2) {
+          failPostWriteValidation = false;
+          throw new Error("simulated post-write validation failure");
+        }
+      }
+      return fs.readFileSync(filePath as any, options);
+    },
+    copyFileSync: (...args: Parameters<typeof fs.copyFileSync>) => {
+      const source = args[0];
+      if (failRestoreCopy && typeof source === "string" && path.basename(source).startsWith("agents.json.bak-")) {
+        throw new Error("simulated recovery copy failure");
+      }
+      return fs.copyFileSync(...args);
+    },
     writeFileSync: fs.writeFileSync.bind(fs),
     renameSync: (...args: Parameters<typeof fs.renameSync>) => {
       if (failRename) throw new Error("simulated atomic rename failure");
@@ -148,6 +166,30 @@ async function main() {
     failRename = false;
     assert.equal(failedWrite.status, 500, "Simulated write failure must return an error.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Failed write must preserve the original registry content.");
+
+    const recoveryOriginalText = fs.readFileSync(agentsPath, "utf8");
+    const backupNamesBeforeRecoveryFailure = new Set(fs.readdirSync(TEST_ROOT).filter((name) => name.startsWith("agents.json.bak-")));
+    failRestoreCopy = true;
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 0;
+    const recoveryFailure = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failRestoreCopy = false;
+    failPostWriteValidation = false;
+    assert.equal(recoveryFailure.status, 500, "Recovery failure must return HTTP 500.");
+    assert.notEqual(recoveryFailure.status, 200, "Recovery failure must not look successful.");
+    const recoveryFailureBody = await recoveryFailure.json();
+    assert.match(recoveryFailureBody.error, /agents\.json\.bak-/u, "Error must include the backup path.");
+    assert.match(recoveryFailureBody.error, /simulated post-write validation failure/u, "Error must include the original write failure.");
+    assert.match(recoveryFailureBody.error, /simulated recovery copy failure/u, "Error must include the recovery failure.");
+    const backupPathMatch = recoveryFailureBody.error.match(/backup "([^"]+)"/u);
+    assert.ok(backupPathMatch, "Error must identify the backup path explicitly.");
+    assert.ok(fs.existsSync(backupPathMatch[1]), "Backup must remain available after recovery fails.");
+    assert.equal(fs.readFileSync(backupPathMatch[1], "utf8"), recoveryOriginalText, "Backup must retain the original agents.json content.");
+    assert.ok(!backupNamesBeforeRecoveryFailure.has(path.basename(backupPathMatch[1])), "Recovery failure test must create a new backup.");
 
     console.log("agent-admin tests passed");
   } finally {
