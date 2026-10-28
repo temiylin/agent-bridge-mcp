@@ -118,23 +118,28 @@ npm run build
 `agent-bridge-worker` 是一个独立的常驻轮询进程，负责从 `$AGENT_BRIDGE_ROOT/tasks` 目录中取出待执行任务，根据注册表启动对应 Agent 执行，并将结果原子写回 `$AGENT_BRIDGE_ROOT/results`。
 
 ### 1. Agent 注册表 (`$AGENT_BRIDGE_ROOT/agents.json`)
-必须在数据根目录下配置可用 Agent，例如：
+必须在数据根目录下配置可用 Agent 注册表（agents.json），格式如下：
 ```json
 {
   "codex": {
     "command": "codex",
     "args": ["exec"],
-    "input": "arg"
+    "input": "stdin"
   }
 }
 ```
-- `command`：可执行命令名称或绝对路径。
-- `args`：固定传参列表（如非交互参数）。
-- `input`：`"arg"`（作为末尾命令行参数追加）或 `"stdin"`（通过子进程标准输入写入）。
+- `command`（string，必填）：可执行命令名称或系统 PATH / 绝对路径。
+- `args`（string[]，必填）：命令行参数数组（如非交互执行参数、沙箱参数等）。
+- `input`（`"stdin"` | `"arg"`，必填）：Prompt 传递方式：
+  - `"stdin"`：提示词通过子进程标准输入传入。
+  - `"arg"`：提示词作为最后一个命令行参数追加。
 
-### 2. 避免重复执行机制 (`logs/processed.json`)
-- Worker 在完成任务后，会将 `task_id` 以及完成时间写入 `$AGENT_BRIDGE_ROOT/logs/processed.json`。
-- Worker 启动时自动加载该记录文件，轮询时已处理的任务会被立即跳过，避免重复执行。
+### 2. 防重复执行机制 (`logs/processed.json`)
+Worker 采用 **processed.json 记录与结果文件存在性的双重检查** 防重复机制，确保任务执行的幂等性：
+1. **记录已处理任务**：Worker 在处理完任务后，会将 `task_id` 与其完成时间（ISO 字符串）写入 `$AGENT_BRIDGE_ROOT/logs/processed.json`。
+2. **双重防重复检查**：
+   - **第一重（内存与 processed.json）**：轮询任务前检查 `task_id` 是否已存在于 `processed.json` 中，若已记录则直接跳过。
+   - **第二重（结果文件存在性）**：检查 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 是否已存在，若存在同样判定为已完成并跳过，避免重复执行。
 
 ### 3. 启动 Worker
 ```bash
