@@ -69,6 +69,7 @@ async function runTests() {
     "cancel_task",
     "read_task_output",
     "read_result_page",
+    "wait_task",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
