@@ -288,6 +288,18 @@ AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
   - `"stdin"`：提示词通过子进程标准输入传入。
   - `"arg"`：提示词作为最后一个命令行参数追加。
 
+### Agent 启停页面
+
+```bash
+npm run agents:ui
+```
+
+页面只监听本机 `127.0.0.1`，默认使用随机端口；启动后终端会打印带随机 token 的访问 URL。打开页面和提交修改都必须通过 token 校验。页面只提供脚本内置的预设 Agent，不接受客户端传入命令或参数。
+
+Agent 在 `$AGENT_BRIDGE_ROOT/agents.json` 中存在对应条目即为启用；停用会移除该条目。每次修改前，如果文件已存在，会在同目录生成 `agents.json.bak-<时间戳>` 备份，并以临时文件加重命名的方式更新。默认“自检”只检查预设命令是否在 PATH 中，不会启动 Agent；如需真实 Codex 自检，可用 `node scripts/agent-admin.mjs --probe` 显式启用，该操作会运行 Codex 并可能消耗额度。
+
+当前预设清单仅包含 `codex`。`agy` 尚未加入清单，待验证后添加。
+
 ### 2. 防重复执行机制 (`logs/processed.json`)
 Worker 采用 **processed.json 记录与结果文件存在性的双重检查** 防重复机制，确保任务执行的幂等性：
 1. **记录已处理任务**：Worker 在处理完任务后，会将 `task_id` 与其完成时间（ISO 字符串）写入 `$AGENT_BRIDGE_ROOT/logs/processed.json`。
