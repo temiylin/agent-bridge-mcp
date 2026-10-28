@@ -398,4 +398,119 @@ export function registerOpsTools(
       };
     }
   );
+
+  // Tool 5: wait_task
+  server.tool(
+    "wait_task",
+    "Wait for a task to finish with optional timeout, returning execution results or current status.",
+    {
+      task_id: z.string().describe("Task ID to wait for"),
+      timeout_seconds: z
+        .number()
+        .optional()
+        .describe("Timeout in seconds (1-25, default 20). Out of range values will be clamped."),
+    },
+    async ({ task_id, timeout_seconds }) => {
+      if (!isValidTaskId(task_id)) {
+        logger.warn(`wait_task rejected invalid task_id: "${task_id}"`);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Invalid task_id: "${task_id}". Only letters, numbers, hyphens (-), and underscores (_) are allowed to prevent path traversal.`,
+            },
+          ],
+        };
+      }
+
+      let resultFilePath: string;
+      try {
+        resultFilePath = resolveSafePath(resultsDir, rootDir, `${task_id}.md`);
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Access denied. Path traversal detected: ${err?.message || String(err)}`,
+            },
+          ],
+        };
+      }
+
+      // Clamp timeout_seconds between 1 and 25 (default 20)
+      const rawTimeout = timeout_seconds !== undefined ? timeout_seconds : 20;
+      let clampedTimeout = rawTimeout;
+      let clampNote = "";
+      if (rawTimeout < 1) {
+        clampedTimeout = 1;
+        clampNote = ` (Note: requested timeout ${rawTimeout}s was clamped to minimum 1s)`;
+      } else if (rawTimeout > 25) {
+        clampedTimeout = 25;
+        clampNote = ` (Note: requested timeout ${rawTimeout}s was clamped to maximum 25s)`;
+      }
+
+      // Check immediately if result file exists
+      if (fs.existsSync(resultFilePath)) {
+        const fileContent = fs.readFileSync(resultFilePath, "utf8");
+        logger.info(`wait_task: result immediately available for taskId=${task_id}`);
+        audit(rootDir, { tool: "wait_task", taskId: task_id, state: "completed" });
+        return {
+          content: [
+            {
+              type: "text",
+              text: clampNote ? `${fileContent}\n\n${clampNote.trim()}` : fileContent,
+            },
+          ],
+        };
+      }
+
+      // Wait loop: poll every 1s until clampedTimeout
+      const startMs = Date.now();
+      const maxWaitMs = clampedTimeout * 1000;
+
+      while (Date.now() - startMs < maxWaitMs) {
+        const elapsed = Date.now() - startMs;
+        const remainingMs = maxWaitMs - elapsed;
+        if (remainingMs <= 0) break;
+        const sleepMs = Math.min(1000, remainingMs);
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+
+        if (fs.existsSync(resultFilePath)) {
+          const fileContent = fs.readFileSync(resultFilePath, "utf8");
+          logger.info(`wait_task: result ready for taskId=${task_id} after ${Date.now() - startMs}ms`);
+          audit(rootDir, { tool: "wait_task", taskId: task_id, state: "completed" });
+          return {
+            content: [
+              {
+                type: "text",
+                text: clampNote ? `${fileContent}\n\n${clampNote.trim()}` : fileContent,
+              },
+            ],
+          };
+        }
+      }
+
+      // Timeout reached, return current status
+      const currentStatus = readStatus(rootDir, task_id) || {
+        taskId: task_id,
+        state: "running",
+      };
+      logger.info(`wait_task: timed out waiting for taskId=${task_id} after ${clampedTimeout}s`);
+      audit(rootDir, { tool: "wait_task", taskId: task_id, state: currentStatus.state });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Status: Pending. Task "${task_id}" 仍在执行，可再次调用 wait_task。${clampNote}
+
+Current Task Status:
+${JSON.stringify(currentStatus, null, 2)}`,
+          },
+        ],
+      };
+    }
+  );
 }

@@ -121,6 +121,33 @@ $AGENT_BRIDGE_ROOT/
 
 ---
 
+## 完成通知与 wait_task
+
+### 1. `wait_task` 工具
+- **功能**：轮询等待指定任务完成并直接返回结果，超时则返回当前运行状态。
+- **参数**：
+  - `task_id`（string，必填）：任务 ID。
+  - `timeout_seconds`（number，可选，默认 20）：等待超时秒数。
+- **钳制规则**：取值范围限制在 1 到 25 秒之间（最小值 1，最大值 25）。若传入超出范围的值（如小于 1 或大于 25），系统自动钳制到合法边界并在返回中附加说明。
+- **行为**：
+  - 每 1 秒轮询检查 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 文件是否存在。
+  - 若在超时时间内结果文件已生成，立即返回完整结果文件内容。
+  - 若达到超时时间仍未完成，返回当前任务状态，并明确说明“仍在执行，可再次调用 wait_task”。
+  - 单次调用阻塞耗时严格限制在 `timeout_seconds + 1` 秒以内。
+  - 自动记录审计日志（仅记录 `tool`、`taskId`、`state`，不泄露结果或 prompt 内容）。
+
+### 2. macOS 桌面完成通知
+- **生效平台**：仅在 **macOS (`process.platform === "darwin"`)** 环境下生效。在 Windows 或 Linux 环境下 Worker 会自动跳过通知并记录日志。
+- **通知机制**：Worker 在任务进入完成（`completed`）、失败（`failed`）、取消（`cancelled`）或超时（`timeout`）等收尾阶段时，通过 `osascript` 唤起 macOS 系统原生桌面通知。
+- **通知禁用方式**：如需关闭桌面通知，只需设置环境变量：
+  ```bash
+  export AGENT_BRIDGE_NOTIFY=0
+  ```
+  设置后 Worker 将跳过通知并仅在 `worker.log` 中记录 `Notification disabled by AGENT_BRIDGE_NOTIFY=0`。
+- **隐私保护**：通知消息仅包含 `task_id`、执行状态与 `agent` 名称，**严禁且绝不包含** Prompt 指令或结果文本。
+
+---
+
 ## 安全约束
 
 1. **严格字符白名单**：`task_id` 只允许 `[a-zA-Z0-9_-]`，任何包含路径分隔符（如 `/`、`\`）、相对跳转（`..`）或其他非法字符的请求将被直接拒绝并报错返回。

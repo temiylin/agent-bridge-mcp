@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { readStatus } from "../src/status.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-ops-test";
 
@@ -54,6 +55,11 @@ async function runOpsTests() {
       args: ["-e", "process.stdout.write('X'.repeat(5000));"],
       input: "stdin",
     },
+    "sleep-long": {
+      command: "node",
+      args: ["-e", "setTimeout(()=>{}, 4000);"],
+      input: "stdin",
+    },
   };
   fs.writeFileSync(agentsJsonPath, JSON.stringify(registryConfig, null, 2), "utf8");
 
@@ -65,6 +71,7 @@ async function runOpsTests() {
       AGENT_BRIDGE_ROOT: TEST_ROOT,
       AGENT_BRIDGE_POLL_MS: "100",
       AGENT_BRIDGE_TIMEOUT_MS: "30000",
+      AGENT_BRIDGE_NOTIFY: "0",
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -377,6 +384,122 @@ async function runOpsTests() {
     assert.equal(statusTmpFiles.length, 0, "status directory must contain 0 .tmp files");
     assert.equal(controlTmpFiles.length, 0, "control directory must contain 0 .tmp files");
     console.log("✓ Test H passed: 0 .tmp residual files detected.\n");
+
+    // -------------------------------------------------
+    // [Test I] wait_task timeout_seconds=1 while task running (1s <= duration <= 3s)
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test I] wait_task timeout=1 while task running");
+    console.log("-------------------------------------------------");
+
+    const tWaitId = "task_ops_wait_running_006";
+    const waitTaskContent = `# Long Running Task
+
+- **Task ID**: ${tWaitId}
+- **Agent**: sleep-long
+- **Created At**: ${new Date().toISOString()}
+
+---
+
+## Prompt
+
+Run long task to test wait_task
+`;
+    fs.writeFileSync(path.join(tasksDir, `${tWaitId}.md`), waitTaskContent, "utf8");
+
+    // Wait until worker picks it up and marks running
+    let runningObserved = false;
+    for (let i = 0; i < 30; i++) {
+      const s = readStatus(TEST_ROOT, tWaitId);
+      if (s && s.state === "running") {
+        runningObserved = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(runningObserved, "Task must reach running state before wait_task test");
+
+    const tWaitStart = Date.now();
+    const waitRes = await client.callTool({
+      name: "wait_task",
+      arguments: { task_id: tWaitId, timeout_seconds: 1 },
+    });
+    const waitDuration = Date.now() - tWaitStart;
+    console.log(`wait_task elapsed time: ${waitDuration}ms`);
+    console.log("wait_task response:\n", (waitRes.content as any)[0].text);
+
+    assert.ok(
+      waitDuration >= 1000 && waitDuration <= 3000,
+      `Duration ${waitDuration}ms must be between 1000ms and 3000ms`
+    );
+    assert.ok(
+      (waitRes.content as any)[0].text.includes("仍在执行，可再次调用 wait_task"),
+      "Response text must indicate task is still running and can be called again"
+    );
+    console.log("✓ Test I passed: wait_task returned running status within 1-3s.\n");
+
+    // -------------------------------------------------
+    // [Test J] wait_task on already completed task returns immediately
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test J] wait_task immediate return for completed task");
+    console.log("-------------------------------------------------");
+
+    const completedTaskId = "task_ops_queued_001"; // Finished in Test A
+    const tCompletedStart = Date.now();
+    const completedWaitRes = await client.callTool({
+      name: "wait_task",
+      arguments: { task_id: completedTaskId, timeout_seconds: 5 },
+    });
+    const completedWaitDuration = Date.now() - tCompletedStart;
+    const expectedResultContent = fs.readFileSync(path.join(resultsDir, `${completedTaskId}.md`), "utf8");
+
+    assert.equal(
+      (completedWaitRes.content as any)[0].text,
+      expectedResultContent,
+      "wait_task must return exact results file content for completed task"
+    );
+    assert.ok(
+      completedWaitDuration < 500,
+      `Immediate return duration should be < 500ms (was ${completedWaitDuration}ms)`
+    );
+    console.log("✓ Test J passed: wait_task immediately returned completed task result.\n");
+
+    // -------------------------------------------------
+    // [Test K] wait_task timeout_seconds=99 is clamped to 25 with note
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test K] wait_task timeout_seconds=99 clamped to 25");
+    console.log("-------------------------------------------------");
+
+    const clampTestRes = await client.callTool({
+      name: "wait_task",
+      arguments: { task_id: completedTaskId, timeout_seconds: 99 },
+    });
+    const clampText = (clampTestRes.content as any)[0].text;
+    assert.ok(
+      clampText.includes("clamped to maximum 25s"),
+      "Response must indicate timeout was clamped to maximum 25s"
+    );
+    console.log("✓ Test K passed: wait_task clamped timeout_seconds=99 to 25.\n");
+
+    // -------------------------------------------------
+    // [Test L] Notification disabled with AGENT_BRIDGE_NOTIFY=0 & no prompt secret leak
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test L] Verify notifications disabled by AGENT_BRIDGE_NOTIFY=0");
+    console.log("-------------------------------------------------");
+
+    const notifyWorkerLog = fs.readFileSync(path.join(logsDir, "worker.log"), "utf8");
+    assert.ok(
+      notifyWorkerLog.includes("Notification disabled by AGENT_BRIDGE_NOTIFY=0"),
+      "worker.log must record 'Notification disabled by AGENT_BRIDGE_NOTIFY=0'"
+    );
+    assert.ok(
+      !notifyWorkerLog.includes(UNIQUE_PROMPT_SECRET),
+      "worker.log must NOT contain UNIQUE_PROMPT_SECRET"
+    );
+    console.log("✓ Test L passed: notifications disabled properly and no prompt secret leaked.\n");
 
     console.log("=================================================");
     console.log("  All ops test assertions passed successfully!   ");
