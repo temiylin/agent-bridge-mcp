@@ -42,15 +42,26 @@ async function main() {
   fs.writeFileSync(agentsPath, JSON.stringify(originalRegistry, null, 2), "utf8");
 
   let failRename = false;
+  let failBackupCreation = false;
+  let failTempWrite = false;
+  let failTempValidation = false;
   let failRestoreCopy = false;
+  let failRestoreValidation = false;
   let failPostWriteValidation = false;
   let failTargetUnlink = false;
+  let failTempCleanup = false;
+  let restoredBackup = false;
   let agentsJsonReadCount = 0;
   const fileSystem = {
     mkdirSync: fs.mkdirSync.bind(fs),
     existsSync: fs.existsSync.bind(fs),
     lstatSync: fs.lstatSync.bind(fs),
     readFileSync: (filePath: Parameters<typeof fs.readFileSync>[0], options?: any) => {
+      const fileName = String(filePath);
+      if (failTempValidation && path.basename(fileName).startsWith(".agents.json.") && fileName.endsWith(".tmp")) {
+        failTempValidation = false;
+        throw new Error("simulated temporary-file validation failure");
+      }
       if (failPostWriteValidation && filePath === agentsPath) {
         agentsJsonReadCount += 1;
         if (agentsJsonReadCount === 2) {
@@ -58,16 +69,34 @@ async function main() {
           throw new Error("simulated post-write validation failure");
         }
       }
+      if (failRestoreValidation && restoredBackup && filePath === agentsPath) {
+        failRestoreValidation = false;
+        restoredBackup = false;
+        throw new Error("simulated restored registry validation failure");
+      }
       return fs.readFileSync(filePath as any, options);
     },
     copyFileSync: (...args: Parameters<typeof fs.copyFileSync>) => {
       const source = args[0];
+      const destination = args[1];
+      if (failBackupCreation && source === agentsPath && typeof destination === "string" && path.basename(destination).startsWith("agents.json.bak-")) {
+        throw new Error("simulated backup creation failure");
+      }
       if (failRestoreCopy && typeof source === "string" && path.basename(source).startsWith("agents.json.bak-")) {
         throw new Error("simulated recovery copy failure");
       }
-      return fs.copyFileSync(...args);
+      const result = fs.copyFileSync(...args);
+      if (typeof source === "string" && path.basename(source).startsWith("agents.json.bak-") && destination === agentsPath) {
+        restoredBackup = true;
+      }
+      return result;
     },
-    writeFileSync: fs.writeFileSync.bind(fs),
+    writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+      if (failTempWrite && typeof args[0] === "string" && path.basename(args[0]).startsWith(".agents.json.")) {
+        throw new Error("simulated temporary-file write failure");
+      }
+      return fs.writeFileSync(...args);
+    },
     renameSync: (...args: Parameters<typeof fs.renameSync>) => {
       if (failRename) throw new Error("simulated atomic rename failure");
       return fs.renameSync(...args);
@@ -75,6 +104,9 @@ async function main() {
     unlinkSync: (...args: Parameters<typeof fs.unlinkSync>) => {
       if (failTargetUnlink && args[0] === agentsPath) {
         throw new Error("simulated recovery unlink failure");
+      }
+      if (failTempCleanup && typeof args[0] === "string" && path.basename(args[0]).startsWith(".agents.json.") && args[0].endsWith(".tmp")) {
+        throw new Error("simulated temporary-file cleanup failure");
       }
       return fs.unlinkSync(...args);
     },
@@ -163,6 +195,39 @@ async function main() {
     assert.equal(unknownAgent.status, 400, "Unlisted agent names must be rejected.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText);
 
+    failBackupCreation = true;
+    const failedBackup = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failBackupCreation = false;
+    assert.equal(failedBackup.status, 500, "Backup creation failure must return HTTP 500.");
+    assert.match((await failedBackup.json()).error, /simulated backup creation failure/u);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Backup creation failure must preserve the registry.");
+
+    failTempWrite = true;
+    const failedTempWrite = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failTempWrite = false;
+    assert.equal(failedTempWrite.status, 500, "Temporary-file write failure must return HTTP 500.");
+    assert.match((await failedTempWrite.json()).error, /simulated temporary-file write failure/u);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Temporary-file write failure must preserve the registry.");
+
+    failTempValidation = true;
+    const failedTempValidation = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    assert.equal(failedTempValidation.status, 500, "Temporary-file validation failure must return HTTP 500.");
+    assert.match((await failedTempValidation.json()).error, /simulated temporary-file validation failure/u);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Temporary-file validation failure must preserve the registry.");
+    assert.equal(fs.readdirSync(TEST_ROOT).some((name) => name.startsWith(".agents.json.") && name.endsWith(".tmp")), false, "Temporary-file validation failure must clean up its temp file.");
+
     failRename = true;
     const failedWrite = await fetch(`${baseUrl}/api/agents`, {
       method: "POST",
@@ -172,6 +237,26 @@ async function main() {
     failRename = false;
     assert.equal(failedWrite.status, 500, "Simulated write failure must return an error.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Failed write must preserve the original registry content.");
+    assert.equal(fs.readdirSync(TEST_ROOT).some((name) => name.startsWith(".agents.json.") && name.endsWith(".tmp")), false, "Rename failure must clean up its temp file.");
+
+    failRename = true;
+    failTempCleanup = true;
+    const failedTempCleanup = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failRename = false;
+    failTempCleanup = false;
+    assert.equal(failedTempCleanup.status, 500, "Temporary-file cleanup failure must return HTTP 500.");
+    const failedTempCleanupBody = await failedTempCleanup.json();
+    assert.match(failedTempCleanupBody.error, /simulated atomic rename failure/u, "Cleanup error must preserve the original write failure.");
+    assert.match(failedTempCleanupBody.error, /temporary file cleanup failed/u, "Cleanup failure must be reported.");
+    assert.match(failedTempCleanupBody.error, /simulated temporary-file cleanup failure/u);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Cleanup failure must leave the original registry intact.");
+    for (const name of fs.readdirSync(TEST_ROOT).filter((entry) => entry.startsWith(".agents.json.") && entry.endsWith(".tmp"))) {
+      fs.unlinkSync(path.join(TEST_ROOT, name));
+    }
 
     const rollbackOriginalText = fs.readFileSync(agentsPath, "utf8");
     failPostWriteValidation = true;
@@ -184,6 +269,23 @@ async function main() {
     failPostWriteValidation = false;
     assert.equal(successfulRecovery.status, 500, "Post-write validation failure must return an error even when recovery succeeds.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), rollbackOriginalText, "Successful recovery must restore the original registry content.");
+
+    failRestoreValidation = true;
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 0;
+    restoredBackup = false;
+    const failedRestoredValidation = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failPostWriteValidation = false;
+    failRestoreValidation = false;
+    assert.equal(failedRestoredValidation.status, 500, "Restored-registry validation failure must return HTTP 500.");
+    const failedRestoredValidationBody = await failedRestoredValidation.json();
+    assert.match(failedRestoredValidationBody.error, /simulated post-write validation failure/u);
+    assert.match(failedRestoredValidationBody.error, /simulated restored registry validation failure/u);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), rollbackOriginalText, "Restore validation failure must still leave the original bytes in place.");
 
     const recoveryOriginalText = fs.readFileSync(agentsPath, "utf8");
     const backupNamesBeforeRecoveryFailure = new Set(fs.readdirSync(TEST_ROOT).filter((name) => name.startsWith("agents.json.bak-")));
@@ -241,7 +343,12 @@ async function main() {
     console.log("agent-admin tests passed");
   } finally {
     failRename = false;
+    failBackupCreation = false;
+    failTempWrite = false;
+    failTempValidation = false;
     failTargetUnlink = false;
+    failTempCleanup = false;
+    failRestoreValidation = false;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   }

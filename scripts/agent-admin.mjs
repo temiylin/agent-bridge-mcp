@@ -204,6 +204,7 @@ function writeRegistry(rootDir, registry, fileSystem) {
     targetReplaced = true;
     assertRegistry(JSON.parse(fileSystem.readFileSync(filePath, "utf8")));
   } catch (error) {
+    let recoveryError;
     try {
       if (targetReplaced && backupPath) {
         if (!fileSystem.existsSync(backupPath)) throw new Error("Backup file is missing.");
@@ -212,17 +213,28 @@ function writeRegistry(rootDir, registry, fileSystem) {
       } else if (!existed && fileSystem.existsSync(filePath)) {
         fileSystem.unlinkSync(filePath);
       }
-    } catch (recoveryError) {
-      try {
-        if (fileSystem.existsSync(tempPath)) fileSystem.unlinkSync(tempPath);
-      } catch {}
-      const originalError = error instanceof Error ? error.message : String(error);
-      const restoreError = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
-      throw new Error(`agents.json write failed: ${originalError}; recovery failed using backup "${backupPath || "(no backup available)"}": ${restoreError}`, { cause: recoveryError });
+    } catch (caughtRecoveryError) {
+      recoveryError = caughtRecoveryError;
     }
+    let cleanupError;
     try {
       if (fileSystem.existsSync(tempPath)) fileSystem.unlinkSync(tempPath);
-    } catch {}
+    } catch (caughtCleanupError) {
+      cleanupError = caughtCleanupError;
+    }
+    if (recoveryError || cleanupError) {
+      const originalError = error instanceof Error ? error.message : String(error);
+      const details = [`agents.json write failed: ${originalError}`];
+      if (recoveryError) {
+        const restoreError = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+        details.push(`recovery failed using backup "${backupPath || "(no backup available)"}": ${restoreError}`);
+      }
+      if (cleanupError) {
+        const tempCleanupError = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        details.push(`temporary file cleanup failed at "${tempPath}": ${tempCleanupError}`);
+      }
+      throw new Error(details.join("; "), { cause: recoveryError || cleanupError });
+    }
     throw error;
   }
   return backupPath;
