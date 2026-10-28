@@ -1,28 +1,83 @@
-# agent-bridge-mcp
+# Agent Bridge MCP
 
-通用本地 MCP Server：用于远程 AI 助手（如 ChatGPT、Codex、Claude Desktop）与本地电脑/本地 AI Agent 之间的安全控制桥梁。
+> 企业级多租户 Model Context Protocol (MCP) 本地与远程桥接系统。支持无公网暴露、零配置穿透连接云端 AI（ChatGPT 网页版与桌面版、Codex CLI/IDE、Claude Desktop），实现系统只读监测、Git 状态审查与异步 AI Agent 任务调度。
 
----
-
-## ⚡️ 极速一键部署（发给朋友让 Codex 自动安装）
-
-你的朋友**不需要购买任何服务器**，所有流量均由你的专属云端中继网关（`bridge.krow.top`）安全分发。
-
-朋友只要在 **Codex Desktop** 中打开本仓库，并对 Codex 发送指令：
-> **“帮我部署下”**
-
-Codex 会自动读取并执行 `npm run auto-setup`，完成以下所有动作：
-1. 自动构建本地核心程序；
-2. 自动生成属于该电脑唯一的加密设备识别码（如 `dev_friend_xxxx`）；
-3. 自动将 MCP 工具挂载到对方的本地 Codex（`codex mcp add`）；
-4. 自动在后台静默建立长连接，开机自启；
-5. 自动在对方桌面上生成专属的 `agent-bridge-plugin.zip`（供 ChatGPT 普通聊天一键导入）。
-
-**对方什么都不用管，敲完一句话即可全部就绪！**
+[![MCP Protocol](https://img.shields.io/badge/MCP-2024--11--05-blue.svg)](https://modelcontextprotocol.io/)
+[![Agent Plugins](https://img.shields.io/badge/Agent_Plugins-1.0-brightgreen.svg)](https://agent-plugins.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## 项目简介
+## 🚀 Quick Start / 快速开始
+
+### 方案一：Codex AI 一键自主部署（推荐）
+如果你使用 **Codex Desktop** 或 **Codex CLI**，只需将本仓库提供给 Codex 并输入指令：
+
+> **“帮我部署下这个项目”**（或直接运行 `npm run auto-setup`）
+
+Codex 将自动执行全套初始化流程：
+1. **自动构建**：安装依赖并编译核心可执行组件；
+2. **凭证隔离**：自动为当前机器生成全局唯一的持久化设备凭据（Device Token）；
+3. **服务挂载**：自动执行 `codex mcp add` 将 15 个工具直接接入本地 Codex 系统；
+4. **后台守护**：配置系统级后台守护进程（macOS LaunchAgent），开机静默维持加密反向长连接；
+5. **成品生成**：在当前用户桌面自动生成绑定凭证的 `agent-bridge-plugin.zip` 安装包。
+
+---
+
+### 方案二：ChatGPT (Web / Desktop) 插件一键导入
+1. 运行 `npm run pack:plugin`（或直接使用通过 `auto-setup` 生成在桌面的 `agent-bridge-plugin.zip`）；
+2. 打开 ChatGPT -> **设置 (Settings)** -> **Connectors / 插件 / MCP** -> 点击 **「添加自定义 MCP 服务器」**；
+3. 点击弹窗左下角 **「上传插件压缩包」**，选择 `agent-bridge-plugin.zip`；
+4. 导入即刻生效！在任意普通对话中可直接下达硬件与本地开发指令（例如：“查看这台 Mac 的负载与磁盘空间”）。
+
+---
+
+### 方案三：Claude Desktop / 本地 Stdio 模式
+对于 Claude Desktop 或本地进程调用，在 `claude_desktop_config.json` 中配置：
+```json
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "node",
+      "args": ["/path/to/agent-bridge-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+---
+
+## 🏛️ 系统架构 (Architecture)
+
+```text
+[ ChatGPT (Cloud/Web/Desktop) ]       [ Codex IDE / CLI ]       [ Claude Desktop ]
+               │                               │                         │
+      (Streamable HTTP)                 (MCP Add / CLI)               (Stdio)
+               ▼                               │                         │
+┌─────────────────────────────┐                │                         │
+│   Cloud Relay Hub           │                │                         │
+│   (bridge.krow.top)         │                │                         │
+└──────────────┬──────────────┘                │                         │
+               │ (WSS 反向加密隧道)             │                         │
+               ▼                               ▼                         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        本地安全沙箱环境 (Local Sandbox)                  │
+│  ┌──────────────────────────────┐       ┌───────────────────────────┐  │
+│  │ 1. 只读系统与硬件探测        │       │ 3. 异步任务调度与结果     │  │
+│  │ 2. Git 状态与受控文件浏览    │       │ 4. 守护进程心跳监控       │  │
+│  └──────────────────────────────┘       └───────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 核心设计特性
+
+- **多端全场景支持**：无缝兼容 ChatGPT 普通聊天会话、OpenAI Codex 编程环境与 Anthropic Claude Desktop。
+- **零公网暴露与双向隔离**：本地电脑仅向外发起 TLS 加密长连接，家庭/企业内网无需任何端口映射或公网 IP；多租户根据 Token 严格隔离，不同设备间绝对不可互访。
+- **纯只读与沙箱防御**：系统探测与文件浏览均具备 Path Traversal（路径穿越）拦截、符号链接逃逸防护、单次读取上限及二进制保护。
+- **标准插件包兼容**：遵循 Agent Plugins 1.0 国际规范，支持包含 Skills 指南、清单描述与 MCP 连接配置的 ZIP 格式一键拖拽式导入。
 
 `agent-bridge-mcp` 提供了一个通用的本地桥接层，基于标准的 Model Context Protocol (MCP) 与 stdio 传输机制。通过基于文件的统一解耦格式，实现：
 - **任务派发 (`send_task`)**：远程 AI 助手通过 MCP 工具将任务 Prompt 写入待执行目录 `$AGENT_BRIDGE_ROOT/tasks/<task_id>.md`。
