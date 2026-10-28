@@ -1,0 +1,37 @@
+{
+  "name": "agent-bridge",
+  "version": "1.0.0",
+  "description": "本地安全状态查询与 Agent 桥接（只读系统信息、文件读取及任务调度）",
+  "author": {
+    "name": "temiylin"
+  },
+  "homepage": "https://github.com/temiylin/agent-bridge-mcp",
+  "license": "MIT",
+  "keywords": [
+    "agent-bridge",
+    "device-info",
+    "system-monitor",
+    "desktop-commander",
+    "safe-read"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Bridge",
+    "shortDescription": "本地安全状态查询与 Agent 桥接",
+    "longDescription": "提供只读设备硬件与系统信息查询（device_info）、Git 仓库状态（repo_status）、本地文件只读安全浏览（list_directory, read_file, get_file_info）、Worker 状态监控及任务调度能力，内置系统凭据安全保护。",
+    "developerName": "temiylin",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "logo": "./assets/icon.png",
+    "composerIcon": "./assets/icon.png",
+    "defaultPrompt": [
+      "查询当前这台 Mac 的硬件架构、内存与磁盘剩余空间",
+      "检查 Git 仓库状态",
+      "查看 Worker 守护进程与任务列表"
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "/usr/local/bin/node",
+      "args": [
+        "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+      ],
+      "env": {
+        "AGENT_BRIDGE_ROOT": "/Users/news/agent-bridge",
+        "AGENT_BRIDGE_REPO": "/Users/news/code/mcp/agent-bridge-mcp"
+      },
+      "enabled": true,
+      "enabled_tools": [
+        "device_info",
+        "repo_status",
+        "worker_alive_summary",
+        "list_tasks_summary",
+        "agent_registry_summary",
+        "list_directory",
+        "read_file",
+        "get_file_info",
+        "send_task",
+        "wait_task",
+        "get_task_status",
+        "read_result",
+        "cancel_task",
+        "read_task_output",
+        "read_result_page"
+      ]
+    }
+  }
+}
