@@ -7,6 +7,8 @@ import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId, generateTaskId, resolveSafePath } from "./validator.js";
 import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
+import { audit } from "./audit.js";
+import { registerOpsTools } from "./ops-tools.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -105,6 +107,8 @@ ${prompt}
       fs.writeFileSync(taskFilePath, content, "utf8");
       logger.info(`send_task success: taskId=${taskId}, path=${taskFilePath}, title="${taskTitle}"`);
 
+      audit(rootDir, { tool: "send_task", taskId, agent: agentName || undefined, state: "dispatched" });
+
       return {
         content: [
           {
@@ -176,6 +180,7 @@ server.tool(
       // 3. Check if result file exists. If not, return clear pending status description
       if (!fs.existsSync(resultFilePath)) {
         logger.info(`read_result: result for taskId=${task_id} is pending (file not found)`);
+        audit(rootDir, { tool: "read_result", taskId: task_id, state: "pending" });
         return {
           content: [
             {
@@ -189,6 +194,7 @@ server.tool(
       // 4. Return result file content
       const fileContent = fs.readFileSync(resultFilePath, "utf8");
       logger.info(`read_result: successfully retrieved result for taskId=${task_id}`);
+      audit(rootDir, { tool: "read_result", taskId: task_id, state: "read" });
 
       return {
         content: [
@@ -212,6 +218,9 @@ server.tool(
     }
   }
 );
+
+// Register Ops Tools: get_task_status, cancel_task, read_task_output, read_result_page
+registerOpsTools(server, rootDir, tasksDir, resultsDir, logsDir, logger);
 
 // Connect over stdio transport
 async function main() {

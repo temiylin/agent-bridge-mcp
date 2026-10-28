@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
 import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
+import { writeStatus } from "./status.js";
+import { audit } from "./audit.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -123,8 +125,10 @@ export async function processTaskFile(
   resultsDir: string,
   processedMap: Record<string, string>,
   registry: AgentRegistry | null,
-  timeoutMs: number = taskTimeoutMs
+  timeoutMs: number = taskTimeoutMs,
+  rootDirParam: string = path.dirname(tasksDir)
 ): Promise<boolean> {
+  const currentRoot = rootDirParam;
   // Rule 1: Only *.md files
   if (!taskFileName.endsWith(".md")) {
     return false;
@@ -168,6 +172,39 @@ export async function processTaskFile(
   const startedAt = new Date().toISOString();
   const { agentName, prompt } = parseTaskFile(fileContent);
 
+  // Check cancellation before start
+  const controlDir = path.join(currentRoot, "control");
+  const cancelFilePath = path.join(controlDir, `${taskId}.cancel`);
+  if (fs.existsSync(cancelFilePath)) {
+    try {
+      fs.unlinkSync(cancelFilePath);
+    } catch {}
+    const finishedAt = new Date().toISOString();
+    writeResultFile(
+      resultsDir,
+      taskId,
+      "cancelled (cancelled by request)",
+      agentName,
+      startedAt,
+      finishedAt,
+      1,
+      "",
+      "Task was cancelled by request before execution started."
+    );
+    writeStatus(currentRoot, taskId, {
+      state: "cancelled",
+      agent: agentName,
+      startedAt,
+      finishedAt,
+      exitCode: 1,
+      reason: "cancelled by request",
+    });
+    saveProcessedTask(processedMap, taskId, finishedAt);
+    audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "cancelled", exitCode: 1 });
+    logWorker("INFO", `Task ${taskId} cancelled before start by request`);
+    return true;
+  }
+
   logWorker("INFO", `Processing task: taskId=${taskId}, agent="${agentName}"`);
 
   // Rule 4: If agents.json missing or agent not registered, mark failed without executing command
@@ -184,7 +221,16 @@ export async function processTaskFile(
       "",
       "agents.json does not exist. Worker refused execution."
     );
+    writeStatus(currentRoot, taskId, {
+      state: "failed",
+      agent: agentName,
+      startedAt,
+      finishedAt,
+      exitCode: 1,
+      reason: "agents.json not found",
+    });
     saveProcessedTask(processedMap, taskId, finishedAt);
+    audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("ERROR", `Task ${taskId} failed: agents.json not found`);
     return true;
   }
@@ -207,10 +253,27 @@ export async function processTaskFile(
       "",
       errorMsg
     );
+    writeStatus(currentRoot, taskId, {
+      state: "failed",
+      agent: agentName,
+      startedAt,
+      finishedAt,
+      exitCode: 1,
+      reason: !agentName ? "missing agent" : "agent not registered",
+    });
     saveProcessedTask(processedMap, taskId, finishedAt);
+    audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("WARN", `Task ${taskId} failed: ${errorMsg}`);
     return true;
   }
+
+  // Write running status and audit as execution begins
+  writeStatus(currentRoot, taskId, {
+    state: "running",
+    agent: agentName,
+    startedAt,
+  });
+  audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "running" });
 
   // Execute agent command
   const agentConfig: AgentConfig = registry[agentName];
@@ -225,11 +288,22 @@ export async function processTaskFile(
   let stderrData = "";
   let child: ChildProcess | null = null;
   let isTimeout = false;
+  let isCancelled = false;
   let exitCode: number | null = null;
+
+  // Prepare incremental stdout file in logs/<task_id>.out
+  const taskLogsDir = path.join(currentRoot, "logs");
+  const taskOutFilePath = path.join(taskLogsDir, `${taskId}.out`);
+  try {
+    if (!fs.existsSync(taskLogsDir)) fs.mkdirSync(taskLogsDir, { recursive: true });
+    fs.writeFileSync(taskOutFilePath, "", "utf8");
+  } catch {}
 
   try {
     await new Promise<void>((resolve, reject) => {
       let timer: NodeJS.Timeout | null = null;
+      let killTimer: NodeJS.Timeout | null = null;
+      let cancelCheckInterval: NodeJS.Timeout | null = null;
 
       try {
         child = spawn(command, args, {
@@ -239,8 +313,6 @@ export async function processTaskFile(
       } catch (spawnErr: any) {
         return reject(spawnErr);
       }
-
-      let killTimer: NodeJS.Timeout | null = null;
 
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
@@ -259,13 +331,38 @@ export async function processTaskFile(
         }, timeoutMs);
       }
 
+      // Check for control/<taskId>.cancel every 1 second
+      cancelCheckInterval = setInterval(() => {
+        if (fs.existsSync(cancelFilePath)) {
+          try {
+            fs.unlinkSync(cancelFilePath);
+          } catch {}
+          isCancelled = true;
+          logWorker("WARN", `Task ${taskId} cancellation requested. Sending SIGTERM to process.`);
+          const activeChild = child as ChildProcess | null;
+          if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+            activeChild.kill("SIGTERM");
+            killTimer = setTimeout(() => {
+              if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+                logWorker("WARN", `Task ${taskId} process still running after 5s of cancellation. Sending SIGKILL.`);
+                activeChild.kill("SIGKILL");
+              }
+            }, 5000);
+          }
+        }
+      }, 1000);
+
       if (agentConfig.input === "stdin" && child.stdin) {
         child.stdin.write(prompt);
         child.stdin.end();
       }
 
       child.stdout?.on("data", (chunk) => {
-        stdoutData += chunk.toString("utf8");
+        const text = chunk.toString("utf8");
+        stdoutData += text;
+        try {
+          fs.appendFileSync(taskOutFilePath, text, "utf8");
+        } catch {}
       });
 
       child.stderr?.on("data", (chunk) => {
@@ -275,12 +372,14 @@ export async function processTaskFile(
       child.on("error", (err) => {
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         reject(err);
       });
 
       child.on("close", (code, signal) => {
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
+        if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
@@ -292,11 +391,20 @@ export async function processTaskFile(
 
   const finishedAt = new Date().toISOString();
   let status = "completed";
+  let state: "completed" | "failed" | "cancelled" = "completed";
+  let reason: string | undefined = undefined;
 
-  if (isTimeout) {
+  if (isCancelled) {
+    status = "cancelled (cancelled by request)";
+    state = "cancelled";
+    reason = "cancelled by request";
+  } else if (isTimeout) {
     status = "failed (timeout)";
+    state = "failed";
+    reason = "timeout";
   } else if (exitCode !== 0) {
     status = "failed";
+    state = "failed";
   }
 
   writeResultFile(
@@ -311,7 +419,17 @@ export async function processTaskFile(
     stderrData
   );
 
+  writeStatus(currentRoot, taskId, {
+    state,
+    agent: agentName,
+    startedAt,
+    finishedAt,
+    exitCode,
+    ...(reason ? { reason } : {}),
+  });
+
   saveProcessedTask(processedMap, taskId, finishedAt);
+  audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
   return true;
 }
@@ -370,7 +488,8 @@ export class WorkerService {
           resultsDir,
           this.processedMap,
           registry,
-          this.timeout
+          this.timeout,
+          this.root
         );
         if (handled) processedCount++;
       } catch (err: any) {

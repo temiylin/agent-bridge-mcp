@@ -20,7 +20,9 @@
 $AGENT_BRIDGE_ROOT/
   ├── tasks/      # 待执行任务：<task_id>.md
   ├── results/    # 执行结果：<task_id>.md
-  └── logs/       # Server 操作日志：server.log
+  ├── status/     # 任务状态信息：<task_id>.json
+  ├── control/    # 任务控制标志：<task_id>.cancel
+  └── logs/       # Server/Worker 操作日志与输出
 ```
 
 ---
@@ -48,6 +50,74 @@ $AGENT_BRIDGE_ROOT/
   - 读取 `$AGENT_BRIDGE_ROOT/results/<task_id>.md`。
   - 若结果文件尚未生成，返回状态为等待中（Pending）的说明信息，不报错、不崩溃。
   - 若结果文件已存在，返回文件中的完整结果内容。
+
+---
+
+## 运行维护工具
+
+系统提供了一套完整的运维监控与生命周期管理能力，包括审计日志、任务状态追踪、任务取消、增量日志读取与分页结果读取。
+
+### 1. 运维与监控 MCP 工具
+
+#### `get_task_status`
+- **功能**：查询任务当前执行状态及生命周期元数据。
+- **参数**：
+  - `task_id`（string，必填）：任务 ID。
+- **行为**：
+  - 严格校验 `task_id` 安全性。
+  - 读取 `$AGENT_BRIDGE_ROOT/status/<task_id>.json`，返回包含 `state`（`queued` | `running` | `completed` | `failed` | `cancelled`）、`agent`、`startedAt`、`finishedAt`、`exitCode`、`error` 的完整元数据。
+  - 若状态文件不存在，自动基于 `tasks/` 判定为 `queued`，或基于 `results/` 判定为 `completed`；若均不存在则返回任务不存在。
+  - **注意**：本工具绝不返回任务结果正文或 prompt 内容。
+
+#### `cancel_task`
+- **功能**：请求取消正在排队或正在执行中的任务。
+- **参数**：
+  - `task_id`（string，必填）：任务 ID。
+- **行为**：
+  - 检查任务是否已存在于 `results/<task_id>.md` 或其状态已为 `completed`、`failed`、`cancelled`。若已处于终态，则安全忽略并返回已完成提示。
+  - 若任务尚未结束，向 `$AGENT_BRIDGE_ROOT/control/<task_id>.cancel` 写入控制取消标记文件。
+  - 任务取消由 Worker 轮询控制文件自主完成，MCP Server 自身绝不发送任何系统信号、不操作任何 PID。
+
+#### `read_task_output`
+- **功能**：增量分块读取任务执行过程中的标准输出日志。
+- **参数**：
+  - `task_id`（string，必填）：任务 ID。
+  - `offset`（number，可选，默认 0）：读取起始字节偏移。
+  - `length`（number，可选，默认 4000，取值范围 1 ~ 16000）：单次读取字节数。
+- **行为**：
+  - 读取 `$AGENT_BRIDGE_ROOT/logs/<task_id>.out` 文件（Worker 在执行期间实时将标准输出同步写入该文件）。
+  - 返回对象包含读取的文本 `content`、下一读取偏移量 `nextOffset`，以及是否到达文件末尾的 `eof` 标记。
+
+#### `read_result_page`
+- **功能**：分页切片读取任务的最终执行结果。
+- **参数**：
+  - `task_id`（string，必填）：任务 ID。
+  - `offset`（number，可选，默认 0）：读取起始字节偏移。
+  - `length`（number，可选，默认 4000）：单次读取字节数。
+- **行为**：
+  - 分块读取 `$AGENT_BRIDGE_ROOT/results/<task_id>.md` 文件。
+  - 返回对象包含文本切片 `content`、`nextOffset` 以及 `eof` 标记。
+  - 专门用于处理超大结果文件，保持 `read_result` 一次性读取功能完整且不被修改。
+
+### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
+- **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
+- **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
+- **隐私与安全声明**：**审计日志严格不含 prompt 和结果正文**。每行均为紧凑的一行 JSON，仅包含受限字段：
+  - `tool`（调用的工具名称，如 `send_task`、`read_result`、`worker_exec` 等）
+  - `taskId`（任务 ID）
+  - `agent`（执行的 Agent 名称，可选）
+  - `state`（任务状态变化，可选）
+  - `exitCode`（进程退出码，可选）
+  - `ts`（ISO 8601 时间戳）
+
+### 3. 任务取消机制
+- **完全解耦设计**：MCP Server 与系统底层进程彻底隔离，MCP Server 不调用系统底层信号（如 `kill`），也不接触任何系统 PID。
+- **Worker 自主终止流程**：
+  1. MCP Client 调用 `cancel_task` 时，Server 仅安全写入标记文件 `$AGENT_BRIDGE_ROOT/control/<task_id>.cancel`。
+  2. Worker 在开始执行任务前会先检查该标记；若存在，则直接取消并标记为 `cancelled`，不启动子进程。
+  3. 若任务正在执行中，Worker 内部每秒轮询该标记文件；一旦检测到取消文件，Worker 自主清理标记并向自己启动的子进程发送 `SIGTERM` 信号。
+  4. 若子进程在 5 秒内仍未退出，Worker 发送 `SIGKILL` 强制终止。
+  5. 任务状态被原子写入 `$AGENT_BRIDGE_ROOT/status/<task_id>.json`，状态标注为 `cancelled`。
 
 ---
 
