@@ -191,12 +191,12 @@ function writeRegistry(rootDir, registry, fileSystem) {
   if (existed) {
     const stat = fileSystem.lstatSync(filePath);
     if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("agents.json must be a regular file, not a symlink or directory.");
-    backupPath = `${filePath}.bak-${Date.now()}`;
+    backupPath = `${filePath}.bak-${Date.now()}-${crypto.randomBytes(12).toString("hex")}`;
   }
 
   let targetReplaced = false;
   try {
-    if (backupPath) fileSystem.copyFileSync(filePath, backupPath);
+    if (backupPath) fileSystem.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
     const serialized = `${JSON.stringify(assertRegistry(registry), null, 2)}\n`;
     fileSystem.writeFileSync(tempPath, serialized, { encoding: "utf8", flag: "wx" });
     assertRegistry(JSON.parse(fileSystem.readFileSync(tempPath, "utf8")));

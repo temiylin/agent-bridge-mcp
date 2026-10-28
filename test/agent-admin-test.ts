@@ -44,6 +44,7 @@ async function main() {
   let failRename = false;
   let failRestoreCopy = false;
   let failPostWriteValidation = false;
+  let failTargetUnlink = false;
   let agentsJsonReadCount = 0;
   const fileSystem = {
     mkdirSync: fs.mkdirSync.bind(fs),
@@ -71,7 +72,12 @@ async function main() {
       if (failRename) throw new Error("simulated atomic rename failure");
       return fs.renameSync(...args);
     },
-    unlinkSync: fs.unlinkSync.bind(fs),
+    unlinkSync: (...args: Parameters<typeof fs.unlinkSync>) => {
+      if (failTargetUnlink && args[0] === agentsPath) {
+        throw new Error("simulated recovery unlink failure");
+      }
+      return fs.unlinkSync(...args);
+    },
   };
 
   const { server, token } = createAgentAdminServer({ rootDir: TEST_ROOT, port: 0, fileSystem });
@@ -167,6 +173,18 @@ async function main() {
     assert.equal(failedWrite.status, 500, "Simulated write failure must return an error.");
     assert.equal(fs.readFileSync(agentsPath, "utf8"), unchangedText, "Failed write must preserve the original registry content.");
 
+    const rollbackOriginalText = fs.readFileSync(agentsPath, "utf8");
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 0;
+    const successfulRecovery = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failPostWriteValidation = false;
+    assert.equal(successfulRecovery.status, 500, "Post-write validation failure must return an error even when recovery succeeds.");
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), rollbackOriginalText, "Successful recovery must restore the original registry content.");
+
     const recoveryOriginalText = fs.readFileSync(agentsPath, "utf8");
     const backupNamesBeforeRecoveryFailure = new Set(fs.readdirSync(TEST_ROOT).filter((name) => name.startsWith("agents.json.bak-")));
     failRestoreCopy = true;
@@ -191,9 +209,39 @@ async function main() {
     assert.equal(fs.readFileSync(backupPathMatch[1], "utf8"), recoveryOriginalText, "Backup must retain the original agents.json content.");
     assert.ok(!backupNamesBeforeRecoveryFailure.has(path.basename(backupPathMatch[1])), "Recovery failure test must create a new backup.");
 
+    fs.unlinkSync(agentsPath);
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 1;
+    const absentFileRecovery = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failPostWriteValidation = false;
+    assert.equal(absentFileRecovery.status, 500, "Post-write failure without an original file must return an error.");
+    assert.equal(fs.existsSync(agentsPath), false, "Successful recovery without an original file must remove the new registry.");
+
+    failTargetUnlink = true;
+    failPostWriteValidation = true;
+    agentsJsonReadCount = 1;
+    const absentFileRecoveryFailure = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify({ name: "codex", enabled: true }),
+    });
+    failTargetUnlink = false;
+    failPostWriteValidation = false;
+    assert.equal(absentFileRecoveryFailure.status, 500, "Failed recovery unlink must return HTTP 500.");
+    const absentFileRecoveryBody = await absentFileRecoveryFailure.json();
+    assert.match(absentFileRecoveryBody.error, /no backup available/u, "Missing-original recovery error must explain that no backup exists.");
+    assert.match(absentFileRecoveryBody.error, /simulated recovery unlink failure/u, "Missing-original recovery error must include the unlink failure.");
+    assert.equal(fs.existsSync(agentsPath), true, "Failed recovery unlink must be surfaced while the new file remains present.");
+    fs.unlinkSync(agentsPath);
+
     console.log("agent-admin tests passed");
   } finally {
     failRename = false;
+    failTargetUnlink = false;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   }
