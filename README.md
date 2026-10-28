@@ -282,16 +282,18 @@ npm run build
 
 ### 配置示例 JSON
 
+请把占位符替换为你本机的绝对路径，例如 `/Users/<用户名>/...`。
+
 ```json
 {
   "mcpServers": {
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+        "<你的绝对路径>/code/mcp/agent-bridge-mcp/dist/index.js"
       ],
       "env": {
-        "AGENT_BRIDGE_ROOT": "/Users/news/agent-bridge"
+        "AGENT_BRIDGE_ROOT": "<你的绝对路径>/agent-bridge"
       }
     }
   }
@@ -313,7 +315,7 @@ npm run build
 ```bash
 codex mcp add agent-bridge \
   --env AGENT_BRIDGE_ROOT="$HOME/agent-bridge" \
-  -- node "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+  -- node "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
 ```
 
 检查注册状态：
@@ -329,11 +331,11 @@ ChatGPT macOS 桌面端使用 `~/.codex/config.toml` 作为其 MCP 配置文件�
 [mcp_servers.agent-bridge]
 command = "node"
 args = [
-  "/Users/news/code/mcp/agent-bridge-mcp/dist/index.js"
+  "$HOME/code/mcp/agent-bridge-mcp/dist/index.js"
 ]
 
 [mcp_servers.agent-bridge.env]
-AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
+AGENT_BRIDGE_ROOT = "$HOME/agent-bridge"
 ```
 
 ### 方式三：ChatGPT 桌面端图形界面配置
@@ -344,8 +346,8 @@ AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
    - **Name**: `agent-bridge`
    - **Type**: `STDIO`
    - **Command**: `node`
-   - **Arguments**: `/Users/news/code/mcp/agent-bridge-mcp/dist/index.js`
-   - **Environment Variables**: `AGENT_BRIDGE_ROOT=/Users/news/agent-bridge`
+   - **Arguments**: `$HOME/code/mcp/agent-bridge-mcp/dist/index.js`
+   - **Environment Variables**: `AGENT_BRIDGE_ROOT=$HOME/agent-bridge`
 4. 保存并重启客户端。
 
 ### 使用与验证
@@ -379,6 +381,20 @@ AGENT_BRIDGE_ROOT = "/Users/news/agent-bridge"
 - `input`（`"stdin"` | `"arg"`，必填）：Prompt 传递方式：
   - `"stdin"`：提示词通过子进程标准输入传入。
   - `"arg"`：提示词作为最后一个命令行参数追加。
+
+### Agent 启停页面
+
+```bash
+npm run agents:ui
+```
+
+页面只监听本机 `127.0.0.1`，默认使用随机端口；启动后终端会打印带随机 token 的访问 URL。打开页面和提交修改都必须通过 token 校验。页面只提供脚本内置的预设 Agent，不接受客户端传入命令或参数。
+
+URL 中的 token 是本地页面的临时访问密码。不要把该 URL 分享给他人，也不要粘贴到聊天、截图或公开日志中。关闭服务后 token 即失效，每次启动都会生成新 token。浏览器历史可能保存该 URL，使用后可清理浏览记录。
+
+Agent 在 `$AGENT_BRIDGE_ROOT/agents.json` 中存在对应条目即为启用；停用会移除该条目。每次修改前，如果文件已存在，会在同目录生成 `agents.json.bak-<时间戳>` 备份，并以临时文件加重命名的方式更新。默认“自检”只检查预设命令是否在 PATH 中，不会启动 Agent；如需真实 Codex 自检，可用 `node scripts/agent-admin.mjs --probe` 显式启用，该操作会运行 Codex 并可能消耗额度。
+
+当前预设清单仅包含 `codex`。`agy` 尚未加入清单，待验证后添加。
 
 ### 2. 防重复执行机制 (`logs/processed.json`)
 Worker 采用 **processed.json 记录与结果文件存在性的双重检查** 防重复机制，确保任务执行的幂等性：

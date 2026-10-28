@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs setup",
+    "agents:ui": "node scripts/agent-admin.mjs",
     "build": "tsc && chmod +x dist/index.js dist/worker.js",
     "start": "node dist/index.js",
     "worker": "node dist/worker.js",
@@ -25,6 +26,7 @@
     "test:agent-registry": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-agent-registry-test -- tsx test/agent-registry-test.ts",
     "test:device-info": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-device-info-test -- tsx test/device-info-test.ts",
     "test:local-fs": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-local-fs-test -- tsx test/local-fs-test.ts",
+    "test:agent-admin": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-admin-test -- tsx test/agent-admin-test.ts",
     "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
     "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"
   },
