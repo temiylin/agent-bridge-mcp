@@ -146,6 +146,9 @@ async function main() {
     name: "agent-bridge",
     version: "1.0.0",
     description: "Directly inspect, monitor, and dispatch tasks to your local Mac/PC from ChatGPT.",
+    author: {
+      name: "temiylin",
+    },
   };
   fs.writeFileSync(path.join(tempPackDir, "plugin.json"), JSON.stringify(pluginJson, null, 2));
 

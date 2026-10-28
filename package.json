@@ -44,7 +44,7 @@
     "modelcontextprotocol",
     "stdio"
   ],
-  "author": "",
+  "author": "temiylin",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
