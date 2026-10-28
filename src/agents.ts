@@ -9,17 +9,17 @@ export interface AgentConfig {
 
 export type AgentRegistry = Record<string, AgentConfig>;
 
-export function getAgentsFilePath(rootDir: string): string {
-  return path.join(rootDir, "agents.json");
+export function getAgentsFilePath(root: string): string {
+  return path.join(root, "agents.json");
 }
 
 /**
  * Loads and validates agents.json from the specified root directory.
- * If agents.json does not exist or has invalid schema, throws an error.
- * Built-in default commands are strictly disallowed.
+ * Always reads from disk on every invocation so modifications take effect immediately.
+ * Throws descriptive errors if file is missing, invalid JSON, or schema is violated.
  */
-export function loadAgentRegistry(rootDir: string): AgentRegistry {
-  const agentsPath = getAgentsFilePath(rootDir);
+export function loadAgents(root: string): AgentRegistry {
+  const agentsPath = getAgentsFilePath(root);
 
   if (!fs.existsSync(agentsPath)) {
     throw new Error(`Agent registry not found at "${agentsPath}". You must create agents.json to register available agents.`);
@@ -72,3 +72,20 @@ export function loadAgentRegistry(rootDir: string): AgentRegistry {
 
   return registry;
 }
+
+/**
+ * Retrieves a specific agent configuration by name from agents.json.
+ * Always reads from disk on every call.
+ * Throws an error if agent is not found or registry is invalid.
+ */
+export function getAgent(root: string, name: string): AgentConfig {
+  const registry = loadAgents(root);
+  if (!(name in registry)) {
+    const available = Object.keys(registry).join(", ") || "(none)";
+    throw new Error(`Agent "${name}" not found in agents.json. Available agents: [${available}]`);
+  }
+  return registry[name];
+}
+
+// Alias for compatibility
+export const loadAgentRegistry = loadAgents;

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId, generateTaskId, resolveSafePath } from "./validator.js";
 import { BridgeLogger } from "./logger.js";
-import { loadAgentRegistry } from "./agents.js";
+import { loadAgents } from "./agents.js";
 
 // Initialize data directories and logger
 const rootDir = resolveBridgeRoot();
@@ -48,9 +48,9 @@ server.tool(
       }
 
       // Validate agents.json registry existence and format
-      let registry: ReturnType<typeof loadAgentRegistry>;
+      let registry: ReturnType<typeof loadAgents>;
       try {
-        registry = loadAgentRegistry(rootDir);
+        registry = loadAgents(rootDir);
       } catch (regErr: any) {
         logger.error(`send_task registry error: ${regErr.message}`);
         return {
@@ -58,7 +58,7 @@ server.tool(
           content: [
             {
               type: "text",
-              text: `Error: ${regErr.message}`,
+              text: `Error reading agent registry: ${regErr.message}`,
             },
           ],
         };

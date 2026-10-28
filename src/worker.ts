@@ -2,9 +2,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
-import { loadAgentRegistry, AgentRegistry, AgentConfig } from "./agents.js";
+import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -14,6 +15,9 @@ const taskTimeoutMs = parseInt(process.env.AGENT_BRIDGE_TIMEOUT_MS || "1800000",
 const { tasksDir, resultsDir, logsDir } = ensureBridgeDirectories(rootDir);
 const workerLogFile = path.join(logsDir, "worker.log");
 const processedFilePath = path.join(logsDir, "processed.json");
+
+// Track warned invalid filenames to avoid repetitive logging in the polling loop
+const warnedInvalidFiles = new Set<string>();
 
 // Logger utility
 export function logWorker(level: "INFO" | "WARN" | "ERROR", message: string): void {
@@ -130,12 +134,25 @@ export async function processTaskFile(
 
   // Rule 2: Whitelist validation
   if (!isValidTaskId(taskId)) {
-    logWorker("WARN", `Skipping invalid task filename: "${taskFileName}" (failed task_id whitelist check)`);
+    if (!warnedInvalidFiles.has(taskFileName)) {
+      warnedInvalidFiles.add(taskFileName);
+      logWorker("WARN", `Skipping invalid task file: "${taskFileName}" (failed task_id whitelist check)`);
+    }
     return false;
   }
 
-  // Rule 3: Skip already processed tasks
+  // Rule 3: Anti-duplicate check (Defense 1: processed.json record, Defense 2: existing result file)
   if (taskId in processedMap) {
+    return false;
+  }
+
+  const finalResultPath = path.join(resultsDir, `${taskId}.md`);
+  if (fs.existsSync(finalResultPath)) {
+    try {
+      processedMap[taskId] = fs.statSync(finalResultPath).mtime.toISOString();
+    } catch {
+      processedMap[taskId] = new Date().toISOString();
+    }
     return false;
   }
 
@@ -223,17 +240,21 @@ export async function processTaskFile(
         return reject(spawnErr);
       }
 
+      let killTimer: NodeJS.Timeout | null = null;
+
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
           isTimeout = true;
-          logWorker("WARN", `Task ${taskId} timed out after ${timeoutMs}ms. Killing child process.`);
-          if (child && !child.killed) {
-            child.kill("SIGTERM");
-            setTimeout(() => {
-              if (child && !child.killed) {
-                child.kill("SIGKILL");
+          logWorker("WARN", `Task ${taskId} timed out after ${timeoutMs}ms. Sending SIGTERM to process.`);
+          const activeChild = child as ChildProcess | null;
+          if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+            activeChild.kill("SIGTERM");
+            killTimer = setTimeout(() => {
+              if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+                logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
+                activeChild.kill("SIGKILL");
               }
-            }, 2000);
+            }, 5000);
           }
         }, timeoutMs);
       }
@@ -253,12 +274,14 @@ export async function processTaskFile(
 
       child.on("error", (err) => {
         if (timer) clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         reject(err);
       });
 
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         if (timer) clearTimeout(timer);
-        exitCode = code;
+        if (killTimer) clearTimeout(killTimer);
+        exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
     });
@@ -297,8 +320,9 @@ export async function processTaskFile(
 export class WorkerService {
   private isRunning = false;
   private isShuttingDown = false;
-  private currentPromise: Promise<void> | null = null;
   private processedMap: Record<string, string>;
+  private sleepResolve: (() => void) | null = null;
+  private sleepTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private root: string = rootDir,
@@ -308,10 +332,21 @@ export class WorkerService {
     this.processedMap = loadProcessedTasks();
   }
 
+  private interruptibleSleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.sleepResolve = resolve;
+      this.sleepTimer = setTimeout(() => {
+        this.sleepResolve = null;
+        this.sleepTimer = null;
+        resolve();
+      }, ms);
+    });
+  }
+
   public async scanOnce(): Promise<number> {
     let registry: AgentRegistry | null = null;
     try {
-      registry = loadAgentRegistry(this.root);
+      registry = loadAgents(this.root);
     } catch (err: any) {
       logWorker("WARN", `Could not load agent registry: ${err?.message || String(err)}`);
     }
@@ -353,7 +388,7 @@ export class WorkerService {
     while (this.isRunning && !this.isShuttingDown) {
       await this.scanOnce();
       if (!this.isRunning || this.isShuttingDown) break;
-      await new Promise((resolve) => setTimeout(resolve, this.pollInterval));
+      await this.interruptibleSleep(this.pollInterval);
     }
 
     logWorker("INFO", "Worker loop exited cleanly.");
@@ -362,6 +397,14 @@ export class WorkerService {
   public stop(): void {
     this.isShuttingDown = true;
     this.isRunning = false;
+    if (this.sleepTimer) {
+      clearTimeout(this.sleepTimer);
+      this.sleepTimer = null;
+    }
+    if (this.sleepResolve) {
+      this.sleepResolve();
+      this.sleepResolve = null;
+    }
   }
 }
 
@@ -382,7 +425,21 @@ async function main() {
   await worker.start();
 }
 
-if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
+const isMainModule = (): boolean => {
+  if (!process.argv[1]) return false;
+  try {
+    const realArgv1 = fs.realpathSync(process.argv[1]);
+    const realImportUrl = fs.realpathSync(fileURLToPath(import.meta.url));
+    return realArgv1 === realImportUrl;
+  } catch {
+    return (
+      path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) ||
+      path.basename(process.argv[1]).includes("worker")
+    );
+  }
+};
+
+if (isMainModule()) {
   main().catch((err) => {
     logWorker("ERROR", `Fatal worker error: ${err?.message || String(err)}`);
     process.exit(1);
