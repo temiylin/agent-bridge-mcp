@@ -20,6 +20,7 @@
     "test:worker": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-test AGENT_BRIDGE_NOTIFY=0 -- tsx test/worker-test.ts",
     "test:ops": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-ops-test -- tsx test/ops-test.ts",
     "test:repo-status": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-repo-status-test -- tsx test/repo-status-test.ts",
+    "test:worker-alive": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-alive-test -- tsx test/worker-alive-test.ts",
     "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
     "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"
   },

@@ -110,6 +110,16 @@ $AGENT_BRIDGE_ROOT/
   - **隐私保护**：绝不返回任何代码 diff、文件内容、Prompt 或结果正文。
   - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
 
+#### `worker_alive_summary`
+- **功能**：只读查询本地 Worker 进程的存活状态、PID 以及最后记录的活动时间戳。
+- **参数**：无输入参数（不接受客户端传入参数或命令）。
+- **行为与安全约束**：
+  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.pid`，仅使用 `process.kill(pid, 0)` 发送信号 0 进行无害的进程存在性探测，**绝不发送任何其他信号**，绝不停止或重启进程。
+  - 读取 `$AGENT_BRIDGE_ROOT/logs/worker.log` 尾部，提取最后一条带 ISO 时间戳的记录时间作为 `lastActivity`（注意：Worker 无心跳机制，该时间代表最后记录的操作活动）。
+  - 返回结构：`{ running: boolean, pid?: number, lastActivity?: string }`。
+  - 绝不暴露系统环境变量、主机信息或任务内容。
+  - **审计记录**：调用自动记录到 `$AGENT_BRIDGE_ROOT/logs/audit.log`，仅记录工具名与时间戳，不记录输出内容。
+
 ### 2. 审计日志 (`$AGENT_BRIDGE_ROOT/logs/audit.log`)
 - **文件位置**：固定写入 `$AGENT_BRIDGE_ROOT/logs/audit.log`。
 - **日志轮转**：单文件大小达到或超过 10MB 时，自动原子轮转重命名为 `audit.log.1`（仅保留 1 个备份）。
