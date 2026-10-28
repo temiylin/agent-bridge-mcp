@@ -2,12 +2,39 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createBridgeMcpServer } from "./server.js";
 import { startHttpServer } from "./http-server.js";
+import { startRelayClient } from "./client.js";
 
 export { createBridgeMcpServer } from "./server.js";
 export { startHttpServer } from "./http-server.js";
+export { startRelayClient } from "./client.js";
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // 1. Relay Client mode: connects outbound to Cloud Relay Hub (e.g. wss://bridge.krow.top/ws)
+  const isConnect =
+    args.includes("--connect") ||
+    args.includes("connect") ||
+    process.env.AGENT_BRIDGE_MODE === "connect";
+
+  if (isConnect) {
+    let serverUrl = process.env.RELAY_SERVER || "wss://bridge.krow.top/ws";
+    const serverIdx = args.findIndex((arg) => arg === "--server" || arg === "-s");
+    if (serverIdx !== -1 && args[serverIdx + 1]) {
+      serverUrl = args[serverIdx + 1];
+    }
+
+    let token = process.env.DEVICE_TOKEN || "dev_news";
+    const tokenIdx = args.findIndex((arg) => arg === "--token" || arg === "-t");
+    if (tokenIdx !== -1 && args[tokenIdx + 1]) {
+      token = args[tokenIdx + 1];
+    }
+
+    await startRelayClient({ serverUrl, token });
+    return;
+  }
+
+  // 2. HTTP/SSE Standalone Server mode: listens locally on HTTP port
   const isHttp =
     args.includes("--http") ||
     args.includes("--serve") ||
@@ -15,7 +42,6 @@ async function main() {
     process.env.AGENT_BRIDGE_MODE === "http";
 
   if (isHttp) {
-    // Parse port if provided: --port 38080 or -p 38080
     let port = 38080;
     const portIdx = args.findIndex((arg) => arg === "--port" || arg === "-p");
     if (portIdx !== -1 && args[portIdx + 1]) {
@@ -47,7 +73,7 @@ async function main() {
     return;
   }
 
-  // Default: stdio transport (compatible with Claude Desktop, Codex CLI, etc.)
+  // 3. Default: stdio transport (compatible with Claude Desktop, Codex CLI, etc.)
   const { server, logger } = createBridgeMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
