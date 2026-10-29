@@ -72,12 +72,23 @@ export function registerLocalFsTools(
   // 1. list_directory
   server.tool(
     "list_directory",
-    "List files and subdirectories in a local directory path with metadata and size.",
+    "List files and subdirectories in a local directory path with optional recursion depth and smart noise filtering.",
     {
       path: z.string().describe("Absolute directory path to list"),
+      depth: z
+        .number()
+        .int()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe("Directory recursion depth (1: flat contents only, 2: include immediate subdirectories, max: 5). Default: 1"),
       show_hidden: z.boolean().optional().describe("Whether to include hidden files (dotfiles). Default false"),
+      ignore_patterns: z
+        .array(z.string())
+        .optional()
+        .describe("Folder or file names to ignore during listing (e.g. ['node_modules', 'dist']). Default ignores common build and cache directories."),
     },
-    async ({ path: dirPath, show_hidden }) => {
+    async ({ path: dirPath, depth, show_hidden, ignore_patterns }) => {
       audit(rootDir, { tool: "list_directory" });
 
       if (!dirPath || typeof dirPath !== "string") {
@@ -94,59 +105,125 @@ export function registerLocalFsTools(
       }
 
       try {
-        const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        const maxDepth = Math.max(1, Math.min(5, depth || 1));
         const includeHidden = Boolean(show_hidden);
-        const items: Array<{
+        const defaultIgnores = new Set([
+          "node_modules",
+          ".git",
+          ".next",
+          ".nuxt",
+          "dist",
+          "build",
+          "out",
+          "coverage",
+          ".turbo",
+          "venv",
+          ".venv",
+          "__pycache__",
+          ".idea",
+          ".vscode",
+          "target",
+          "vendor",
+          ...(ignore_patterns || []),
+        ]);
+
+        const MAX_ITEMS = 500;
+        let totalCount = 0;
+        let hasMore = false;
+
+        interface DirItem {
           name: string;
+          path: string;
           type: "file" | "directory" | "symlink" | "other";
           sizeBytes?: number;
           modifiedAt?: string;
-        }> = [];
-
-        for (const entry of entries) {
-          if (!includeHidden && entry.name.startsWith(".")) {
-            continue;
-          }
-          const fullEntryPath = path.join(dirPath, entry.name);
-          let type: "file" | "directory" | "symlink" | "other" = "other";
-          let sizeBytes: number | undefined = undefined;
-          let modifiedAt: string | undefined = undefined;
-
-          if (entry.isFile()) {
-            type = "file";
-            try {
-              const stat = fs.statSync(fullEntryPath);
-              sizeBytes = stat.size;
-              modifiedAt = stat.mtime.toISOString();
-            } catch {}
-          } else if (entry.isDirectory()) {
-            type = "directory";
-            try {
-              const stat = fs.statSync(fullEntryPath);
-              modifiedAt = stat.mtime.toISOString();
-            } catch {}
-          } else if (entry.isSymbolicLink()) {
-            type = "symlink";
-          }
-
-          items.push({
-            name: entry.name,
-            type,
-            ...(sizeBytes !== undefined ? { sizeBytes } : {}),
-            ...(modifiedAt !== undefined ? { modifiedAt } : {}),
-          });
+          depth?: number;
         }
 
-        // Sort directories first, then alphabetically
+        const items: DirItem[] = [];
+
+        function traverse(currentDir: string, currentDepth: number, relPrefix: string) {
+          if (items.length >= MAX_ITEMS) {
+            hasMore = true;
+            return;
+          }
+
+          let entries: fs.Dirent[] = [];
+          try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+
+          const currentLevelDirs: Array<{ name: string; fullPath: string; relPath: string }> = [];
+
+          for (const entry of entries) {
+            if (!includeHidden && entry.name.startsWith(".")) {
+              continue;
+            }
+            if (defaultIgnores.has(entry.name)) {
+              continue;
+            }
+
+            const fullEntryPath = path.join(currentDir, entry.name);
+            const relEntryPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+            let type: "file" | "directory" | "symlink" | "other" = "other";
+            let sizeBytes: number | undefined = undefined;
+            let modifiedAt: string | undefined = undefined;
+
+            if (entry.isFile()) {
+              type = "file";
+              try {
+                const stat = fs.statSync(fullEntryPath);
+                sizeBytes = stat.size;
+                modifiedAt = stat.mtime.toISOString();
+              } catch {}
+            } else if (entry.isDirectory()) {
+              type = "directory";
+              try {
+                const stat = fs.statSync(fullEntryPath);
+                modifiedAt = stat.mtime.toISOString();
+              } catch {}
+              if (currentDepth < maxDepth) {
+                currentLevelDirs.push({ name: entry.name, fullPath: fullEntryPath, relPath: relEntryPath });
+              }
+            } else if (entry.isSymbolicLink()) {
+              type = "symlink";
+            }
+
+            totalCount++;
+            if (items.length < MAX_ITEMS) {
+              items.push({
+                name: entry.name,
+                path: relEntryPath,
+                type,
+                ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+                ...(modifiedAt !== undefined ? { modifiedAt } : {}),
+                ...(maxDepth > 1 ? { depth: currentDepth } : {}),
+              });
+            } else {
+              hasMore = true;
+            }
+          }
+
+          // Recurse into subdirectories if depth allows
+          for (const sub of currentLevelDirs) {
+            if (items.length >= MAX_ITEMS) {
+              hasMore = true;
+              break;
+            }
+            traverse(sub.fullPath, currentDepth + 1, sub.relPath);
+          }
+        }
+
+        traverse(dirPath, 1, "");
+
+        // Sort: directories first, then alphabetical by path
         items.sort((a, b) => {
           if (a.type === "directory" && b.type !== "directory") return -1;
           if (a.type !== "directory" && b.type === "directory") return 1;
-          return a.name.localeCompare(b.name);
+          return a.path.localeCompare(b.path);
         });
-
-        const MAX_ITEMS = 300;
-        const totalCount = items.length;
-        const sliced = items.slice(0, MAX_ITEMS);
 
         return {
           content: [
@@ -155,10 +232,11 @@ export function registerLocalFsTools(
               text: JSON.stringify(
                 {
                   directory: dirPath,
+                  depth: maxDepth,
                   totalItems: totalCount,
-                  returnedItems: sliced.length,
-                  hasMore: totalCount > MAX_ITEMS,
-                  items: sliced,
+                  returnedItems: items.length,
+                  hasMore,
+                  items,
                 },
                 null,
                 2
@@ -346,6 +424,129 @@ export function registerLocalFsTools(
         logger.error(`get_file_info error: ${err?.message || String(err)}`);
         return { isError: true, content: [{ type: "text", text: `Error getting file info: ${err?.message || String(err)}` }] };
       }
+    }
+  );
+
+  // 4. read_multiple_files
+  server.tool(
+    "read_multiple_files",
+    "Read the text contents of multiple files in a single batch request, returning file contents and status per path.",
+    {
+      paths: z
+        .array(z.string())
+        .min(1)
+        .max(20)
+        .describe("Array of absolute file paths to read (maximum 20 files per batch)"),
+      max_bytes_per_file: z
+        .number()
+        .int()
+        .min(100)
+        .max(64000)
+        .optional()
+        .describe("Maximum bytes to read per file (default: 8000, max: 64000)"),
+    },
+    async ({ paths: filePaths, max_bytes_per_file }) => {
+      audit(rootDir, { tool: "read_multiple_files" });
+
+      const byteLimit = Math.max(100, Math.min(64000, max_bytes_per_file || 8000));
+      const results: Array<{
+        path: string;
+        success: boolean;
+        error?: string;
+        sizeBytes?: number;
+        bytesRead?: number;
+        isBinary?: boolean;
+        truncated?: boolean;
+        content?: string;
+      }> = [];
+
+      for (const filePath of filePaths) {
+        if (!filePath || typeof filePath !== "string") {
+          results.push({ path: String(filePath), success: false, error: "Path must be a non-empty string." });
+          continue;
+        }
+        if (!path.isAbsolute(filePath)) {
+          results.push({ path: filePath, success: false, error: `Path must be an absolute path: "${filePath}".` });
+          continue;
+        }
+        if (isBlockedCredentialPath(filePath)) {
+          results.push({ path: filePath, success: false, error: "Access denied by credential protection policy." });
+          continue;
+        }
+        if (!fs.existsSync(filePath)) {
+          results.push({ path: filePath, success: false, error: "File does not exist." });
+          continue;
+        }
+
+        try {
+          const stat = fs.statSync(filePath);
+          if (!stat.isFile()) {
+            results.push({ path: filePath, success: false, error: "Path is not a regular file." });
+            continue;
+          }
+
+          const toRead = Math.min(byteLimit, stat.size);
+          const buffer = Buffer.alloc(toRead);
+          const fd = fs.openSync(filePath, "r");
+          let bytesRead = 0;
+          try {
+            bytesRead = fs.readSync(fd, buffer, 0, toRead, 0);
+          } finally {
+            fs.closeSync(fd);
+          }
+
+          const slice = buffer.slice(0, bytesRead);
+          let isBinary = false;
+          for (let i = 0; i < slice.length; i++) {
+            if (slice[i] === 0) {
+              isBinary = true;
+              break;
+            }
+          }
+
+          if (isBinary) {
+            results.push({
+              path: filePath,
+              success: true,
+              isBinary: true,
+              sizeBytes: stat.size,
+              bytesRead,
+              content: "[Binary file content suppressed]",
+            });
+            continue;
+          }
+
+          results.push({
+            path: filePath,
+            success: true,
+            sizeBytes: stat.size,
+            bytesRead,
+            truncated: stat.size > bytesRead,
+            content: slice.toString("utf8"),
+          });
+        } catch (readErr: any) {
+          results.push({
+            path: filePath,
+            success: false,
+            error: `Failed to read file: ${readErr?.message || String(readErr)}`,
+          });
+        }
+      }
+
+      const summary = {
+        totalRequested: filePaths.length,
+        totalSuccess: results.filter((r) => r.success).length,
+        files: results,
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(summary, null, 2),
+          },
+        ],
+      };
     }
   );
 }

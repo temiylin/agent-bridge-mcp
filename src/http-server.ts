@@ -123,7 +123,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
                 sse: "/sse",
                 messages: "/messages",
               },
-              toolsAvailable: 16,
+              toolsAvailable: 17,
               activeSessions: sessions.size,
               timestamp: new Date().toISOString(),
             },

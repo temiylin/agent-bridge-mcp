@@ -365,6 +365,77 @@ async function runLocalFsTests() {
 
     console.log("✓ Test 4 passed: Audit log records verified (tool name and timestamp only, no leakage).\n");
 
+    // -------------------------------------------------
+    // [Test 5] list_directory with depth recursion & noise filtering
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 5] list_directory with depth recursion");
+    console.log("-------------------------------------------------");
+    // Create nested directory structure: workspace/src/components/Button.tsx
+    const nestedDir = path.join(WORKSPACE_DIR, "src", "components");
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.writeFileSync(path.join(nestedDir, "Button.tsx"), "export const Button = () => null;", "utf8");
+
+    // Create a node_modules folder to verify noise filtering
+    const nodeModulesDir = path.join(WORKSPACE_DIR, "node_modules", "dummy");
+    fs.mkdirSync(nodeModulesDir, { recursive: true });
+    fs.writeFileSync(path.join(nodeModulesDir, "index.js"), "module.exports = {};", "utf8");
+
+    const depthList = await client.callTool({
+      name: "list_directory",
+      arguments: { path: WORKSPACE_DIR, depth: 3 },
+    });
+    assert.equal(depthList.isError, undefined);
+    const depthData = JSON.parse((depthList.content as any)[0]?.text || "{}");
+    assert.equal(depthData.depth, 3);
+    const depthPaths = depthData.items.map((i: any) => i.path);
+
+    // Assert nested items are discovered
+    assert.ok(depthPaths.includes("src"), "Must include src dir");
+    assert.ok(depthPaths.includes("src/components"), "Must include src/components dir");
+    assert.ok(depthPaths.includes("src/components/Button.tsx"), "Must include nested Button.tsx");
+    assert.ok(depthPaths.includes("docs/readme.txt"), "Must include docs/readme.txt");
+
+    // Assert noise directory is filtered out
+    assert.ok(!depthPaths.some((p: string) => p.includes("node_modules")), "node_modules must be filtered out");
+    console.log("✓ Test 5 passed: list_directory depth recursion and noise filtering verified.\n");
+
+    // -------------------------------------------------
+    // [Test 6] read_multiple_files batch reading & per-file error handling
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 6] read_multiple_files batch execution");
+    console.log("-------------------------------------------------");
+    const batchResp = await client.callTool({
+      name: "read_multiple_files",
+      arguments: {
+        paths: [
+          textFile1,
+          textFile2,
+          path.join(WORKSPACE_DIR, "non-existent.txt"),
+          fakePemFile, // blocked credential
+        ],
+      },
+    });
+    assert.equal(batchResp.isError, undefined);
+    const batchData = JSON.parse((batchResp.content as any)[0]?.text || "{}");
+    assert.equal(batchData.totalRequested, 4);
+    assert.equal(batchData.totalSuccess, 2);
+
+    const f1 = batchData.files.find((f: any) => f.path === textFile1);
+    assert.ok(f1 && f1.success && f1.content.includes("Hello world"));
+
+    const f2 = batchData.files.find((f: any) => f.path === textFile2);
+    assert.ok(f2 && f2.success && f2.content.includes("# Notes"));
+
+    const fMissing = batchData.files.find((f: any) => f.path.includes("non-existent.txt"));
+    assert.ok(fMissing && !fMissing.success && fMissing.error.includes("File does not exist"));
+
+    const fBlocked = batchData.files.find((f: any) => f.path === fakePemFile);
+    assert.ok(fBlocked && !fBlocked.success && fBlocked.error.includes("Access denied"));
+
+    console.log("✓ Test 6 passed: read_multiple_files batch reading and per-file fault isolation verified.\n");
+
   } finally {
     await client.close();
   }
