@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
+import { queryNativeCodexCatalog } from "./codex-catalog.js";
 
 export interface ModelInfo {
   id: string;
@@ -20,12 +21,47 @@ export interface AgentModelsReport {
   agent: string;
   command: string;
   installed: boolean;
+  catalogSource?: string;
   currentDefault?: {
     model?: string;
     reasoningEffort?: string;
   };
   supportedReasoningEfforts: string[];
   models: ModelInfo[];
+}
+
+/** Agent command-line defaults override the desktop app's global configuration. */
+export function readCodexAgentDefaults(args: string[]): { model?: string; reasoningEffort?: string } {
+  const defaults: { model?: string; reasoningEffort?: string } = {};
+  let explicitModel: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-m" || arg === "--model") {
+      const value = args[i + 1];
+      if (value && !value.startsWith("-")) { explicitModel = value; i++; }
+      continue;
+    }
+    if (arg.startsWith("--model=")) {
+      explicitModel = arg.slice("--model=".length) || undefined;
+      continue;
+    }
+    let override: string | undefined;
+    if (arg === "-c" || arg === "--config") override = args[++i];
+    else if (arg.startsWith("--config=")) override = arg.slice("--config=".length);
+    else if (arg.startsWith("-c") && arg.length > 2) override = arg.slice(2);
+    if (!override) continue;
+    const match = override.match(/^(model|model_reasoning_effort)\s*=\s*(.+)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value); } catch { continue; }
+    } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
+    if (typeof value !== "string" || !value) continue;
+    if (match[1] === "model") defaults.model = value;
+    else defaults.reasoningEffort = value;
+  }
+  if (explicitModel) defaults.model = explicitModel;
+  return defaults;
 }
 
 /**
@@ -218,24 +254,31 @@ export function registerModelsTool(
 
         // 1. Check Codex
         if (!targetAgent || targetAgent === "codex") {
-          let hasCodexBinary = false;
-          try {
-            execSync(`${lookup} codex`, { stdio: "ignore" });
-            hasCodexBinary = true;
-          } catch {}
-
-          const codexConfig = readCodexConfig();
-          const codexModels = getCodexModels();
+          const command = registry.codex ? registry.codex.command : "codex";
+          const nativeCatalog = await queryNativeCodexCatalog(command);
+          const codexModels = nativeCatalog?.models ?? getCodexModels();
+          const codexConfig = {
+            ...readCodexConfig(),
+            ...readCodexAgentDefaults(registry.codex?.args || []),
+          };
+          let hasCodexBinary = Boolean(nativeCatalog);
+          if (!hasCodexBinary) {
+            const result = spawnSync(lookup, [command], {
+              shell: false, windowsHide: true, stdio: "ignore", timeout: 2500,
+            });
+            hasCodexBinary = result.status === 0;
+          }
 
           reports.codex = {
             agent: "codex",
-            command: registry.codex ? registry.codex.command : "codex",
+            command,
             installed: hasCodexBinary || "codex" in registry,
+            catalogSource: nativeCatalog ? "native Codex CLI model/list" : "desktop cache or built-in fallback",
             currentDefault: {
-              model: codexConfig.model || "gpt-6.1-sol",
-              reasoningEffort: codexConfig.reasoningEffort || "low",
+              model: codexConfig.model || nativeCatalog?.defaultModel?.id,
+              reasoningEffort: codexConfig.reasoningEffort || nativeCatalog?.defaultModel?.defaultReasoning,
             },
-            supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            supportedReasoningEfforts: [...new Set(codexModels.flatMap(model => model.supportedEfforts || []))],
             models: codexModels,
           };
         }

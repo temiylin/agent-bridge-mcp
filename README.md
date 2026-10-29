@@ -15,6 +15,7 @@ Control your local developer environment, inspect system health, explore Git rep
 - [Features](#features)
 - [System Architecture](#system-architecture)
 - [How to Install](#how-to-install)
+  - [Windows Setup](#windows-setup)
   - [Option 1: Codex AI Autonomous Setup (Recommended)](#option-1-codex-ai-autonomous-setup-recommended)
   - [Option 2: ChatGPT One-Click Plugin Upload](#option-2-chatgpt-web--desktop-one-click-plugin-upload)
   - [Option 3: Claude Desktop Configuration](#option-3-claude-desktop-configuration)
@@ -83,6 +84,53 @@ Codex will read [`AGENTS.md`](AGENTS.md) and execute the turnkey automation scri
 5. Generates your personalized `agent-bridge-plugin.zip` on your Desktop for one-click upload in ChatGPT.
 
 </details>
+
+### Windows Setup
+
+Use Node.js 22 or newer, Git, Windows PowerShell 5.1 or newer, and a native
+Codex CLI executable. Run `npm run auto-setup` from the repository. The Windows
+setup builds the project, creates a private runtime directory, installs a hidden
+login startup entry for the current user, and creates a personalized plugin ZIP.
+It requires no administrator privileges. The dashboard binds to `127.0.0.1`.
+Runtime data defaults to `%LOCALAPPDATA%\AgentBridge`; generated outputs default
+to its `outputs` subdirectory. `AGENT_BRIDGE_ROOT` and `AGENT_BRIDGE_OUTPUTS`
+override these locations. The installer registers the stdio server with the
+detected native Codex CLI; other agent configurations can be added separately.
+
+For explicit runtime and output locations, build first and use:
+
+```powershell
+npm install
+npm run build
+.\scripts\setup-windows.ps1 -Action Install -DataPath "$env:LOCALAPPDATA\AgentBridge" -OutputsPath "$env:LOCALAPPDATA\AgentBridge\outputs"
+.\scripts\setup-windows.ps1 -Action Status -DataPath "$env:LOCALAPPDATA\AgentBridge"
+.\scripts\setup-windows.ps1 -Action Stop -DataPath "$env:LOCALAPPDATA\AgentBridge"
+.\scripts\setup-windows.ps1 -Action Start -DataPath "$env:LOCALAPPDATA\AgentBridge"
+```
+
+Existing device credentials and agent configurations are preserved. If a service
+is already running during an upgrade, restart it after its tasks finish to load
+the rebuilt code. Keep generated connection files, configuration, and plugin ZIPs
+private: their endpoint contains the device access token.
+
+Legacy Windows installations using `%USERPROFILE%\.agent-bridge\config.json`,
+`%USERPROFILE%\agent-bridge`, or a hyphenated `agent-bridge.vbs` startup entry
+need an explicit migration. The installer detects these before making changes.
+Stop the legacy relay, back up its data and credentials, disable its old startup
+entry, and select the existing data directory with `-DataPath`. Preserve the old
+device token in that directory's `config.json` so existing cloud connections keep
+their identity; do not run two workers against the same task directory.
+
+Set `AGENT_BRIDGE_CODEX_EXE` to an absolute `codex.exe` path to choose a specific
+installation. Otherwise the Windows resolver compares native executables in the
+desktop app's install directory and `PATH`, preferring the newest working version.
+The model catalog is queried from the registered native CLI, including reasoning
+efforts and defaults. A cache/fallback source is reported when live discovery is
+unavailable; agent-specific model arguments override global defaults.
+
+Windows worker agents must use a native executable, or `node.exe` followed by a
+JavaScript entry point. `.cmd`/`.bat` agents are rejected with a configuration error
+instead of passing prompt arguments through a command shell.
 
 <details>
 <summary><b>Option 2: ChatGPT (Web / Desktop) One-Click Plugin Upload</b></summary>
@@ -300,7 +348,20 @@ npm run test:local-fs
 
 # Run project inspection and read-only Git regression tests (includes compilation)
 npm run test:project-inspection
+
+# Offline native catalog, Windows worker argv, and installer checks
+npm run test:catalog
+npm run test:worker-native
+npm run test:windows-setup
+npm run test:relay-logs
+
+# Windows read-only smoke test with the installed native Codex CLI
+npm run test:windows-smoke
 ```
+
+The Windows smoke test performs inference only when explicitly run with `--e2e`.
+Installer checks parse and inspect scripts without installing services or
+changing the user's Codex configuration.
 
 ---
 

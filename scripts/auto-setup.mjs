@@ -37,6 +37,28 @@ async function main() {
   execSync("npm run build", { cwd: PROJECT_ROOT, stdio: "inherit" });
   console.log("✅ 核心程序构建完成！\n");
 
+  if (process.platform === "win32") {
+    const args = [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", path.join(__dirname, "setup-windows.ps1"), "-Action", "Install",
+    ];
+    // The installer preserves configured endpoints unless explicitly overridden.
+    if (process.env.RELAY_SERVER) args.push("-RelayServer", process.env.RELAY_SERVER);
+    if (process.env.RELAY_HTTP) args.push("-RelayHttp", process.env.RELAY_HTTP);
+    if (process.env.AGENT_BRIDGE_ROOT) args.push("-DataPath", process.env.AGENT_BRIDGE_ROOT);
+    if (process.env.AGENT_BRIDGE_OUTPUTS) args.push("-OutputsPath", process.env.AGENT_BRIDGE_OUTPUTS);
+    const result = spawnSync("powershell.exe", args, {
+      cwd: PROJECT_ROOT, stdio: "inherit", shell: false, windowsHide: true,
+      env: {
+        ...process.env,
+        PSModulePath: path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "Modules"),
+      },
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`Windows setup exited with ${result.status}`);
+    return;
+  }
+
   // 2. 生成或读取本台电脑的专属永久设备识别码 (Device Token)
   console.log("[2/5] 正在配置专属设备识别凭证...");
   if (!fs.existsSync(CONFIG_DIR)) {
