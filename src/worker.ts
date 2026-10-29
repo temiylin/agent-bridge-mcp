@@ -243,6 +243,54 @@ export async function processTaskFile(
     return false;
   }
 
+  // Atomic task claim lock: prevents duplicate execution across multiple workers or processes
+  const controlDir = path.join(currentRoot, "control");
+  const lockFilePath = path.join(controlDir, `${taskId}.lock`);
+  try {
+    if (!fs.existsSync(controlDir)) {
+      fs.mkdirSync(controlDir, { recursive: true });
+    }
+    // "wx" flag fails with EEXIST if another worker already claimed this task
+    fs.writeFileSync(lockFilePath, String(process.pid), { flag: "wx" });
+  } catch (lockErr: any) {
+    if (lockErr?.code === "EEXIST") {
+      return false;
+    }
+  }
+
+  try {
+    return await executeTaskFile(
+      taskFileName,
+      taskId,
+      tasksDir,
+      resultsDir,
+      processedMap,
+      registry,
+      timeoutMs,
+      currentRoot,
+      controlDir
+    );
+  } finally {
+    try {
+      if (fs.existsSync(lockFilePath)) {
+        fs.unlinkSync(lockFilePath);
+      }
+    } catch {}
+  }
+}
+
+async function executeTaskFile(
+  taskFileName: string,
+  taskId: string,
+  tasksDir: string,
+  resultsDir: string,
+  processedMap: Record<string, string>,
+  registry: AgentRegistry | null,
+  timeoutMs: number,
+  currentRoot: string,
+  controlDir: string
+): Promise<boolean> {
+
   const taskFilePath = path.join(tasksDir, taskFileName);
   let fileContent: string;
   try {
@@ -256,7 +304,6 @@ export async function processTaskFile(
   const { agentName, prompt, model, reasoningEffort, continueSession, sessionId } = parseTaskFile(fileContent);
 
   // Check cancellation before start
-  const controlDir = path.join(currentRoot, "control");
   const cancelFilePath = path.join(controlDir, `${taskId}.cancel`);
   if (fs.existsSync(cancelFilePath)) {
     try {
