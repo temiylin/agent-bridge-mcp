@@ -24,6 +24,7 @@ export interface RelayClientHandle {
 export async function startRelayClient(options: RelayClientOptions = {}): Promise<RelayClientHandle> {
   const serverUrl = options.serverUrl || process.env.RELAY_SERVER || "wss://bridge.krow.top/ws";
   const token = options.token || process.env.DEVICE_TOKEN || "dev_news";
+  const localPort = process.env.AGENT_BRIDGE_PORT || process.env.PORT ? parseInt((process.env.AGENT_BRIDGE_PORT || process.env.PORT)!, 10) : 38080;
 
   let shouldReconnect = true;
   let activeWs: any = null;
@@ -69,11 +70,14 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
       console.log(`===============================================================`);
       console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
       console.log(`🔑 你的设备识别码:     \x1b[32m\x1b[1m${token}\x1b[0m`);
+      console.log(`🖥️ 本地控制台页面:   \x1b[35m\x1b[1mhttp://localhost:${localPort}\x1b[0m`);
       console.log(`---------------------------------------------------------------`);
-      console.log(`💡 在 ChatGPT「添加自定义 MCP 服务器」中：`);
-      console.log(`   - 服务器 URL:   ${deviceUrl}`);
-      console.log(`   - 身份验证:     无 (None)`);
-      console.log(`   (或 URL: ${httpBase}，身份验证: Bearer Token: ${token})`);
+      console.log(`💡 使用方法:`);
+      console.log(`   1. 浏览器打开本地控制台: http://localhost:${localPort} (可设置前端走 agy、后端走 codex 等)`);
+      console.log(`   2. 在 ChatGPT「添加自定义 MCP 服务器」中：`);
+      console.log(`      - 服务器 URL:   ${deviceUrl}`);
+      console.log(`      - 身份验证:     无 (None)`);
+      console.log(`      (或 URL: ${httpBase}，身份验证: Bearer Token: ${token})`);
       console.log(`===============================================================\n`);
       options.onConnect?.();
     };
@@ -132,6 +136,20 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
     }
   }
 
+  let localHttpServer: any = null;
+  if (process.env.AGENT_BRIDGE_HTTP_DASHBOARD !== "0") {
+    try {
+      const { startHttpServer } = await import("./http-server.js");
+      localHttpServer = await startHttpServer({
+        port: localPort,
+        customRootDir: options.customRootDir,
+      });
+      logger.info(`✅ Local Web Dashboard started at http://localhost:${localPort}`);
+    } catch (httpErr: any) {
+      logger.warn(`Could not start local Web Dashboard server on port ${localPort}: ${httpErr?.message || String(httpErr)}`);
+    }
+  }
+
   return {
     token,
     close: () => {
@@ -141,6 +159,9 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
       }
       if (workerService) {
         workerService.stop();
+      }
+      if (localHttpServer) {
+        localHttpServer.close().catch(() => {});
       }
     },
   };

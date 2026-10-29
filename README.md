@@ -192,6 +192,33 @@ The server exposes **26 dedicated tools** partitioned into functional categories
 
 ---
 
+## Local Web Dashboard & Smart Agent Routing
+
+Agent Bridge provides a built-in, local web configuration console served directly at:
+
+```
+http://localhost:38080
+```
+
+You can open it instantly in your browser at any time:
+
+```bash
+npm run dashboard   # or npm run ui
+```
+
+### Key Capabilities in Web Console:
+1. **Scenario-Based Smart Routing**:
+   - **Global Instructions**: Define high-level principles for AI dispatch (e.g. `"Backend architecture, APIs, and databases go to codex; frontend UI, components, and CSS go to agy"`).
+   - **Keyword Rules**: Automatically matches prompt keywords to target agents (e.g. `"vue"`, `"react"`, `"ui"` $\to$ `agy`; `"database"`, `"api"`, `"node"` $\to$ `codex`).
+   - **Default Fallback**: Guaranteed fallback execution agent when prompt does not match explicit rules.
+2. **Local Agent Management (`agents.json`)**:
+   - Visual inspection and configuration for local agents (e.g. `codex`, `agy`, custom Python scripts).
+   - One-click **Connectivity Probe** testing whether agent executables are properly installed in the system `PATH`.
+3. **Instant Hot Apply**:
+   - Saving settings immediately updates `routing.json` and `agents.json` on disk, taking effect without service restarts.
+
+---
+
 ## Local Agent Worker & Lifecycle
 
 The repository includes a background worker (`agent-bridge-worker`) that watches for queued tasks in `$AGENT_BRIDGE_ROOT/tasks`, executes them through configured agents, and writes outputs to `$AGENT_BRIDGE_ROOT/results`.

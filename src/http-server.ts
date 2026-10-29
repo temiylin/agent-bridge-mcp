@@ -1,10 +1,17 @@
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createBridgeMcpServer, BridgeMcpServerInstance } from "./server.js";
 import { BridgeLogger } from "./logger.js";
+import { renderDashboardHtml } from "./dashboard-html.js";
+import { loadAgents, saveAgents } from "./agents.js";
+import { loadRoutingConfig, saveRoutingConfig } from "./routing.js";
 
 export interface HttpServerOptions {
   port?: number;
@@ -108,7 +115,116 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     });
 
     try {
-      // 3. Health & Status
+      // 3. Web Dashboard (/ and /dashboard and /admin)
+      const isHtmlRequest =
+        originalAccept.includes("text/html") ||
+        pathname === "/dashboard" ||
+        pathname === "/admin";
+
+      if (isHtmlRequest && (pathname === "/" || pathname === "/dashboard" || pathname === "/admin")) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.statusCode = 200;
+        res.end(renderDashboardHtml());
+        return;
+      }
+
+      // 4. REST APIs for Local Web Dashboard
+      if (pathname === "/api/config") {
+        if (method === "GET") {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          let deviceToken = "dev_default";
+          const cfgPath = path.join(os.homedir(), ".agent-bridge", "config.json");
+          if (fs.existsSync(cfgPath)) {
+            try {
+              const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+              if (cfg.deviceToken) deviceToken = cfg.deviceToken;
+            } catch {}
+          }
+          let agents: any = {};
+          try {
+            agents = loadAgents(defaultInstance.rootDir);
+          } catch {}
+          const routing = loadRoutingConfig(defaultInstance.rootDir);
+          const relayHttp = process.env.RELAY_HTTP || "https://bridge.krow.top/mcp";
+          const deviceUrl = `${relayHttp}/${deviceToken}`;
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({ deviceToken, deviceUrl, agents, routing }, null, 2));
+          return;
+        }
+
+        if (method === "POST") {
+          const body = await readBody();
+          if (!body || typeof body !== "object") {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: "Invalid JSON body" }));
+            return;
+          }
+          if (body.agents && typeof body.agents === "object" && !Array.isArray(body.agents)) {
+            saveAgents(defaultInstance.rootDir, body.agents);
+          }
+          if (body.routing && typeof body.routing === "object") {
+            saveRoutingConfig(defaultInstance.rootDir, body.routing);
+          }
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, message: "Configuration saved successfully" }));
+          return;
+        }
+      }
+
+      if (pathname === "/api/test-agent" && method === "POST") {
+        const body = await readBody();
+        const agentName = body?.agent || "codex";
+        let cmd = agentName;
+        try {
+          const agents = loadAgents(defaultInstance.rootDir);
+          if (agents[agentName]?.command) {
+            cmd = agents[agentName].command;
+          }
+        } catch {}
+
+        const isWin = process.platform === "win32";
+        const lookup = isWin ? "where" : "which";
+        const proc = spawnSync(lookup, [cmd], { encoding: "utf8", timeout: 5000 });
+        const foundPath = proc.status === 0 ? proc.stdout.trim().split(/\r?\n/)[0] : null;
+
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            available: Boolean(foundPath),
+            path: foundPath,
+            command: cmd,
+            message: foundPath ? `Found ${cmd} at ${foundPath}` : `Command "${cmd}" not found in PATH`,
+          })
+        );
+        return;
+      }
+
+      if (pathname === "/api/system" && method === "GET") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        const cpus = os.cpus();
+        const totalMem = Math.round(os.totalmem() / (1024 * 1024 * 1024));
+        const freeMem = (os.freemem() / (1024 * 1024 * 1024)).toFixed(1);
+        const workerPid = process.pid;
+
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            platform: os.platform(),
+            arch: os.arch(),
+            cpuModel: cpus[0]?.model || "Apple Silicon / x86",
+            cores: cpus.length,
+            totalMemGb: totalMem,
+            freeMemGb: freeMem,
+            workerPid,
+          })
+        );
+        return;
+      }
+
+      // 5. Health & Status
       if (pathname === "/" || pathname === "/health" || pathname === "/status") {
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         res.statusCode = 200;
@@ -122,6 +238,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
                 mcp: "/mcp",
                 sse: "/sse",
                 messages: "/messages",
+                dashboard: "/dashboard",
               },
               toolsAvailable: 26,
               activeSessions: sessions.size,

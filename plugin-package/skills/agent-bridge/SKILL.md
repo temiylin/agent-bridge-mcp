@@ -36,6 +36,6 @@ When this plugin is active, you have direct, secure access to the user's local M
 
 6. **Local Task Dispatch & AI Models**:
    - `list_models`: Call this when the user asks what models are installed or available on their Mac/PC (Codex / Antigravity), or to inspect current default models and supported reasoning effort levels.
-   - `send_task`: Call this to dispatch long-running tasks to the local background agent worker. Supports specifying `agent` ('codex', 'agy'), `model` (e.g. 'gpt-6.1-sol', 'gpt-6-luna', 'o3'), and `reasoning_effort` ('low', 'medium', 'high', 'xhigh', 'max').
+   - `send_task`: Call this to dispatch long-running tasks to the local background agent worker. Smart routing is supported: if `agent` is omitted, tasks automatically route based on user rules (e.g. backend/database -> 'codex', frontend/UI -> 'agy'). You can also explicitly specify `agent` ('codex', 'agy'), `model` (e.g. 'gpt-6.1-sol', 'gpt-6-luna', 'o3'), and `reasoning_effort` ('low', 'medium', 'high', 'xhigh', 'max').
    - `read_result`: Call this to check the results of a previously dispatched task.
    - `worker_alive_summary`: Call this to check if the local daemon process is healthy.

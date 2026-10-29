@@ -37,7 +37,7 @@ The Agent Bridge MCP server provides the following tools:
 
 ### Task Dispatching & Management
 - `list_models`: Discover available AI models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
-- `send_task`: Submit an asynchronous task to a target agent or worker daemon. Takes `{ prompt: string, title?: string, agent?: string, model?: string, reasoning_effort?: string }`.
+- `send_task`: Submit an asynchronous task to a target agent or worker daemon. Supports smart routing (auto-routes backend tasks to 'codex' and frontend/UI tasks to 'agy' when agent is omitted). Takes `{ prompt: string, title?: string, agent?: string, model?: string, reasoning_effort?: string }`.
 - `wait_task`: Wait for a dispatched task to reach completion with timeout. Takes `{ task_id: string, timeout_seconds?: number }`.
 - `get_task_status`: Non-blocking check of a task's current status and progress.
 - `read_result`: Retrieve the finished task result and artifacts.

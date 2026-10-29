@@ -16,6 +16,7 @@ import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
 import { registerModelsTool } from "./models.js";
 import { registerTerminalTools } from "./terminal.js";
+import { resolveTaskAgent } from "./routing.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -86,9 +87,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           };
         }
 
-        // Validate agent if provided
+        // Resolve agent: explicit or smart routing
         let agentName = "";
-        if (agent && typeof agent === "string" && agent.trim().length > 0) {
+        let routingReason = "";
+        if (agent && typeof agent === "string" && agent.trim().length > 0 && agent.trim().toLowerCase() !== "auto") {
           const trimmedAgent = agent.trim();
           if (!(trimmedAgent in registry)) {
             const available = Object.keys(registry).join(", ") || "(none)";
@@ -103,6 +105,11 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
             };
           }
           agentName = trimmedAgent;
+          routingReason = "explicitly specified";
+        } else {
+          const resolved = resolveTaskAgent(rootDir, prompt);
+          agentName = resolved.agent;
+          routingReason = resolved.reason;
         }
 
         // Validate model if provided
