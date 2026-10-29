@@ -16,6 +16,7 @@ export function registerDeviceInfoTool(
     "device_info",
     "Get read-only system and hardware environment overview (hostname, OS, CPU, memory, disk, process count, network interfaces, runtime versions).",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       audit(rootDir, { tool: "device_info" });
 
@@ -161,6 +162,7 @@ export function registerDeviceInfoTool(
     {
       port: z.number().int().min(1).max(65535).describe("TCP Port number to inspect (1-65535)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ port }) => {
       audit(rootDir, { tool: "check_port" });
 

@@ -87,6 +87,7 @@ async function runTests() {
     "move_file",
     "create_directory",
     "execute_command",
+    "inspect_project_directories",
     "get_file_info",
     "list_models",
     "git_diff",

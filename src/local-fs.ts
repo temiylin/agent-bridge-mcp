@@ -89,6 +89,7 @@ export function registerLocalFsTools(
         .optional()
         .describe("Folder or file names to ignore during listing (e.g. ['node_modules', 'dist']). Default ignores common build and cache directories."),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: dirPath, depth, show_hidden, ignore_patterns }) => {
       audit(rootDir, { tool: "list_directory" });
 
@@ -261,6 +262,7 @@ export function registerLocalFsTools(
       offset: z.number().int().optional().describe("Byte offset to start reading from (default: 0)"),
       length: z.number().int().optional().describe("Number of bytes to read (default: 8000, max: 64000)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: filePath, offset, length }) => {
       audit(rootDir, { tool: "read_file" });
 
@@ -382,6 +384,7 @@ export function registerLocalFsTools(
     {
       path: z.string().describe("Absolute file or directory path"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: targetPath }) => {
       audit(rootDir, { tool: "get_file_info" });
 
@@ -446,6 +449,7 @@ export function registerLocalFsTools(
         .optional()
         .describe("Maximum bytes to read per file (default: 8000, max: 64000)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ paths: filePaths, max_bytes_per_file }) => {
       audit(rootDir, { tool: "read_multiple_files" });
 
@@ -737,6 +741,7 @@ export function registerLocalFsTools(
       pattern: z.string().describe("File name substring or glob pattern (e.g. 'auth', '*.ts', 'config')"),
       max_results: z.number().int().min(1).max(100).optional().describe("Maximum number of results to return (default: 50, max: 100)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: dirPath, pattern, max_results }) => {
       audit(rootDir, { tool: "search_files" });
 
@@ -845,6 +850,7 @@ export function registerLocalFsTools(
       file_pattern: z.string().optional().describe("Optional glob or extension filter (e.g. '*.ts', '*.py')"),
       max_results: z.number().int().min(1).max(100).optional().describe("Maximum number of matching lines to return (default: 30, max: 100)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: dirPath, query, is_regex, case_sensitive, file_pattern, max_results }) => {
       audit(rootDir, { tool: "search_code" });
 
@@ -1031,6 +1037,7 @@ export function registerLocalFsTools(
       lines: z.number().int().min(1).max(500).optional().describe("Number of lines from end of file (default: 100, max: 500)"),
       max_bytes: z.number().int().min(100).max(64000).optional().describe("Maximum bytes to read from end (default: 16000, max: 64000)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ path: filePath, lines: lineCount, max_bytes }) => {
       audit(rootDir, { tool: "tail_file" });
 

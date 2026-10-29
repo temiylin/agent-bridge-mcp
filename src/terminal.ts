@@ -33,13 +33,14 @@ export function registerTerminalTools(
 ): void {
   server.tool(
     "execute_command",
-    "Execute a shell or terminal command directly on the host machine with timeout and streaming output capture.",
+    "Execute a shell or terminal command directly on the host machine with timeout and streaming output capture. This general-purpose tool can modify files and execute programs, so clients may require confirmation. For document counts, directory sizes, project clutter, and Git status, use the read-only inspect_project_directories tool instead. Use list_directory, search_files, search_code, and read_file for other read-only file queries.",
     {
-      command: z.string().describe("Terminal command line string to execute (e.g., 'npm test', 'git status', 'docker ps')"),
+      command: z.string().describe("Terminal command line string to execute (e.g., 'npm test', 'docker ps'); prefer dedicated read-only tools for file queries and project statistics"),
       cwd: z.string().optional().describe("Working directory for command execution. Default: current project directory"),
       timeout_seconds: z.number().int().min(1).max(120).optional().describe("Maximum execution time in seconds (default: 30, max: 120)"),
       env_vars: z.record(z.string(), z.string()).optional().describe("Optional extra environment variables to inject"),
     },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ command, cwd, timeout_seconds, env_vars }) => {
       audit(rootDir, { tool: "execute_command" });
 

@@ -16,6 +16,7 @@ import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
 import { registerModelsTool } from "./models.js";
 import { registerTerminalTools } from "./terminal.js";
+import { registerProjectInspectionTool } from "./project-inspection.js";
 import { registerGitTools } from "./git-tools.js";
 import { registerGitHubPrTools } from "./github-pr.js";
 import { resolveTaskAgent } from "./routing.js";
@@ -233,6 +234,7 @@ ${prompt}
     {
       task_id: z.string().describe("Task ID to retrieve result for"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ task_id }) => {
       try {
         // 1. Security constraint: task_id character whitelist validation
@@ -318,6 +320,7 @@ ${prompt}
   registerLocalFsTools(server, rootDir, logger);
   registerModelsTool(server, rootDir, logger);
   registerTerminalTools(server, rootDir, logger);
+  registerProjectInspectionTool(server, rootDir, logger);
   registerGitTools(server, rootDir, logger);
   registerGitHubPrTools(server, rootDir, logger);
 

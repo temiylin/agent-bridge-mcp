@@ -141,7 +141,7 @@ npm run serve:mcp
 
 ## Available Tools Reference
 
-The server exposes **38 dedicated tools** partitioned into functional categories:
+The server exposes **39 dedicated tools** partitioned into functional categories:
 
 | Tool Name | Scope | Purpose | Safety Guardrails |
 | :--- | :--- | :--- | :--- |
@@ -164,6 +164,7 @@ The server exposes **38 dedicated tools** partitioned into functional categories
 | `search_code` | Search | Fast regex and keyword code search across project files | Built-in ripgrep + Node fallback; skips noise dirs & binaries |
 | `search_files` | Search | Recursively find files by name substring or glob pattern | 100 items max; auto-skips `node_modules`, `.git`, `dist` |
 | `list_directory` | Filesystem | List files and folders with recursion depth (`depth: 1-5`) & smart noise filtering | Blocks credentials; auto-filters `node_modules`/`.git`; 500 items max |
+| `inspect_project_directories` | Filesystem | Batch project directory file counts, byte totals, and Git status | Read-only; bounded scans; skips links and credential paths; disables Git helpers |
 | `read_multiple_files` | Filesystem | Batch-read multiple file contents in a single round-trip | Max 20 files per call; per-file fault isolation & credential blocklist |
 | `read_file` | Filesystem | Paginated text reading with byte offset and length limits | Blocks private keys; binary file null-byte suppression |
 | `tail_file` | Filesystem | Read the tail (end) of a file or log without loading the whole file | Reverse byte buffer seek; credential blacklist; lines & bytes clamping |
@@ -183,6 +184,23 @@ The server exposes **38 dedicated tools** partitioned into functional categories
 | `worker_alive_summary`| Diagnostics | Probe if the local background worker process is running | Harmless POSIX signal 0 probe; no process termination |
 | `list_tasks_summary` | Diagnostics | Summary list of recent task executions and outcomes | Metadata whitelist; strictly bounds output count |
 | `agent_registry_summary`| Diagnostics | List available agents configured in `agents.json` | Whitelist only; suppresses command paths & args |
+
+### Read-only queries in Gemini
+
+Read-only filesystem, status, and diagnostic tools declare MCP `readOnlyHint: true`
+and `destructiveHint: false`. Clients use these hints together with their own
+permission policies; they do not guarantee that every query runs without confirmation.
+General command execution and file mutations retain their permission checks.
+
+For a workspace containing several projects, use `inspect_project_directories`
+instead of a shell script to count documentation or temporary files and inspect
+Git status. Its `root_path` is an absolute workspace directory; optional
+`project_names` select direct child projects and `directory_names` select direct
+child directories within each project (default: `docs`, `output`, `tmp`, `scratch`,
+`work`). Missing directories, skipped links, time limits, and incomplete scans
+are reported separately from empty directories. Git status ignores submodules
+and disables configured fsmonitor and clean/process helpers; custom-filter
+repositories such as Git LFS may therefore report a different working-tree status.
 
 ---
 
@@ -279,6 +297,9 @@ npm run test:http
 # Run operations & filesystem safety tests
 npm run test:ops
 npm run test:local-fs
+
+# Run project inspection and read-only Git regression tests (includes compilation)
+npm run test:project-inspection
 ```
 
 ---

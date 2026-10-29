@@ -32,6 +32,7 @@
     "test:worker": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-test AGENT_BRIDGE_NOTIFY=0 -- tsx test/worker-test.ts",
     "test:ops": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-ops-test -- tsx test/ops-test.ts",
     "test:repo-status": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-repo-status-test -- tsx test/repo-status-test.ts",
+    "test:project-inspection": "tsc && node test/project-inspection-test.mjs && node test/repo-status-readonly-test.mjs",
     "test:worker-alive": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-worker-alive-test -- tsx test/worker-alive-test.ts",
     "test:list-tasks": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-list-tasks-test -- tsx test/list-tasks-test.ts",
     "test:agent-registry": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-agent-registry-test -- tsx test/agent-registry-test.ts",
