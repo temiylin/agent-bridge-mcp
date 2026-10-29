@@ -16,8 +16,9 @@ When this plugin is active, you have direct, secure access to the user's local M
    - `repo_status`: Call this when the user asks about the Git status of the project, current branch, uncommitted files, or recent commits.
 
 3. **Filesystem Browsing & Reading**:
-   - `list_directory`: Call this when the user asks to see files/folders in a directory.
-   - `read_file`: Call this when the user asks to read a specific file, config, or code snippet.
+   - `list_directory`: Call this when the user asks to see files/folders in a directory or explore project structure. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.).
+   - `read_multiple_files`: Call this when you need to read multiple files simultaneously (e.g. project overview, config files, related modules). Batching reads into a single call dramatically reduces round-trips and response latency.
+   - `read_file`: Call this when the user asks to read a specific single file or paginate through large files with offset/length.
    - `get_file_info`: Call this to inspect file metadata, size, or permissions.
 
 4. **Local Task Dispatch & AI Models**:

@@ -19,9 +19,10 @@ The Agent Bridge MCP server provides the following tools:
 - `agent_registry_summary`: List registered subagents and their capabilities.
 
 ### Safe Filesystem Access (Read-Only)
-- `list_directory`: Safely browse directory entries. Takes `{ path: string, recursive?: boolean, max_depth?: number }`. System sensitive directories (`~/.ssh`, `~/.aws`, credentials) are strictly blocked.
-- `read_file`: Safely read file content with line/byte limits. Takes `{ path: string, start_line?: number, end_line?: number, max_bytes?: number }`.
-- `get_file_info`: Read file metadata (size, permissions, timestamps, MIME type). Takes `{ path: string }`.
+- `list_directory`: Safely browse directory entries. Takes `{ path: string, depth?: number, show_hidden?: boolean, ignore_patterns?: string[] }`. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.). System sensitive directories (`~/.ssh`, `~/.aws`, credentials) are strictly blocked.
+- `read_multiple_files`: Batch read contents of multiple files in a single call. Takes `{ paths: string[], max_bytes_per_file?: number }`. Drastically speeds up project exploration by eliminating redundant round-trips.
+- `read_file`: Safely read single file content with offset and length limits. Takes `{ path: string, offset?: number, length?: number }`.
+- `get_file_info`: Read file metadata (size, permissions, timestamps). Takes `{ path: string }`.
 
 ### Task Dispatching & Management
 - `list_models`: Discover available AI models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.

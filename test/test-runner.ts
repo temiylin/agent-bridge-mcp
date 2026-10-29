@@ -77,6 +77,7 @@ async function runTests() {
     "device_info",
     "list_directory",
     "read_file",
+    "read_multiple_files",
     "get_file_info",
     "list_models",
   ]);
