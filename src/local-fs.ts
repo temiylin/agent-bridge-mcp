@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
@@ -544,6 +545,477 @@ export function registerLocalFsTools(
           {
             type: "text",
             text: JSON.stringify(summary, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // 5. write_file
+  server.tool(
+    "write_file",
+    "Write text content directly to a local file path. Automatically creates parent directories if needed.",
+    {
+      path: z.string().describe("Absolute file path to write to"),
+      content: z.string().describe("Complete text content to write into the file"),
+      overwrite: z.boolean().optional().describe("Whether to overwrite if file already exists. Default: true"),
+    },
+    async ({ path: filePath, content, overwrite }) => {
+      audit(rootDir, { tool: "write_file" });
+
+      if (!filePath || typeof filePath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${filePath}".` }] };
+      }
+      if (isBlockedCredentialPath(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${filePath}" is blocked by security policy for credential protection.` }] };
+      }
+
+      // Block writing directly to sensitive system root directories
+      const normalized = path.normalize(filePath).toLowerCase();
+      if (
+        normalized.startsWith("/etc/") ||
+        normalized.startsWith("/system/") ||
+        normalized.startsWith("/bin/") ||
+        normalized.startsWith("/sbin/") ||
+        normalized.startsWith("/usr/bin/") ||
+        normalized.startsWith("/usr/sbin/") ||
+        (process.platform === "win32" && (normalized.startsWith("c:\\windows\\") || normalized.startsWith("c:\\program files\\windows")))
+      ) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: writing to operating system system directory "${filePath}" is forbidden.` }] };
+      }
+
+      const shouldOverwrite = overwrite !== false;
+      const fileExists = fs.existsSync(filePath);
+
+      if (fileExists && !shouldOverwrite) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: File already exists at "${filePath}". Pass overwrite: true to overwrite it.`,
+            },
+          ],
+        };
+      }
+
+      try {
+        const parentDir = path.dirname(filePath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+
+        fs.writeFileSync(filePath, content, "utf8");
+        const bytesWritten = Buffer.byteLength(content, "utf8");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  path: filePath,
+                  created: !fileExists,
+                  bytesWritten,
+                  message: `File successfully written (${bytesWritten} bytes).`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`write_file error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error writing file: ${err?.message || String(err)}` }] };
+      }
+    }
+  );
+
+  // 6. edit_block
+  server.tool(
+    "edit_block",
+    "Surgically replace a specific text or code block within an existing file without rewriting the entire file.",
+    {
+      path: z.string().describe("Absolute file path of the file to edit"),
+      target: z.string().describe("Exact snippet of text or code to be replaced (must match existing file content exactly)"),
+      replacement: z.string().describe("New text or code to replace the target with"),
+      replace_all: z.boolean().optional().describe("Whether to replace all occurrences. Default: false (replaces first unique occurrence)"),
+    },
+    async ({ path: filePath, target, replacement, replace_all }) => {
+      audit(rootDir, { tool: "edit_block" });
+
+      if (!filePath || typeof filePath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${filePath}".` }] };
+      }
+      if (isBlockedCredentialPath(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${filePath}" is blocked by security policy for credential protection.` }] };
+      }
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return { isError: true, content: [{ type: "text", text: `Error: path does not exist or is not a regular file: "${filePath}".` }] };
+      }
+      if (!target || typeof target !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: target must be a non-empty string snippet." }] };
+      }
+
+      try {
+        const originalContent = fs.readFileSync(filePath, "utf8");
+        const count = originalContent.split(target).length - 1;
+
+        if (count === 0) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Error: Target snippet was not found in "${filePath}". Please verify character-by-character matching including indentation and whitespace.`,
+              },
+            ],
+          };
+        }
+
+        if (count > 1 && !replace_all) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Error: Target snippet occurs ${count} times in "${filePath}". Set replace_all: true to replace all occurrences, or include more surrounding lines in target to make it unique.`,
+              },
+            ],
+          };
+        }
+
+        let updatedContent = "";
+        if (replace_all) {
+          updatedContent = originalContent.split(target).join(replacement);
+        } else {
+          const idx = originalContent.indexOf(target);
+          updatedContent = originalContent.slice(0, idx) + replacement + originalContent.slice(idx + target.length);
+        }
+
+        fs.writeFileSync(filePath, updatedContent, "utf8");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  path: filePath,
+                  occurrencesReplaced: replace_all ? count : 1,
+                  totalMatchesFound: count,
+                  message: `Successfully replaced ${replace_all ? count : 1} occurrence(s) in "${filePath}".`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`edit_block error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error editing file: ${err?.message || String(err)}` }] };
+      }
+    }
+  );
+
+  // 7. search_files
+  server.tool(
+    "search_files",
+    "Search for files by name or glob pattern recursively within a directory, ignoring noise folders (node_modules, .git, etc.).",
+    {
+      path: z.string().describe("Absolute directory path to search within"),
+      pattern: z.string().describe("File name substring or glob pattern (e.g. 'auth', '*.ts', 'config')"),
+      max_results: z.number().int().min(1).max(100).optional().describe("Maximum number of results to return (default: 50, max: 100)"),
+    },
+    async ({ path: dirPath, pattern, max_results }) => {
+      audit(rootDir, { tool: "search_files" });
+
+      if (!dirPath || typeof dirPath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${dirPath}".` }] };
+      }
+      if (isBlockedCredentialPath(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${dirPath}" is blocked by security policy for credential protection.` }] };
+      }
+      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+        return { isError: true, content: [{ type: "text", text: `Error: path does not exist or is not a directory: "${dirPath}".` }] };
+      }
+
+      const limit = Math.max(1, Math.min(100, max_results || 50));
+      const searchPattern = pattern.trim().toLowerCase();
+
+      // Convert simple glob (*.ts, *config*) to regex or substring matcher
+      let matcher: (name: string) => boolean;
+      if (searchPattern.includes("*")) {
+        const regexStr = "^" + searchPattern.split("*").map(s => s.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")).join(".*") + "$";
+        try {
+          const re = new RegExp(regexStr, "i");
+          matcher = (name) => re.test(name);
+        } catch {
+          matcher = (name) => name.toLowerCase().includes(searchPattern.replace(/\*/g, ""));
+        }
+      } else {
+        matcher = (name) => name.toLowerCase().includes(searchPattern);
+      }
+
+      const defaultIgnores = new Set([
+        "node_modules", ".git", ".next", ".nuxt", "dist", "build", "out", "coverage", ".turbo",
+        "venv", ".venv", "__pycache__", ".idea", ".vscode", "target", "vendor"
+      ]);
+
+      const matches: Array<{ name: string; path: string; sizeBytes: number }> = [];
+
+      function walk(currentDir: string, currentDepth: number) {
+        if (matches.length >= limit || currentDepth > 10) return;
+        let entries: fs.Dirent[] = [];
+        try {
+          entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+
+        for (const entry of entries) {
+          if (entry.name.startsWith(".") && entry.name !== ".env") continue;
+          if (defaultIgnores.has(entry.name)) continue;
+
+          const fullPath = path.join(currentDir, entry.name);
+          if (entry.isFile()) {
+            if (matcher(entry.name)) {
+              let sizeBytes = 0;
+              try {
+                sizeBytes = fs.statSync(fullPath).size;
+              } catch {}
+              matches.push({
+                name: entry.name,
+                path: fullPath,
+                sizeBytes,
+              });
+              if (matches.length >= limit) return;
+            }
+          } else if (entry.isDirectory()) {
+            walk(fullPath, currentDepth + 1);
+          }
+        }
+      }
+
+      walk(dirPath, 1);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                directory: dirPath,
+                pattern,
+                totalFound: matches.length,
+                limitReached: matches.length >= limit,
+                files: matches,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // 8. search_code
+  server.tool(
+    "search_code",
+    "Fast regex and keyword code search across files in a directory, returning matching file paths, line numbers, and snippet lines.",
+    {
+      path: z.string().describe("Absolute directory path to search within"),
+      query: z.string().describe("Search string or regular expression pattern"),
+      is_regex: z.boolean().optional().describe("Whether query should be treated as a regular expression. Default: false"),
+      case_sensitive: z.boolean().optional().describe("Whether the search should be case sensitive. Default: false"),
+      file_pattern: z.string().optional().describe("Optional glob or extension filter (e.g. '*.ts', '*.py')"),
+      max_results: z.number().int().min(1).max(100).optional().describe("Maximum number of matching lines to return (default: 30, max: 100)"),
+    },
+    async ({ path: dirPath, query, is_regex, case_sensitive, file_pattern, max_results }) => {
+      audit(rootDir, { tool: "search_code" });
+
+      if (!dirPath || typeof dirPath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${dirPath}".` }] };
+      }
+      if (isBlockedCredentialPath(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${dirPath}" is blocked by security policy for credential protection.` }] };
+      }
+      if (!fs.existsSync(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path does not exist: "${dirPath}".` }] };
+      }
+      if (!query || typeof query !== "string" || query.trim().length === 0) {
+        return { isError: true, content: [{ type: "text", text: "Error: query must be a non-empty string." }] };
+      }
+
+      const limit = Math.max(1, Math.min(100, max_results || 30));
+
+      // Attempt fast native ripgrep (rg) if installed on host system
+      const isWin = process.platform === "win32";
+      const lookupCmd = isWin ? "where" : "which";
+      let hasRg = false;
+      try {
+        hasRg = spawnSync(lookupCmd, ["rg"], { shell: false }).status === 0;
+      } catch {}
+
+      if (hasRg) {
+        try {
+          const rgArgs = ["--line-number", "--no-heading", "--color", "never", "--max-count", String(limit)];
+          if (!case_sensitive) rgArgs.push("-i");
+          if (!is_regex) rgArgs.push("-F");
+          if (file_pattern) rgArgs.push("-g", file_pattern);
+          // Ignore standard noise
+          rgArgs.push("-g", "!node_modules", "-g", "!.git", "-g", "!dist", "-g", "!build", "-g", "!.next");
+          rgArgs.push(query, dirPath);
+
+          const rgRes = spawnSync("rg", rgArgs, {
+            shell: false,
+            timeout: 8000,
+            encoding: "utf8",
+            maxBuffer: 1024 * 1024,
+          });
+
+          if (rgRes.status === 0 && typeof rgRes.stdout === "string") {
+            const lines = rgRes.stdout.trim().split(/\r?\n/).filter(Boolean);
+            const matches = lines.slice(0, limit).map((line) => {
+              const parts = line.split(":");
+              const file = parts[0];
+              const lineNum = parseInt(parts[1], 10);
+              const text = parts.slice(2).join(":").trim();
+              return { file, line: lineNum || 1, text: text.slice(0, 300) };
+            });
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      engine: "ripgrep",
+                      query,
+                      totalFound: matches.length,
+                      limitReached: matches.length >= limit,
+                      matches,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            };
+          }
+        } catch {}
+      }
+
+      // Pure Node.js fallback search engine
+      let searchRegex: RegExp;
+      try {
+        const flags = case_sensitive ? "g" : "gi";
+        searchRegex = is_regex
+          ? new RegExp(query, flags)
+          : new RegExp(query.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), flags);
+      } catch (err: any) {
+        return { isError: true, content: [{ type: "text", text: `Invalid regular expression: ${err?.message || String(err)}` }] };
+      }
+
+      const defaultIgnores = new Set([
+        "node_modules", ".git", ".next", ".nuxt", "dist", "build", "out", "coverage", ".turbo",
+        "venv", ".venv", "__pycache__", ".idea", ".vscode", "target", "vendor"
+      ]);
+
+      const matches: Array<{ file: string; line: number; text: string }> = [];
+
+      function searchFile(fileAbsPath: string) {
+        if (matches.length >= limit) return;
+        try {
+          const stat = fs.statSync(fileAbsPath);
+          if (stat.size > 2 * 1024 * 1024) return; // skip files > 2MB
+
+          const buf = fs.readFileSync(fileAbsPath);
+          for (let i = 0; i < Math.min(buf.length, 512); i++) {
+            if (buf[i] === 0) return; // binary file
+          }
+
+          const content = buf.toString("utf8");
+          const lines = content.split(/\r?\n/);
+          for (let i = 0; i < lines.length; i++) {
+            searchRegex.lastIndex = 0;
+            if (searchRegex.test(lines[i])) {
+              matches.push({
+                file: fileAbsPath,
+                line: i + 1,
+                text: lines[i].trim().slice(0, 300),
+              });
+              if (matches.length >= limit) return;
+            }
+          }
+        } catch {}
+      }
+
+      function walkAndSearch(currentDir: string, depth: number) {
+        if (matches.length >= limit || depth > 8) return;
+        let entries: fs.Dirent[] = [];
+        try {
+          entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+
+        for (const entry of entries) {
+          if (entry.name.startsWith(".") && entry.name !== ".env") continue;
+          if (defaultIgnores.has(entry.name)) continue;
+
+          const fullPath = path.join(currentDir, entry.name);
+          if (entry.isFile()) {
+            if (file_pattern) {
+              const cleanPat = file_pattern.replace(/^\*/, "").toLowerCase();
+              if (!entry.name.toLowerCase().endsWith(cleanPat)) continue;
+            }
+            searchFile(fullPath);
+          } else if (entry.isDirectory()) {
+            walkAndSearch(fullPath, depth + 1);
+          }
+        }
+      }
+
+      const stat = fs.statSync(dirPath);
+      if (stat.isFile()) {
+        searchFile(dirPath);
+      } else {
+        walkAndSearch(dirPath, 1);
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                engine: "nodejs-fallback",
+                query,
+                totalFound: matches.length,
+                limitReached: matches.length >= limit,
+                matches,
+              },
+              null,
+              2
+            ),
           },
         ],
       };

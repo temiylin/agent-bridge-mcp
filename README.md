@@ -141,15 +141,20 @@ npm run serve:mcp
 
 ## Available Tools Reference
 
-The server exposes **17 dedicated tools** partitioned into functional categories:
+The server exposes **22 dedicated tools** partitioned into functional categories:
 
 | Tool Name | Scope | Purpose | Safety Guardrails |
 | :--- | :--- | :--- | :--- |
 | `device_info` | Telemetry | Live CPU, M-series Silicon, RAM, disk, processes, OS specs | Read-only; zero env-var / process parameter exposure |
+| `check_port` | Telemetry | Inspect TCP port status, check listening process PID & command | Safe local socket inspection; helps resolve dev port conflicts |
 | `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no diffs |
+| `search_code` | Search | Fast regex and keyword code search across project files | Built-in ripgrep + Node fallback; skips noise dirs & binaries |
+| `search_files` | Search | Recursively find files by name substring or glob pattern | 100 items max; auto-skips `node_modules`, `.git`, `dist` |
 | `list_directory` | Filesystem | List files and folders with recursion depth (`depth: 1-5`) & smart noise filtering | Blocks credentials; auto-filters `node_modules`/`.git`; 500 items max |
 | `read_multiple_files` | Filesystem | Batch-read multiple file contents in a single round-trip | Max 20 files per call; per-file fault isolation & credential blocklist |
 | `read_file` | Filesystem | Paginated text reading with byte offset and length limits | Blocks private keys; binary file null-byte suppression |
+| `write_file` | Filesystem | Write or create text files directly on disk | Blocks system dirs & credentials; auto-creates parent folders |
+| `edit_block` | Filesystem | Surgically search and replace code snippets in existing files | Verifies target snippet presence; prevents whole-file truncation |
 | `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
 | `list_models` | AI Models | Discover available models, active defaults, & reasoning levels | Queries local Codex cache and Antigravity models safely |
 | `send_task` | Agent Dispatch | Dispatch asynchronous task with optional model & reasoning effort | Validates registry; sanitized `task_id` naming |

@@ -12,17 +12,22 @@ Use this skill when the user asks to inspect system information, hardware, CPU, 
 The Agent Bridge MCP server provides the following tools:
 
 ### System & Repository Inspection
-- `device_info`: Query host system information, architecture (`arm64`/`x86_64`), CPU model and cores, total/free memory, and disk capacity/free space. Call this tool whenever the user asks for hardware specs, Mac architecture, RAM, or disk space.
+- `device_info`: Query host system information, architecture (`arm64`/`x86_64`), CPU model and cores, total/free memory, and disk capacity/free space.
+- `check_port`: Check whether a local TCP port is in use and find the listening PID and process name.
 - `repo_status`: Inspect Git status, active branch, commit hash, dirty files, and unpushed commits. Takes `{ repo_path?: string, target?: "bridge" | "agent" }`.
 - `worker_alive_summary`: Check health, PID, uptime, memory, and heartbeats of background worker daemons.
 - `list_tasks_summary`: List queued, running, and recently completed bridge tasks.
 - `agent_registry_summary`: List registered subagents and their capabilities.
 
-### Safe Filesystem Access (Read-Only)
-- `list_directory`: Safely browse directory entries. Takes `{ path: string, depth?: number, show_hidden?: boolean, ignore_patterns?: string[] }`. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.). System sensitive directories (`~/.ssh`, `~/.aws`, credentials) are strictly blocked.
-- `read_multiple_files`: Batch read contents of multiple files in a single call. Takes `{ paths: string[], max_bytes_per_file?: number }`. Drastically speeds up project exploration by eliminating redundant round-trips.
+### Code Search & Filesystem Operations
+- `search_code`: Fast keyword and regex search across project files. Returns matching lines and context.
+- `search_files`: Search files by name or glob pattern (e.g. `*.ts`, `*config*`) recursively.
+- `list_directory`: Safely browse directory entries. Takes `{ path: string, depth?: number, show_hidden?: boolean, ignore_patterns?: string[] }`. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.).
+- `read_multiple_files`: Batch read contents of multiple files in a single call. Takes `{ paths: string[], max_bytes_per_file?: number }`.
 - `read_file`: Safely read single file content with offset and length limits. Takes `{ path: string, offset?: number, length?: number }`.
 - `get_file_info`: Read file metadata (size, permissions, timestamps). Takes `{ path: string }`.
+- `write_file`: Directly write text content to a local file path, automatically creating parent directories.
+- `edit_block`: Surgically replace a specific code block in an existing file without rewriting the entire file.
 
 ### Task Dispatching & Management
 - `list_models`: Discover available AI models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
