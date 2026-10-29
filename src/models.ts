@@ -214,11 +214,13 @@ export function registerModelsTool(
         const targetAgent = agent ? agent.trim().toLowerCase() : "";
         const reports: Record<string, AgentModelsReport> = {};
 
+        const lookup = process.platform === "win32" ? "where" : "which";
+
         // 1. Check Codex
         if (!targetAgent || targetAgent === "codex") {
           let hasCodexBinary = false;
           try {
-            execSync("which codex", { stdio: "ignore" });
+            execSync(`${lookup} codex`, { stdio: "ignore" });
             hasCodexBinary = true;
           } catch {}
 
@@ -242,7 +244,7 @@ export function registerModelsTool(
         if (!targetAgent || targetAgent === "agy") {
           let hasAgyBinary = false;
           try {
-            execSync("which agy", { stdio: "ignore" });
+            execSync(`${lookup} agy`, { stdio: "ignore" });
             hasAgyBinary = true;
           } catch {}
 

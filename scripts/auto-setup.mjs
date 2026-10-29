@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -85,9 +85,11 @@ async function main() {
 
   // 3. 自动将 MCP 注册到本地 AI 客户端 (Codex / Antigravity AGY)
   console.log("[3/5] 正在自动挂载到本地 AI 客户端 (Codex / AGY)...");
+  const isWin = process.platform === "win32";
+  const lookupCmd = isWin ? "where" : "which";
   let mountedAny = false;
   try {
-    const hasCodex = spawnSync("which", ["codex"]).status === 0;
+    const hasCodex = spawnSync(lookupCmd, ["codex"]).status === 0;
     if (hasCodex) {
       try {
         execSync("codex mcp remove agent-bridge", { stdio: "pipe" });
@@ -101,7 +103,7 @@ async function main() {
   }
 
   try {
-    const hasAgy = spawnSync("which", ["agy"]).status === 0;
+    const hasAgy = spawnSync(lookupCmd, ["agy"]).status === 0;
     if (hasAgy) {
       try {
         execSync("agy mcp remove agent-bridge", { stdio: "pipe" });
@@ -175,8 +177,52 @@ async function main() {
     } catch (err) {
       console.warn("⚠️ 激活 LaunchAgent 提示:", err.message);
     }
+  } else if (isWin) {
+    const startupDir = path.join(
+      process.env.APPDATA || path.join(HOME, "AppData", "Roaming"),
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Startup"
+    );
+    const vbsPath = path.join(startupDir, "agent-bridge.vbs");
+    const nodeBin = process.execPath;
+    const clientScript = path.join(PROJECT_ROOT, "dist", "index.js");
+    const logPath = path.join(CONFIG_DIR, "client.log");
+
+    const vbsContent = [
+      'Set WshShell = CreateObject("WScript.Shell")',
+      `WshShell.Run """${nodeBin}"" """${clientScript}""" --connect --server "${RELAY_SERVER}" --token "${deviceToken}""", 0, False`,
+      'Set WshShell = Nothing',
+      '',
+    ].join("\r\n");
+
+    try {
+      if (!fs.existsSync(startupDir)) {
+        fs.mkdirSync(startupDir, { recursive: true });
+      }
+      fs.writeFileSync(vbsPath, vbsContent, "utf8");
+      console.log(`✅ Windows 开机后台自启脚本已安装至 Startup 文件夹:`);
+      console.log(`   ${vbsPath}`);
+
+      // 立即在后台静默启动当前进程
+      const outFd = fs.openSync(logPath, "a");
+      const child = spawn(nodeBin, [clientScript, "--connect", "--server", RELAY_SERVER, "--token", deviceToken], {
+        cwd: PROJECT_ROOT,
+        stdio: ["ignore", outFd, outFd],
+        detached: true,
+        shell: false,
+        windowsHide: true,
+      });
+      child.unref();
+      fs.closeSync(outFd);
+      console.log(`✅ 后台守护服务已激活并启动！开机自动在后台连接云端网关。`);
+    } catch (err) {
+      console.warn("⚠️ 激活 Windows 自启提示:", err.message);
+    }
   } else {
-    console.log("ℹ️ 非 macOS 系统，请使用 'npm run connect' 在后台运行客户端。");
+    console.log("ℹ️ 非 macOS/Windows 系统，请使用 'npm run connect' 在后台运行客户端。");
   }
   console.log();
 
@@ -221,7 +267,12 @@ async function main() {
   // 打包到桌面
   const desktopZip = path.join(HOME, "Desktop", "agent-bridge-plugin.zip");
   try {
-    execSync(`cd "${tempPackDir}" && zip -r "${desktopZip}" .`, { stdio: "pipe" });
+    if (isWin) {
+      const psCmd = `Compress-Archive -Path '${tempPackDir}\\*' -DestinationPath '${desktopZip}' -Force`;
+      execSync(`powershell -NoProfile -Command "${psCmd}"`, { stdio: "pipe" });
+    } else {
+      execSync(`cd "${tempPackDir}" && zip -r "${desktopZip}" .`, { stdio: "pipe" });
+    }
     console.log(`✅ 专属插件包已生成在桌面: \x1b[36m\x1b[1m${desktopZip}\x1b[0m\n`);
   } catch (err) {
     console.warn("⚠️ 打包 zip 提示:", err.message);
