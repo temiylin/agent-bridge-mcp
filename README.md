@@ -141,7 +141,7 @@ npm run serve:mcp
 
 ## Available Tools Reference
 
-The server exposes **15 dedicated tools** partitioned into functional categories:
+The server exposes **16 dedicated tools** partitioned into functional categories:
 
 | Tool Name | Scope | Purpose | Safety Guardrails |
 | :--- | :--- | :--- | :--- |
@@ -150,7 +150,8 @@ The server exposes **15 dedicated tools** partitioned into functional categories
 | `list_directory` | Filesystem | List files and folders with size and modified timestamp | Blocks credentials (`~/.ssh`, `~/.aws`); 300 items max |
 | `read_file` | Filesystem | Paginated text reading with byte offset and length limits | Blocks private keys; binary file null-byte suppression |
 | `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
-| `send_task` | Agent Dispatch | Write prompt and dispatch asynchronous task to local worker | Validates registry; sanitized `task_id` naming |
+| `list_models` | AI Models | Discover available models, active defaults, & reasoning levels | Queries local Codex cache and Antigravity models safely |
+| `send_task` | Agent Dispatch | Dispatch asynchronous task with optional model & reasoning effort | Validates registry; sanitized `task_id` naming |
 | `read_result` | Agent Dispatch | Read Markdown result file for a completed task | Path traversal check; non-blocking pending status |
 | `read_result_page` | Agent Dispatch | Chunked paging reader for oversized result documents | Offset & length limits to prevent context overflow |
 | `get_task_status` | Lifecycle | Check task lifecycle state (`queued`, `running`, `completed`) | Metadata only; suppresses prompt/result content |

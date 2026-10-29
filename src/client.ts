@@ -117,12 +117,30 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
 
   connect();
 
+  // Start embedded background worker service to execute dispatched tasks
+  let workerService: any = null;
+  if (process.env.AGENT_BRIDGE_EMBEDDED_WORKER !== "0") {
+    try {
+      const { WorkerService } = await import("./worker.js");
+      workerService = new WorkerService(instance.rootDir);
+      workerService.start().catch((err: any) => {
+        logger.error(`Embedded worker error: ${err?.message || String(err)}`);
+      });
+      logger.info(`✅ Embedded background worker started for ${instance.rootDir}`);
+    } catch (err: any) {
+      logger.warn(`Could not start embedded worker: ${err?.message || String(err)}`);
+    }
+  }
+
   return {
     token,
     close: () => {
       shouldReconnect = false;
       if (activeWs) {
         activeWs.close();
+      }
+      if (workerService) {
+        workerService.stop();
       }
     },
   };

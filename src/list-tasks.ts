@@ -9,6 +9,8 @@ export interface TaskSummaryItem {
   taskId: string;
   state: string;
   agent?: string;
+  model?: string;
+  reasoningEffort?: string;
   startedAt?: string;
   finishedAt?: string;
   exitCode?: number | null;
@@ -51,6 +53,8 @@ export function registerListTasksTool(
                   state: typeof parsed.state === "string" ? parsed.state : "unknown",
                 };
                 if (typeof parsed.agent === "string") item.agent = parsed.agent;
+                if (typeof parsed.model === "string") item.model = parsed.model;
+                if (typeof parsed.reasoningEffort === "string") item.reasoningEffort = parsed.reasoningEffort;
                 if (typeof parsed.startedAt === "string") item.startedAt = parsed.startedAt;
                 if (typeof parsed.finishedAt === "string") item.finishedAt = parsed.finishedAt;
                 if (typeof parsed.exitCode === "number" || parsed.exitCode === null) {

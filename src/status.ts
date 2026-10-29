@@ -8,6 +8,8 @@ export interface TaskStatusInfo {
   taskId?: string;
   state: TaskState;
   agent?: string;
+  model?: string;
+  reasoningEffort?: string;
   startedAt?: string;
   finishedAt?: string;
   exitCode?: number | null;
@@ -42,6 +44,8 @@ export function writeStatus(
     taskId,
     state: info.state,
     agent: info.agent || "",
+    ...(info.model ? { model: info.model } : {}),
+    ...(info.reasoningEffort ? { reasoningEffort: info.reasoningEffort } : {}),
     startedAt: info.startedAt,
     finishedAt: info.finishedAt,
     exitCode: info.exitCode !== undefined ? info.exitCode : null,

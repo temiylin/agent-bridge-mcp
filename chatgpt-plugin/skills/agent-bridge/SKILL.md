@@ -24,8 +24,9 @@ The Agent Bridge MCP server provides the following tools:
 - `get_file_info`: Read file metadata (size, permissions, timestamps, MIME type). Takes `{ path: string }`.
 
 ### Task Dispatching & Management
-- `send_task`: Submit an asynchronous task to a target agent or worker daemon. Takes `{ agent_id: string, prompt: string, params?: object }`.
-- `wait_task`: Wait for a dispatched task to reach completion with timeout. Takes `{ task_id: string, timeout_ms?: number }`.
+- `list_models`: Discover available AI models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
+- `send_task`: Submit an asynchronous task to a target agent or worker daemon. Takes `{ prompt: string, title?: string, agent?: string, model?: string, reasoning_effort?: string }`.
+- `wait_task`: Wait for a dispatched task to reach completion with timeout. Takes `{ task_id: string, timeout_seconds?: number }`.
 - `get_task_status`: Non-blocking check of a task's current status and progress.
 - `read_result`: Retrieve the finished task result and artifacts.
 - `read_task_output`: Stream or read incremental execution logs of a running task.
