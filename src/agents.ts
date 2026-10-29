@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 export interface AgentConfig {
   command: string;
@@ -89,3 +90,17 @@ export function getAgent(root: string, name: string): AgentConfig {
 
 // Alias for compatibility
 export const loadAgentRegistry = loadAgents;
+
+/**
+ * Atomically writes agents.json to disk.
+ */
+export function saveAgents(root: string, registry: AgentRegistry): void {
+  const filePath = getAgentsFilePath(root);
+  const tempPath = path.join(root, `.agents.json.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  if (!fs.existsSync(root)) {
+    fs.mkdirSync(root, { recursive: true });
+  }
+  fs.writeFileSync(tempPath, JSON.stringify(registry, null, 2) + "\n", "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
