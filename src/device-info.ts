@@ -14,7 +14,7 @@ export function registerDeviceInfoTool(
 ): void {
   server.tool(
     "device_info",
-    "Get read-only system and hardware environment overview (hostname, OS, CPU, memory, disk, process count, network interfaces, runtime versions).",
+    "Get read-only system and hardware environment overview including computer model / machine model (e.g. Mac Studio, MacBook Pro, ThinkPad), OS, CPU, memory, disk, network, and process counts. Always call this tool first for any computer model, hardware specs, or system telemetry queries instead of execute_command.",
     {},
     { readOnlyHint: true, destructiveHint: false },
     async () => {
@@ -26,6 +26,39 @@ export function registerDeviceInfoTool(
         const platform = os.platform();
         const release = os.release();
         const osVersion = os.version();
+
+        // Machine / Computer Model (e.g. "Mac Studio", "MacBook Pro", "ThinkPad")
+        let machineModel = "";
+        if (platform === "darwin") {
+          try {
+            const sysctlRes = spawnSync("sysctl", ["-n", "hw.model"], { encoding: "utf8", timeout: 1500 });
+            const modelIdentifier = sysctlRes.stdout?.trim() || "";
+            let modelName = "";
+            try {
+              const profilerRes = spawnSync("system_profiler", ["SPHardwareDataType", "-detailLevel", "mini"], {
+                encoding: "utf8",
+                timeout: 3000,
+              });
+              const match = profilerRes.stdout?.match(/Model Name:\s*(.+)/i);
+              if (match) modelName = match[1].trim();
+            } catch {}
+            machineModel = modelName ? (modelIdentifier ? `${modelName} (${modelIdentifier})` : modelName) : modelIdentifier;
+          } catch {}
+        } else if (platform === "win32") {
+          try {
+            const wmicRes = spawnSync("powershell.exe", ["-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystem).Model"], {
+              encoding: "utf8",
+              timeout: 3000,
+            });
+            machineModel = wmicRes.stdout?.trim() || "";
+          } catch {}
+        } else if (platform === "linux") {
+          try {
+            if (fs.existsSync("/sys/devices/virtual/dmi/id/product_name")) {
+              machineModel = fs.readFileSync("/sys/devices/virtual/dmi/id/product_name", "utf8").trim();
+            }
+          } catch {}
+        }
 
         // 2. CPU & Memory
         const cpus = os.cpus();
@@ -118,6 +151,7 @@ export function registerDeviceInfoTool(
 
         const result = {
           hostname,
+          model: machineModel,
           os: {
             platform,
             release,

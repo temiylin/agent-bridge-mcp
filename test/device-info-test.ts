@@ -57,6 +57,7 @@ async function runDeviceInfoTests() {
     // 1. Top-level whitelist
     const expectedTopKeys = [
       "hostname",
+      "model",
       "os",
       "cpu",
       "memory",
@@ -70,6 +71,7 @@ async function runDeviceInfoTests() {
       expectedTopKeys.sort(),
       "Top-level keys must strictly match whitelist"
     );
+    assert.ok(typeof data.model === "string", "Model must be a string");
 
     // 2. OS whitelist
     assert.deepEqual(
