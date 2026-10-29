@@ -20,7 +20,7 @@ export function getControlDir(root: string): string {
  * Strictly filters out:
  * 1. Inner monologue / thinking processes (<thought>...</thought>, Thinking Process: ...)
  * 2. Large command outputs / raw file dumps (```...```)
- * Returns the most recent 2-4 lines of concrete actions, test outcomes, or file modifications.
+ * Returns the most recent 2-4 lines of concrete actions, test outcomes, section headers, or file modifications.
  */
 export function extractActionProgress(raw: string): string {
   if (!raw || !raw.trim()) return "任务已在后台启动，Agent 正在分析上下文与准备环境...";
@@ -39,14 +39,14 @@ export function extractActionProgress(raw: string): string {
   const lines = clean
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith("```") && !l.startsWith("|"));
+    .filter((l) => l.length > 0 && !l.startsWith("```") && !l.startsWith("|") && !/^[-=]{3,}$/.test(l));
 
   if (lines.length === 0) {
-    return "Agent 正在执行阶段性操作...";
+    return "Agent 正在分析上下文与执行阶段性操作...";
   }
 
-  // 4. Prioritize lines that indicate real actions, progress, files, commits, tests
-  const actionKeywords = /测试|修改|通过|失败|passed|failed|分支|commit|worktree|文件|归一|修复|完成|执行|正在|新增|改动|运行/i;
+  // 4. Prioritize lines that indicate real actions, progress, files, commits, tests, or section headers
+  const actionKeywords = /测试|修改|通过|失败|passed|failed|分支|commit|worktree|文件|归一|修复|完成|执行|正在|新增|改动|运行|分析|检查|调用链|发现|结论|^#{1,4}\s/i;
   const actionLines = lines.filter((l) => actionKeywords.test(l));
 
   const chosen = actionLines.length > 0 ? actionLines.slice(-4) : lines.slice(-3);
@@ -544,16 +544,28 @@ export function registerOpsTools(
 
       // Read live stdout progress from logs/<taskId>.out
       let progressReport = "任务正在初始化或 Agent 正在分析上下文...";
+      let outputStats = "";
       try {
         const outFilePath = resolveSafePath(logsDir, rootDir, `${task_id}.out`);
         if (fs.existsSync(outFilePath)) {
           const rawOutput = fs.readFileSync(outFilePath, "utf8");
+          const sizeBytes = Buffer.byteLength(rawOutput, "utf8");
+          const charCount = rawOutput.length;
+          if (sizeBytes > 0) {
+            outputStats = ` (已产生分析内容约 ${charCount} 字 / ${(sizeBytes / 1024).toFixed(1)} KB)`;
+          }
           const extracted = extractActionProgress(rawOutput);
           if (extracted && extracted.trim().length > 0) {
             progressReport = extracted.trim();
           }
         }
       } catch {}
+
+      let elapsedStr = "";
+      if (currentStatus.startedAt) {
+        const elapsedSec = Math.max(1, Math.round((Date.now() - new Date(currentStatus.startedAt).getTime()) / 1000));
+        elapsedStr = ` | 已执行 ${elapsedSec}s`;
+      }
 
       const agentLabel = currentStatus.agent ? `Agent: ${currentStatus.agent}` : "Agent 执行中";
       const modelLabel = currentStatus.model ? ` | 模型: ${currentStatus.model}` : "";
@@ -565,7 +577,7 @@ export function registerOpsTools(
             text: `Status: Pending. Task "${task_id}" 仍在执行，可再次调用 wait_task。${clampNote}
 
 --- [实时执行进度 / In-Progress Update] ---
-[${agentLabel}${modelLabel} | 状态: ${currentStatus.state || "running"}]
+[${agentLabel}${modelLabel} | 状态: ${currentStatus.state || "running"}${elapsedStr}]${outputStats}
 ${progressReport}
 ------------------------------------------`,
           },

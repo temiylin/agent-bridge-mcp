@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 export interface RelayClientOptions {
   serverUrl?: string;
   token?: string;
+  tokens?: string[];
   customRootDir?: string;
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -23,11 +24,12 @@ export interface RelayClientHandle {
  */
 export async function startRelayClient(options: RelayClientOptions = {}): Promise<RelayClientHandle> {
   const serverUrl = options.serverUrl || process.env.RELAY_SERVER || "wss://bridge.krow.top/ws";
-  const token = options.token || process.env.DEVICE_TOKEN || "dev_news";
+  const primaryToken = options.token || process.env.DEVICE_TOKEN || "dev_news";
+  const tokensToConnect = Array.from(new Set([primaryToken, ...(options.tokens || []), "dev_news"].filter(Boolean))) as string[];
   const localPort = process.env.AGENT_BRIDGE_PORT || process.env.PORT ? parseInt((process.env.AGENT_BRIDGE_PORT || process.env.PORT)!, 10) : 38080;
 
   let shouldReconnect = true;
-  let activeWs: any = null;
+  const activeSockets = new Set<any>();
 
   const instance = createBridgeMcpServer(options.customRootDir);
   const { logger } = instance;
@@ -36,15 +38,15 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
   await instance.server.connect(serverTransport);
   await clientTransport.start();
 
-  const pendingRequests = new Map<string | number, { requestId: string }>();
+  const pendingRequests = new Map<string | number, { requestId: string; ws: any }>();
 
   clientTransport.onmessage = (msg: any) => {
     const id = msg.id;
     if (id !== undefined && pendingRequests.has(id)) {
-      const { requestId } = pendingRequests.get(id)!;
+      const { requestId, ws } = pendingRequests.get(id)!;
       pendingRequests.delete(id);
-      if (activeWs && activeWs.readyState === 1 /* OPEN */) {
-        activeWs.send(
+      if (ws && ws.readyState === 1 /* OPEN */) {
+        ws.send(
           JSON.stringify({
             type: "mcp_response",
             requestId,
@@ -56,15 +58,15 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
     }
   };
 
-  function connect() {
-    logger.info(`Connecting to Relay Hub at ${serverUrl}`);
+  function connectSingleToken(token: string) {
+    logger.info(`Connecting to Relay Hub at ${serverUrl} with token: ${token.slice(0, 10)}...`);
     const ws = new (globalThis as any).WebSocket(`${serverUrl}?token=${encodeURIComponent(token)}`);
-    activeWs = ws;
 
     ws.onopen = () => {
-      logger.info(`✅ Successfully connected to Relay Hub at ${serverUrl}`);
+      activeSockets.add(ws);
+      logger.info(`✅ Successfully connected to Relay Hub for token: ${token.slice(0, 10)}...`);
       // Connection URLs are credentials. Keep them out of redirected daemon logs.
-      if (process.stdout.isTTY) {
+      if (process.stdout.isTTY && token === primaryToken) {
         const httpBase = process.env.RELAY_HTTP || serverUrl.replace(/^ws/, "http").replace(/\/ws$/, "/mcp");
         const deviceUrl = `${httpBase}/${token}`;
         console.log(`\n===============================================================`);
@@ -91,7 +93,7 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
         if (payload.type === "mcp_request") {
           const { requestId, body } = payload;
           if (body && body.id !== undefined) {
-            pendingRequests.set(body.id, { requestId });
+            pendingRequests.set(body.id, { requestId, ws });
             await clientTransport.send(body);
           } else {
             ws.send(
@@ -110,19 +112,22 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
     };
 
     ws.onclose = () => {
+      activeSockets.delete(ws);
       options.onDisconnect?.();
       if (shouldReconnect) {
-        logger.warn(`Connection to Relay Hub lost. Reconnecting in 3 seconds...`);
-        setTimeout(connect, 3000);
+        logger.warn(`Connection to Relay Hub lost for ${token.slice(0, 10)}... Reconnecting in 3 seconds...`);
+        setTimeout(() => connectSingleToken(token), 3000);
       }
     };
 
     ws.onerror = (err: any) => {
-      logger.error(`WebSocket error: ${err?.message || String(err)}`);
+      logger.error(`WebSocket error for ${token.slice(0, 10)}...: ${err?.message || String(err)}`);
     };
   }
 
-  connect();
+  for (const t of tokensToConnect) {
+    connectSingleToken(t);
+  }
 
   // Start embedded background worker service to execute dispatched tasks
   let workerService: any = null;
@@ -154,12 +159,16 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
   }
 
   return {
-    token,
+    token: primaryToken,
     close: () => {
       shouldReconnect = false;
-      if (activeWs) {
-        activeWs.close();
+      for (const ws of activeSockets) {
+        try {
+          ws.close();
+        } catch {}
       }
+      activeSockets.clear();
+      clientTransport.close();
       if (workerService) {
         workerService.stop();
       }
