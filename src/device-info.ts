@@ -2,6 +2,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
@@ -149,6 +150,133 @@ export function registerDeviceInfoTool(
             },
           ],
         };
+      }
+    }
+  );
+
+  // check_port
+  server.tool(
+    "check_port",
+    "Inspect local TCP port status to determine if it is currently in use, and identify the listening process PID and command.",
+    {
+      port: z.number().int().min(1).max(65535).describe("TCP Port number to inspect (1-65535)"),
+    },
+    async ({ port }) => {
+      audit(rootDir, { tool: "check_port" });
+
+      const isWin = process.platform === "win32";
+      try {
+        if (isWin) {
+          const res = spawnSync("netstat", ["-ano", "-p", "TCP"], {
+            shell: false,
+            timeout: 5000,
+            encoding: "utf8",
+          });
+          if (res.status === 0 && typeof res.stdout === "string") {
+            const lines = res.stdout.split(/\r?\n/);
+            const targetPattern = `:${port} `;
+            for (const line of lines) {
+              if (line.includes("LISTENING") && line.includes(targetPattern)) {
+                const parts = line.trim().split(/\s+/);
+                const pidStr = parts[parts.length - 1];
+                const pid = parseInt(pidStr, 10);
+
+                let processName = "unknown";
+                if (!Number.isNaN(pid)) {
+                  try {
+                    const taskRes = spawnSync("tasklist", ["/fi", `PID eq ${pid}`, "/fo", "csv", "/nh"], {
+                      shell: false,
+                      timeout: 3000,
+                      encoding: "utf8",
+                    });
+                    if (taskRes.status === 0 && typeof taskRes.stdout === "string") {
+                      const match = taskRes.stdout.match(/"([^"]+)"/);
+                      if (match) processName = match[1];
+                    }
+                  } catch {}
+                }
+
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify(
+                        {
+                          port,
+                          inUse: true,
+                          protocol: "TCP",
+                          status: "LISTENING",
+                          pid: !Number.isNaN(pid) ? pid : undefined,
+                          processName,
+                        },
+                        null,
+                        2
+                      ),
+                    },
+                  ],
+                };
+              }
+            }
+          }
+        } else {
+          // macOS / Linux: use lsof
+          const res = spawnSync("lsof", ["-iTCP:" + port, "-sTCP:LISTEN", "-P", "-n"], {
+            shell: false,
+            timeout: 5000,
+            encoding: "utf8",
+          });
+          if (res.status === 0 && typeof res.stdout === "string" && res.stdout.trim().length > 0) {
+            const lines = res.stdout.trim().split("\n");
+            if (lines.length > 1) {
+              const parts = lines[1].trim().split(/\s+/);
+              const command = parts[0];
+              const pid = parseInt(parts[1], 10);
+              const user = parts[2];
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      {
+                        port,
+                        inUse: true,
+                        protocol: "TCP",
+                        status: "LISTENING",
+                        command,
+                        pid: !Number.isNaN(pid) ? pid : undefined,
+                        user,
+                      },
+                      null,
+                      2
+                    ),
+                  },
+                ],
+              };
+            }
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  port,
+                  inUse: false,
+                  status: "FREE",
+                  message: `Port ${port} is free and not currently in use by any listening process.`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`check_port error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error checking port: ${err?.message || String(err)}` }] };
       }
     }
   );

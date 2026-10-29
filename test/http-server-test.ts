@@ -178,7 +178,7 @@ async function runHttpTest() {
     const statelessListJson = await statelessListResp.json();
     assert.strictEqual(statelessListJson.id, 801);
     assert.ok(Array.isArray(statelessListJson.result?.tools), "Tools list must be returned");
-    assert.strictEqual(statelessListJson.result.tools.length, 17, "Must return all 17 tools");
+    assert.strictEqual(statelessListJson.result.tools.length, 22, "Must return all 22 tools");
     console.log(`✓ Assertion passed: Stateless tools/list succeeded, returned ${statelessListJson.result.tools.length} tools.`);
 
     // 9. Test Classic SSE transport (/sse)

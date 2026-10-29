@@ -436,6 +436,124 @@ async function runLocalFsTests() {
 
     console.log("✓ Test 6 passed: read_multiple_files batch reading and per-file fault isolation verified.\n");
 
+    // -------------------------------------------------
+    // [Test 7] write_file creation, parents & overwrite control
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 7] write_file execution");
+    console.log("-------------------------------------------------");
+    const newFilePath = path.join(WORKSPACE_DIR, "nested", "deep", "created.txt");
+    const writeResp = await client.callTool({
+      name: "write_file",
+      arguments: {
+        path: newFilePath,
+        content: "console.log('created by write_file');\n",
+        overwrite: true,
+      },
+    });
+    assert.equal(writeResp.isError, undefined);
+    assert.ok(fs.existsSync(newFilePath));
+    assert.equal(fs.readFileSync(newFilePath, "utf8"), "console.log('created by write_file');\n");
+
+    // Test overwrite: false failure
+    const noOverwriteResp = await client.callTool({
+      name: "write_file",
+      arguments: {
+        path: newFilePath,
+        content: "new content",
+        overwrite: false,
+      },
+    });
+    assert.equal(noOverwriteResp.isError, true);
+    assert.ok(((noOverwriteResp.content as any)[0]?.text || "").includes("already exists"));
+
+    // Test credential block
+    const blockedWrite = await client.callTool({
+      name: "write_file",
+      arguments: {
+        path: path.join(os.homedir(), ".ssh", "authorized_keys"),
+        content: "malicious",
+      },
+    });
+    assert.equal(blockedWrite.isError, true);
+    assert.ok(((blockedWrite.content as any)[0]?.text || "").includes("Access denied"));
+    console.log("✓ Test 7 passed: write_file directory creation, content writing, overwrite protection & credential blocking verified.\n");
+
+    // -------------------------------------------------
+    // [Test 8] edit_block surgical replacement
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 8] edit_block surgical replacement");
+    console.log("-------------------------------------------------");
+    const editResp = await client.callTool({
+      name: "edit_block",
+      arguments: {
+        path: newFilePath,
+        target: "created by write_file",
+        replacement: "surgically modified by edit_block",
+      },
+    });
+    assert.equal(editResp.isError, undefined);
+    assert.equal(
+      fs.readFileSync(newFilePath, "utf8"),
+      "console.log('surgically modified by edit_block');\n"
+    );
+
+    // Target not found error
+    const notFoundEdit = await client.callTool({
+      name: "edit_block",
+      arguments: {
+        path: newFilePath,
+        target: "this phrase does not exist in the file",
+        replacement: "abc",
+      },
+    });
+    assert.equal(notFoundEdit.isError, true);
+    assert.ok(((notFoundEdit.content as any)[0]?.text || "").includes("not found"));
+    console.log("✓ Test 8 passed: edit_block surgical replacement and mismatch validation verified.\n");
+
+    // -------------------------------------------------
+    // [Test 9] search_files by name & glob pattern
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 9] search_files matching");
+    console.log("-------------------------------------------------");
+    const searchFilesResp = await client.callTool({
+      name: "search_files",
+      arguments: {
+        path: WORKSPACE_DIR,
+        pattern: "*.txt",
+      },
+    });
+    assert.equal(searchFilesResp.isError, undefined);
+    const searchFilesData = JSON.parse((searchFilesResp.content as any)[0]?.text || "{}");
+    assert.ok(searchFilesData.totalFound >= 2);
+    const foundNames = searchFilesData.files.map((f: any) => f.name);
+    assert.ok(foundNames.includes("greeting.txt"));
+    assert.ok(foundNames.includes("readme.txt"));
+    console.log("✓ Test 9 passed: search_files glob matching verified.\n");
+
+    // -------------------------------------------------
+    // [Test 10] search_code keyword search
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 10] search_code keyword search");
+    console.log("-------------------------------------------------");
+    const searchCodeResp = await client.callTool({
+      name: "search_code",
+      arguments: {
+        path: WORKSPACE_DIR,
+        query: "surgically modified",
+      },
+    });
+    assert.equal(searchCodeResp.isError, undefined);
+    const searchCodeData = JSON.parse((searchCodeResp.content as any)[0]?.text || "{}");
+    assert.ok(searchCodeData.totalFound >= 1);
+    const match0 = searchCodeData.matches[0];
+    assert.ok(match0.file.endsWith("created.txt"));
+    assert.ok(match0.text.includes("surgically modified"));
+    console.log("✓ Test 10 passed: search_code content discovery and line reporting verified.\n");
+
   } finally {
     await client.close();
   }
