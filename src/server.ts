@@ -197,6 +197,8 @@ ${prompt}
         if (agentName) metaDetails += `\nagent: ${agentName}`;
         if (modelParam) metaDetails += `\nmodel: ${modelParam}`;
         if (effortParam) metaDetails += `\nreasoning_effort: ${effortParam}`;
+        if (continue_session) metaDetails += `\ncontinue_session: true`;
+        if (session_id && session_id.trim()) metaDetails += `\nsession_id: ${session_id.trim()}`;
 
         return {
           content: [
