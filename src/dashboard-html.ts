@@ -590,10 +590,10 @@ export function renderDashboardHtml(): string {
           <span>📝 全局分发指导说明 (AI Dispatch Instructions)</span>
         </div>
         <p class="section-desc">
-          在这里写下您期望 AI 遵循的分发习惯与场景规则。此说明会自动同步给 ChatGPT 及外部调用者，作为其自动判断任务归属的首要原则。
+          在这里写下您期望 AI 遵循的分发习惯与场景规则。此说明会自动同步给 ChatGPT 及外部调用者，作为其自动判断任务归属的首要原则。默认留空，由您自主按需定义。
         </p>
         <div class="form-group">
-          <textarea id="inp-instructions" placeholder="例如：涉及后端接口、服务端逻辑、数据库、系统脚本的开发任务走 codex；涉及前端界面、UI 组件、Vue、React、CSS交互走 agy。"></textarea>
+          <textarea id="inp-instructions" placeholder="默认留空（选填）。由您自主决定，例如可填写：'涉及后端开发走 codex；涉及前端页面走 agy' 等自定义习惯。"></textarea>
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label>默认兜底 Agent (Default Fallback Agent)</label>
@@ -749,7 +749,7 @@ export function renderDashboardHtml(): string {
       container.innerHTML = "";
 
       if (!currentConfig.routing.rules || currentConfig.routing.rules.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px;">暂无特定场景规则。请点击上方按钮添加或载入推荐模版。</div>';
+        container.innerHTML = '<div style="color:var(--text-muted); font-size:13px; text-align:center; padding:24px 20px; border:1px dashed #334155; border-radius:10px;">暂无特定场景规则（默认直接派发至默认 Agent）。<br>您可以点击上方「+ 添加场景规则」由您自由制定属于您的场景分发规则。</div>';
         return;
       }
 

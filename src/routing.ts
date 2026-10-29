@@ -25,30 +25,8 @@ export function getRoutingFilePath(rootDir: string = resolveBridgeRoot()): strin
 export function getDefaultRoutingConfig(): RoutingConfig {
   return {
     defaultAgent: "codex",
-    instructions: "涉及后端架构、服务端接口、数据库、系统脚本的开发任务走 codex；涉及前端界面、UI 组件、Vue/React、CSS 与页面展示的任务走 agy。",
-    rules: [
-      {
-        id: "rule_backend",
-        scenario: "后端及数据服务",
-        keywords: ["后端", "backend", "api", "database", "数据库", "server", "服务", "node", "python", "go", "sql", "redis"],
-        agent: "codex",
-        description: "后端开发、接口与数据库任务优先由 Codex 处理",
-      },
-      {
-        id: "rule_frontend",
-        scenario: "前端与界面交互",
-        keywords: ["前端", "frontend", "ui", "界面", "vue", "react", "css", "html", "web", "样式", "组件", "页面", "tailwind"],
-        agent: "agy",
-        description: "前端页面、UI 组件与可视化交互任务优先由 Antigravity (agy) 处理",
-      },
-      {
-        id: "rule_testing",
-        scenario: "测试与代码审查",
-        keywords: ["测试", "test", "unittest", "review", "审查", "lint", "规范"],
-        agent: "codex",
-        description: "自动化测试与代码静态检查由 Codex 处理",
-      },
-    ],
+    instructions: "",
+    rules: [],
   };
 }
 
