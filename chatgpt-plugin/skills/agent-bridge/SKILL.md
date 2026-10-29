@@ -9,7 +9,7 @@ Use this skill when the user asks to inspect system information, hardware, CPU, 
 
 ## Available Tools
 
-The Agent Bridge MCP server provides **38 specialized tools**:
+The Agent Bridge MCP server provides **39 specialized tools**:
 
 ### GitHub Pull Request & Review Workflow
 - `pr_list`: List pull requests on GitHub. Filter by `--repo` (e.g. `temiylin/vision_hub`), state (`open`, `closed`, `all`), and limit.
@@ -47,6 +47,7 @@ The Agent Bridge MCP server provides **38 specialized tools**:
 - `edit_block`: Surgically replace a specific code block in an existing file without rewriting the entire file.
 - `move_file`: Move or rename a file or directory across paths. Takes `{ source: string, destination: string, overwrite?: boolean }`.
 - `create_directory`: Create a new directory or nested folder hierarchy. Takes `{ path: string }`.
+- `inspect_project_directories`: Batch inspect multiple project folders under a workspace in a single call; summarizes recursive file counts and byte sizes for `docs/output/tmp/scratch/work` (or custom folders) plus read-only Git status without triggering confirmation prompts.
 
 ### Terminal Execution
 - `execute_command`: Directly execute shell commands with configurable working directory, execution timeout, standard I/O truncation, and dangerous command protection. Takes `{ command: string, cwd?: string, timeout_seconds?: number, env_vars?: Record<string, string> }`.

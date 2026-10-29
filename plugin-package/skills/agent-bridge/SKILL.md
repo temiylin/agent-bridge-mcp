@@ -5,7 +5,7 @@ description: Directly inspect, monitor, manage PRs, and dispatch continuous pair
 
 # Agent Bridge Skill
 
-When this plugin is active, you have direct, secure access to the user's local Mac/PC via the Agent Bridge MCP server (38 specialized tools).
+When this plugin is active, you have direct, secure access to the user's local Mac/PC via the Agent Bridge MCP server (39 specialized tools).
 
 ## When to use each tool:
 
@@ -47,6 +47,7 @@ When this plugin is active, you have direct, secure access to the user's local M
    - `edit_block`: Surgically replace a specific code block in an existing file without rewriting the whole file.
    - `move_file`: Move or rename files or directories with overwrite protection.
    - `create_directory`: Create a directory or nested directory structure safely and idempotently.
+   - `inspect_project_directories`: Batch inspect multiple project folders under a workspace in a single call; summarizes recursive file counts and byte sizes for `docs/output/tmp/scratch/work` (or custom folders) plus read-only Git status without triggering confirmation prompts.
 
 7. **Local Task Dispatch & Session Continuity**:
    - `list_models`: Discover available models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
