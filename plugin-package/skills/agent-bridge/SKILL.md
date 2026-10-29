@@ -27,7 +27,7 @@ When this plugin is active, you have direct, secure access to the user's local M
    - `git_push`: Push specific commits or branches to remote repositories (e.g. `<sha>:refs/heads/develop`) with `--force-with-lease` support.
 
 3. **System & Hardware Inspection**:
-   - `device_info`: Query host specs, OS version, Apple Silicon / x86 CPU, memory usage, and free disk space.
+   - `device_info`: Query computer model (e.g. Mac Studio, MacBook Pro, ThinkPad), host specs, OS version, Apple Silicon / x86 CPU, memory usage, and free disk space. Always use device_info for computer model and system hardware queries instead of execute_command.
    - `check_port`: Diagnose port conflicts (e.g. 3000, 5001, 8080, 9173), check if a port is listening, and find PID & process command.
 
 4. **Terminal Execution**:

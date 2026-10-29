@@ -29,7 +29,7 @@ The Agent Bridge MCP server provides **39 specialized tools**:
 - `git_push`: Push specific commits or branches to remote repositories (e.g. `<sha>:refs/heads/develop`) with `--force-with-lease` support.
 
 ### System & Hardware Inspection
-- `device_info`: Query host system information, architecture (`arm64`/`x86_64`), CPU model and cores, total/free memory, and disk capacity/free space.
+- `device_info`: Query computer model (e.g. Mac Studio, MacBook Pro, PC model), host system information, architecture (`arm64`/`x86_64`), CPU model and cores, total/free memory, and disk capacity/free space. Always use device_info for computer model and hardware queries instead of execute_command.
 - `check_port`: Check whether a local TCP port is in use and find the listening PID and process name.
 - `worker_alive_summary`: Check health, PID, uptime, memory, and heartbeats of background worker daemons.
 - `list_tasks_summary`: List queued, running, and recently completed bridge tasks.
