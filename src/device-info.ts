@@ -1,5 +1,6 @@
 import os from "node:os";
 import fs from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
@@ -43,7 +44,8 @@ export function registerDeviceInfoTool(
         // 3. Disk Space (using Node native statfsSync)
         let diskInfo: { totalBytes: number; freeBytes: number; availableBytes: number; freePercentage: number } | null = null;
         try {
-          const stat = fs.statfsSync("/");
+          const rootDrive = process.platform === "win32" ? (path.parse(process.cwd()).root || "C:\\") : "/";
+          const stat = fs.statfsSync(rootDrive);
           const totalBytes = Number(stat.blocks) * Number(stat.bsize);
           const freeBytes = Number(stat.bfree) * Number(stat.bsize);
           const availableBytes = Number(stat.bavail) * Number(stat.bsize);
@@ -60,13 +62,24 @@ export function registerDeviceInfoTool(
         // 4. Running Processes Count (strictly count only, no parameters or process names)
         let runningProcessCount = 0;
         try {
-          const psResult = spawnSync("ps", ["-A", "-o", "pid="], {
-            shell: false,
-            timeout: 3000,
-            encoding: "utf8",
-          });
-          if (psResult.status === 0 && typeof psResult.stdout === "string") {
-            runningProcessCount = psResult.stdout.trim().split("\n").filter(Boolean).length;
+          if (process.platform === "win32") {
+            const tasklistRes = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
+              shell: false,
+              timeout: 3000,
+              encoding: "utf8",
+            });
+            if (tasklistRes.status === 0 && typeof tasklistRes.stdout === "string") {
+              runningProcessCount = tasklistRes.stdout.trim().split(/\r?\n/).filter(Boolean).length;
+            }
+          } else {
+            const psResult = spawnSync("ps", ["-A", "-o", "pid="], {
+              shell: false,
+              timeout: 3000,
+              encoding: "utf8",
+            });
+            if (psResult.status === 0 && typeof psResult.stdout === "string") {
+              runningProcessCount = psResult.stdout.trim().split("\n").filter(Boolean).length;
+            }
           }
         } catch (err: any) {
           logger.warn(`device_info: error counting processes: ${err?.message || String(err)}`);

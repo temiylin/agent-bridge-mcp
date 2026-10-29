@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, ChildProcess } from "node:child_process";
+import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
@@ -400,19 +400,44 @@ export async function processTaskFile(
       let killTimer: NodeJS.Timeout | null = null;
       let cancelCheckInterval: NodeJS.Timeout | null = null;
 
-      try {
-        const extraPaths = [
-          "/opt/homebrew/bin",
-          "/usr/local/bin",
-          path.join(os.homedir(), ".local", "bin"),
-          path.join(os.homedir(), ".cargo", "bin"),
-        ].filter(p => fs.existsSync(p));
+      const isWin = process.platform === "win32";
+      const killChild = (sig: "SIGTERM" | "SIGKILL") => {
+        const activeChild = child as ChildProcess | null;
+        if (activeChild && activeChild.pid !== undefined && activeChild.exitCode === null && activeChild.signalCode === null) {
+          if (isWin) {
+            try {
+              const killArgs = ["/T", "/PID", String(activeChild.pid)];
+              if (sig === "SIGKILL") killArgs.push("/F");
+              spawnSync("taskkill", killArgs, { shell: false, windowsHide: true });
+            } catch {}
+          } else {
+            try {
+              activeChild.kill(sig);
+            } catch {}
+          }
+        }
+      };
 
-        const currentPath = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin";
-        const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(":")])).join(":");
+      try {
+        const pathSep = isWin ? ";" : ":";
+        const extraPaths = isWin
+          ? [
+              path.join(process.env.APPDATA || "", "npm"),
+              path.join(process.env.LOCALAPPDATA || "", "Programs", "Python"),
+              path.join(os.homedir(), ".cargo", "bin"),
+            ].filter((p) => p && fs.existsSync(p))
+          : [
+              "/opt/homebrew/bin",
+              "/usr/local/bin",
+              path.join(os.homedir(), ".local", "bin"),
+              path.join(os.homedir(), ".cargo", "bin"),
+            ].filter((p) => fs.existsSync(p));
+
+        const currentPath = process.env.PATH || (isWin ? "" : "/usr/bin:/bin:/usr/sbin:/sbin");
+        const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(pathSep)].filter(Boolean))).join(pathSep);
 
         child = spawn(command, args, {
-          shell: false,
+          shell: isWin,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
             ...process.env,
@@ -428,16 +453,11 @@ export async function processTaskFile(
         timer = setTimeout(() => {
           isTimeout = true;
           logWorker("WARN", `Task ${taskId} timed out after ${timeoutMs}ms. Sending SIGTERM to process.`);
-          const activeChild = child as ChildProcess | null;
-          if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
-            activeChild.kill("SIGTERM");
-            killTimer = setTimeout(() => {
-              if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
-                logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
-                activeChild.kill("SIGKILL");
-              }
-            }, 5000);
-          }
+          killChild("SIGTERM");
+          killTimer = setTimeout(() => {
+            logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
+            killChild("SIGKILL");
+          }, 5000);
         }, timeoutMs);
       }
 
@@ -449,16 +469,11 @@ export async function processTaskFile(
           } catch {}
           isCancelled = true;
           logWorker("WARN", `Task ${taskId} cancellation requested. Sending SIGTERM to process.`);
-          const activeChild = child as ChildProcess | null;
-          if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
-            activeChild.kill("SIGTERM");
-            killTimer = setTimeout(() => {
-              if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
-                logWorker("WARN", `Task ${taskId} process still running after 5s of cancellation. Sending SIGKILL.`);
-                activeChild.kill("SIGKILL");
-              }
-            }, 5000);
-          }
+          killChild("SIGTERM");
+          killTimer = setTimeout(() => {
+            logWorker("WARN", `Task ${taskId} process still running after 5s of cancellation. Sending SIGKILL.`);
+            killChild("SIGKILL");
+          }, 5000);
         }
       }, 1000);
 
