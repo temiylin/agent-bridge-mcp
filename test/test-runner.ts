@@ -83,6 +83,10 @@ async function runTests() {
     "edit_block",
     "search_files",
     "search_code",
+    "tail_file",
+    "move_file",
+    "create_directory",
+    "execute_command",
     "get_file_info",
     "list_models",
   ]);

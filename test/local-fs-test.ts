@@ -554,6 +554,94 @@ async function runLocalFsTests() {
     assert.ok(match0.text.includes("surgically modified"));
     console.log("✓ Test 10 passed: search_code content discovery and line reporting verified.\n");
 
+    // -------------------------------------------------
+    // [Test 11] tail_file reading
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 11] tail_file operations");
+    console.log("-------------------------------------------------");
+    const multilineFile = path.join(WORKSPACE_DIR, "multiline.log");
+    const sampleLines = Array.from({ length: 50 }, (_, i) => `Log entry line ${i + 1}`).join("\n") + "\n";
+    fs.writeFileSync(multilineFile, sampleLines, "utf8");
+
+    const tailResp = await client.callTool({
+      name: "tail_file",
+      arguments: {
+        path: multilineFile,
+        lines: 5,
+      },
+    });
+    assert.equal(tailResp.isError, undefined);
+    const tailData = JSON.parse((tailResp.content as any)[0]?.text || "{}");
+    assert.ok(tailData.content.includes("Log entry line 50"));
+    assert.ok(!tailData.content.includes("Log entry line 1\n"));
+    console.log("✓ Test 11 passed: tail_file reverse reading verified.\n");
+
+    // -------------------------------------------------
+    // [Test 12] move_file operations
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 12] move_file operations");
+    console.log("-------------------------------------------------");
+    const srcFile = path.join(WORKSPACE_DIR, "multiline.log");
+    const destFile = path.join(WORKSPACE_DIR, "renamed.log");
+    const moveResp = await client.callTool({
+      name: "move_file",
+      arguments: {
+        source: srcFile,
+        destination: destFile,
+      },
+    });
+    assert.equal(moveResp.isError, undefined);
+    assert.ok(!fs.existsSync(srcFile));
+    assert.ok(fs.existsSync(destFile));
+    console.log("✓ Test 12 passed: move_file file renaming verified.\n");
+
+    // -------------------------------------------------
+    // [Test 13] create_directory operations
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 13] create_directory operations");
+    console.log("-------------------------------------------------");
+    const newDir = path.join(WORKSPACE_DIR, "folder", "subfolder");
+    const createDirResp = await client.callTool({
+      name: "create_directory",
+      arguments: {
+        path: newDir,
+      },
+    });
+    assert.equal(createDirResp.isError, undefined);
+    assert.ok(fs.existsSync(newDir) && fs.statSync(newDir).isDirectory());
+    console.log("✓ Test 13 passed: create_directory creation verified.\n");
+
+    // -------------------------------------------------
+    // [Test 14] execute_command execution & security blocks
+    // -------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 14] execute_command operations");
+    console.log("-------------------------------------------------");
+    const execResp = await client.callTool({
+      name: "execute_command",
+      arguments: {
+        command: "node -e \"console.log('AGENT_BRIDGE_EXEC_OK');\"",
+      },
+    });
+    assert.equal(execResp.isError, undefined);
+    const execData = JSON.parse((execResp.content as any)[0]?.text || "{}");
+    assert.equal(execData.exitCode, 0);
+    assert.ok(execData.stdout.includes("AGENT_BRIDGE_EXEC_OK"));
+
+    // Verify dangerous command blocked
+    const dangerousResp = await client.callTool({
+      name: "execute_command",
+      arguments: {
+        command: "rm -rf /",
+      },
+    });
+    assert.equal(dangerousResp.isError, true);
+    assert.ok(((dangerousResp.content as any)[0]?.text || "").includes("Security Blocked"));
+    console.log("✓ Test 14 passed: execute_command execution & safety blocking verified.\n");
+
   } finally {
     await client.close();
   }

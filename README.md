@@ -141,20 +141,24 @@ npm run serve:mcp
 
 ## Available Tools Reference
 
-The server exposes **22 dedicated tools** partitioned into functional categories:
+The server exposes **26 dedicated tools** partitioned into functional categories:
 
 | Tool Name | Scope | Purpose | Safety Guardrails |
 | :--- | :--- | :--- | :--- |
 | `device_info` | Telemetry | Live CPU, M-series Silicon, RAM, disk, processes, OS specs | Read-only; zero env-var / process parameter exposure |
 | `check_port` | Telemetry | Inspect TCP port status, check listening process PID & command | Safe local socket inspection; helps resolve dev port conflicts |
+| `execute_command` | Terminal | Execute shell command with safety guardrails and timeout | Destructive command blocklist (`rm -rf /`, `mkfs`, fork bombs); 120s timeout; 32KB truncation |
 | `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no diffs |
 | `search_code` | Search | Fast regex and keyword code search across project files | Built-in ripgrep + Node fallback; skips noise dirs & binaries |
 | `search_files` | Search | Recursively find files by name substring or glob pattern | 100 items max; auto-skips `node_modules`, `.git`, `dist` |
 | `list_directory` | Filesystem | List files and folders with recursion depth (`depth: 1-5`) & smart noise filtering | Blocks credentials; auto-filters `node_modules`/`.git`; 500 items max |
 | `read_multiple_files` | Filesystem | Batch-read multiple file contents in a single round-trip | Max 20 files per call; per-file fault isolation & credential blocklist |
 | `read_file` | Filesystem | Paginated text reading with byte offset and length limits | Blocks private keys; binary file null-byte suppression |
+| `tail_file` | Filesystem | Read the tail (end) of a file or log without loading the whole file | Reverse byte buffer seek; credential blacklist; lines & bytes clamping |
 | `write_file` | Filesystem | Write or create text files directly on disk | Blocks system dirs & credentials; auto-creates parent folders |
 | `edit_block` | Filesystem | Surgically search and replace code snippets in existing files | Verifies target snippet presence; prevents whole-file truncation |
+| `move_file` | Filesystem | Move or rename a file or directory across paths | Credential blacklist; overwrite protection; cross-device fallback |
+| `create_directory` | Filesystem | Create directory or nested directory structure | Credential blacklist; recursive auto-creation; idempotency |
 | `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
 | `list_models` | AI Models | Discover available models, active defaults, & reasoning levels | Queries local Codex cache and Antigravity models safely |
 | `send_task` | Agent Dispatch | Dispatch asynchronous task with optional model & reasoning effort | Validates registry; sanitized `task_id` naming |
@@ -178,8 +182,9 @@ The server exposes **22 dedicated tools** partitioned into functional categories
    File inspection explicitly forbids querying sensitive locations:
    - Directories: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `/etc/shadow`, `/etc/sudoers`.
    - Files: `id_rsa`, `*.pem`, `*.key`, `*.p12`, `*.keystore`, `.env`.
-3. **No Shell Injections**:
-   External commands (such as Git status probes) are executed with `shell: false` and explicitly fixed argument arrays. No arbitrary user shell execution is permitted.
+3. **Execution Guardrails & Destructive Command Interception**:
+   - Internal probes (e.g. Git status) run with `shell: false` and fixed arguments.
+   - User terminal command execution (`execute_command`) enforces regex blacklists intercepting root deletions (`rm -rf /`, `rm -rf ~`), disk formatting (`mkfs`, `format`), and fork bombs. Commands run with strict timeout limits (default 30s, max 120s) and automatic 32KB stdout/stderr truncation.
 4. **Binary File Protection**:
    The `read_file` tool scans byte chunks for null bytes (`\0`). If binary content is detected, text output is suppressed to prevent buffer corruption and terminal garbage.
 5. **Audit Logging**:
