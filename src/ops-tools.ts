@@ -542,21 +542,14 @@ export function registerOpsTools(
       logger.info(`wait_task: timed out waiting for taskId=${task_id} after ${clampedTimeout}s`);
       audit(rootDir, { tool: "wait_task", taskId: task_id, state: currentStatus.state });
 
-      // Read live stdout progress from logs/<taskId>.out
-      let progressReport = "任务正在初始化或 Agent 正在分析上下文...";
+      // Read live stdout progress stats (bytes/size) without leaking repetitive partial text
       let outputStats = "";
       try {
         const outFilePath = resolveSafePath(logsDir, rootDir, `${task_id}.out`);
         if (fs.existsSync(outFilePath)) {
-          const rawOutput = fs.readFileSync(outFilePath, "utf8");
-          const sizeBytes = Buffer.byteLength(rawOutput, "utf8");
-          const charCount = rawOutput.length;
-          if (sizeBytes > 0) {
-            outputStats = ` (已产生分析内容约 ${charCount} 字 / ${(sizeBytes / 1024).toFixed(1)} KB)`;
-          }
-          const extracted = extractActionProgress(rawOutput);
-          if (extracted && extracted.trim().length > 0) {
-            progressReport = extracted.trim();
+          const stat = fs.statSync(outFilePath);
+          if (stat.size > 0) {
+            outputStats = `，后台已生成 ${(stat.size / 1024).toFixed(1)} KB`;
           }
         }
       } catch {}
@@ -564,22 +557,20 @@ export function registerOpsTools(
       let elapsedStr = "";
       if (currentStatus.startedAt) {
         const elapsedSec = Math.max(1, Math.round((Date.now() - new Date(currentStatus.startedAt).getTime()) / 1000));
-        elapsedStr = ` | 已执行 ${elapsedSec}s`;
+        elapsedStr = `已执行 ${elapsedSec}s`;
       }
 
-      const agentLabel = currentStatus.agent ? `Agent: ${currentStatus.agent}` : "Agent 执行中";
-      const modelLabel = currentStatus.model ? ` | 模型: ${currentStatus.model}` : "";
+      const agentPart = currentStatus.agent ? `[${currentStatus.agent}]` : "";
+      const metaInfo = [elapsedStr, outputStats].filter(Boolean).join("");
+      const metaPart = metaInfo ? `(${metaInfo})` : "";
+      const details = [agentPart, metaPart].filter(Boolean).join(" ");
+      const prefix = details ? ` ${details}` : "";
 
       return {
         content: [
           {
             type: "text",
-            text: `Status: Pending. Task "${task_id}" 仍在执行，可再次调用 wait_task。${clampNote}
-
---- [实时执行进度 / In-Progress Update] ---
-[${agentLabel}${modelLabel} | 状态: ${currentStatus.state || "running"}${elapsedStr}]${outputStats}
-${progressReport}
-------------------------------------------`,
+            text: `Status: Pending. Task "${task_id}"${prefix} 仍在执行，可再次调用 wait_task。${clampNote}`,
           },
         ],
       };
