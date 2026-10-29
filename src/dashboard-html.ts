@@ -577,9 +577,9 @@ export function renderDashboardHtml(): string {
 
     <!-- Tab Bar -->
     <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchTab('tab-routing')">🎯 调度偏好与场景规则</button>
-      <button class="tab-btn" onclick="switchTab('tab-agents')">🤖 本地 Agent 注册 (agents.json)</button>
-      <button class="tab-btn" onclick="switchTab('tab-system')">💻 硬件监控与诊断</button>
+      <button class="tab-btn active" onclick="switchTab('tab-routing', this)">🎯 调度偏好与场景规则</button>
+      <button class="tab-btn" onclick="switchTab('tab-agents', this)">🤖 本地 Agent 注册 (agents.json)</button>
+      <button class="tab-btn" onclick="switchTab('tab-system', this)">💻 硬件监控与诊断</button>
     </div>
 
     <!-- Tab 1: Routing & Instructions -->
@@ -666,7 +666,7 @@ export function renderDashboardHtml(): string {
   </div>
 
   <!-- Toast -->
-  <div id="toast">✅ 配置已成功保存并即刻生效！</div>
+  <div id="toast">✅ 操作成功！</div>
 
   <script>
     let currentConfig = {
@@ -694,11 +694,12 @@ export function renderDashboardHtml(): string {
       setTimeout(() => toast.classList.remove("show"), 2500);
     }
 
-    function switchTab(tabId) {
+    function switchTab(tabId, btn) {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
       document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-      event.currentTarget.classList.add("active");
-      document.getElementById(tabId).classList.add("active");
+      if (btn) btn.classList.add("active");
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add("active");
     }
 
     async function loadData() {
@@ -761,12 +762,25 @@ export function renderDashboardHtml(): string {
 
         const title = document.createElement("div");
         title.className = "rule-title";
-        title.innerHTML = '<span>' + (rule.scenario || "未命名场景") + '</span>' +
-          '<span class="agent-tag ' + (rule.agent === "agy" ? "agy" : "") + '">目标: ' + (rule.agent || "codex") + '</span>';
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = rule.scenario || "未命名场景";
+
+        const agentSpan = document.createElement("span");
+        agentSpan.className = "agent-tag " + (rule.agent === "agy" ? "agy" : "");
+        agentSpan.textContent = "目标: " + (rule.agent || "codex");
+
+        title.appendChild(titleSpan);
+        title.appendChild(agentSpan);
 
         const actions = document.createElement("div");
         actions.className = "rule-actions";
-        actions.innerHTML = '<button class="btn-del" onclick="deleteRule(' + idx + ')">🗑️ 删除</button>';
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-del";
+        delBtn.textContent = "🗑️ 删除";
+        delBtn.onclick = function() { deleteRule(idx); };
+        actions.appendChild(delBtn);
 
         header.appendChild(title);
         header.appendChild(actions);
@@ -857,25 +871,54 @@ export function renderDashboardHtml(): string {
         const box = document.createElement("div");
         box.className = "agent-box";
 
-        box.innerHTML = 
-          '<div class="agent-box-header">' +
-            '<span class="agent-name-lg">🤖 ' + name + '</span>' +
-            '<span class="agent-tag ' + (name === "agy" ? "agy" : "") + '">输入: ' + cfg.input + '</span>' +
-          '</div>' +
-          '<div class="agent-cmd-box">' + cfg.command + ' ' + (cfg.args || []).join(' ') + '</div>' +
-          '<div style="display:flex; gap:8px; align-items:center;">' +
-            '<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="testAgent(\'' + name + '\', this)">🔍 测试连通性</button>' +
-          '</div>' +
-          '<div id="probe-' + name + '" class="probe-result"></div>';
+        const header = document.createElement("div");
+        header.className = "agent-box-header";
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "agent-name-lg";
+        nameSpan.textContent = "🤖 " + name;
+
+        const tagSpan = document.createElement("span");
+        tagSpan.className = "agent-tag " + (name === "agy" ? "agy" : "");
+        tagSpan.textContent = "输入: " + (cfg.input || "stdin");
+
+        header.appendChild(nameSpan);
+        header.appendChild(tagSpan);
+
+        const cmdBox = document.createElement("div");
+        cmdBox.className = "agent-cmd-box";
+        cmdBox.textContent = cfg.command + " " + (cfg.args || []).join(" ");
+
+        const actionRow = document.createElement("div");
+        actionRow.style.cssText = "display:flex; gap:8px; align-items:center;";
+
+        const probeBtn = document.createElement("button");
+        probeBtn.className = "btn-secondary";
+        probeBtn.style.cssText = "font-size:12px; padding:6px 12px;";
+        probeBtn.textContent = "🔍 测试连通性";
+
+        const resBox = document.createElement("div");
+        resBox.id = "probe-" + name;
+        resBox.className = "probe-result";
+
+        probeBtn.onclick = function() {
+          testAgent(name, probeBtn, resBox);
+        };
+
+        actionRow.appendChild(probeBtn);
+
+        box.appendChild(header);
+        box.appendChild(cmdBox);
+        box.appendChild(actionRow);
+        box.appendChild(resBox);
 
         container.appendChild(box);
       });
     }
 
-    async function testAgent(agentName, btn) {
+    async function testAgent(agentName, btn, resBox) {
       btn.disabled = true;
       btn.textContent = "检测中...";
-      const resBox = document.getElementById("probe-" + agentName);
       try {
         const res = await fetch("/api/test-agent", {
           method: "POST",
@@ -905,7 +948,7 @@ export function renderDashboardHtml(): string {
       const cmd = prompt("执行命令（如 python3 或 bash）：", "python3");
       if (!cmd) return;
       const argsRaw = prompt("参数列表（空格隔开，可为空）：", "");
-      const args = (argsRaw || "").split(' ').map(s => s.trim()).filter(Boolean);
+      const args = (argsRaw || "").split(" ").map(s => s.trim()).filter(Boolean);
       const input = prompt("输入方式 (stdin 或 arg)：", "stdin") === "arg" ? "arg" : "stdin";
 
       currentConfig.agents[name] = {
