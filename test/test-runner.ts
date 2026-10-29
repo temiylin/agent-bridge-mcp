@@ -89,6 +89,18 @@ async function runTests() {
     "execute_command",
     "get_file_info",
     "list_models",
+    "git_diff",
+    "git_check_fast_forward",
+    "git_log",
+    "git_fetch",
+    "git_push",
+    "pr_list",
+    "pr_view",
+    "pr_diff",
+    "pr_checks",
+    "pr_create",
+    "pr_review",
+    "pr_merge",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

@@ -141,14 +141,26 @@ npm run serve:mcp
 
 ## Available Tools Reference
 
-The server exposes **26 dedicated tools** partitioned into functional categories:
+The server exposes **38 dedicated tools** partitioned into functional categories:
 
 | Tool Name | Scope | Purpose | Safety Guardrails |
 | :--- | :--- | :--- | :--- |
 | `device_info` | Telemetry | Live CPU, M-series Silicon, RAM, disk, processes, OS specs | Read-only; zero env-var / process parameter exposure |
 | `check_port` | Telemetry | Inspect TCP port status, check listening process PID & command | Safe local socket inspection; helps resolve dev port conflicts |
 | `execute_command` | Terminal | Execute shell command with safety guardrails and timeout | Destructive command blocklist (`rm -rf /`, `mkfs`, fork bombs); 120s timeout; 32KB truncation |
-| `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no diffs |
+| `pr_list` | GitHub PR | List pull requests on GitHub (`--repo`, `state`, `limit`) | Powered by host `gh` CLI; structured JSON parsing; non-destructive |
+| `pr_view` | GitHub PR | Inspect PR details, description, and Codex P0/P1/P2 review comments | Extracts comment bodies and review states for rework triage |
+| `pr_diff` | GitHub PR | View full or patch diff of pull request directly from GitHub | Safe 48KB clamp; supports remote repositories |
+| `pr_checks` | GitHub PR | Inspect GitHub Actions and CI status checks on PR | Summary of pass, fail, pending checks with URLs |
+| `pr_create` | GitHub PR | Open a new pull request on GitHub with title and markdown body | Validates branch existence; auto-pushes if specified |
+| `pr_review` | GitHub PR | Post code reviews (`COMMENT`, `APPROVE`, `REQUEST_CHANGES`) | Direct integration with GitHub Pull Request review workflow |
+| `pr_merge` | GitHub PR | Merge PR via fast-forward, merge commit, or squash | Configurable auto branch deletion |
+| `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no destructive side-effects |
+| `git_diff` | Git | Compare working tree, staged changes, or branch diffs (`--stat`) | Safe 48KB clamp; stat flag distinguishes backend vs frontend changes |
+| `git_check_fast_forward` | Git | Test whether branch can fast-forward merge via `git merge-base --is-ancestor` | Returns boolean `can_fast_forward` and incoming commits |
+| `git_log` | Git | Query commit history across branch ranges (`<base>..<head>`) | Formatted output with hash, author, date, and subject |
+| `git_fetch` | Git | Fetch commits and refs from remote repositories (`github`, `origin`) | Network read-only operation; safe remote ref update |
+| `git_push` | Git | Push commits or branches directly (e.g. `<sha>:refs/heads/develop`) | Supports `--force-with-lease` for safe ref updates |
 | `search_code` | Search | Fast regex and keyword code search across project files | Built-in ripgrep + Node fallback; skips noise dirs & binaries |
 | `search_files` | Search | Recursively find files by name substring or glob pattern | 100 items max; auto-skips `node_modules`, `.git`, `dist` |
 | `list_directory` | Filesystem | List files and folders with recursion depth (`depth: 1-5`) & smart noise filtering | Blocks credentials; auto-filters `node_modules`/`.git`; 500 items max |
@@ -161,7 +173,7 @@ The server exposes **26 dedicated tools** partitioned into functional categories
 | `create_directory` | Filesystem | Create directory or nested directory structure | Credential blacklist; recursive auto-creation; idempotency |
 | `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
 | `list_models` | AI Models | Discover available models, active defaults, & reasoning levels | Queries local Codex cache and Antigravity models safely |
-| `send_task` | Agent Dispatch | Dispatch asynchronous task with optional model & reasoning effort | Validates registry; sanitized `task_id` naming |
+| `send_task` | Agent Dispatch | Dispatch task with model, reasoning effort, and session continuity | Supports `continue_session` and `session_id` for multi-turn pair programming |
 | `read_result` | Agent Dispatch | Read Markdown result file for a completed task | Path traversal check; non-blocking pending status |
 | `read_result_page` | Agent Dispatch | Chunked paging reader for oversized result documents | Offset & length limits to prevent context overflow |
 | `get_task_status` | Lifecycle | Check task lifecycle state (`queued`, `running`, `completed`) | Metadata only; suppresses prompt/result content |
