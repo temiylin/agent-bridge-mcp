@@ -151,6 +151,8 @@ async function main() {
 <dict>
     <key>Label</key>
     <string>com.agent-bridge.relay</string>
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_ROOT}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${nodeBin}</string>
@@ -167,6 +169,8 @@ async function main() {
         <string>${process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}</string>
         <key>HOME</key>
         <string>${HOME}</string>
+        <key>AGENT_BRIDGE_REPO</key>
+        <string>${PROJECT_ROOT}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

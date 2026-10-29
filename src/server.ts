@@ -16,6 +16,8 @@ import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
 import { registerModelsTool } from "./models.js";
 import { registerTerminalTools } from "./terminal.js";
+import { registerGitTools } from "./git-tools.js";
+import { registerGitHubPrTools } from "./github-pr.js";
 import { resolveTaskAgent } from "./routing.js";
 
 export interface BridgeMcpServerInstance {
@@ -55,8 +57,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       agent: z.string().optional().describe("Optional agent name (must be registered in agents.json)"),
       model: z.string().optional().describe("Optional model identifier for the execution agent (e.g., 'gpt-6.1', 'o3', 'gpt-6-luna')"),
       reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
+      continue_session: z.boolean().optional().describe("If true, resumes and continues the previous agent conversation session (e.g., codex exec resume --last or agy --continue)"),
+      session_id: z.string().optional().describe("Optional specific session or thread ID to resume"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -155,6 +159,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
         if (modelParam) headerMeta += `- **Model**: ${modelParam}\n`;
         if (effortParam) headerMeta += `- **Reasoning Effort**: ${effortParam}\n`;
+        if (continue_session) headerMeta += `- **Continue Session**: true\n`;
+        if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
         headerMeta += `- **Created At**: ${createdAt}\n`;
 
         const content = `# ${taskTitle}
@@ -310,6 +316,8 @@ ${prompt}
   registerLocalFsTools(server, rootDir, logger);
   registerModelsTool(server, rootDir, logger);
   registerTerminalTools(server, rootDir, logger);
+  registerGitTools(server, rootDir, logger);
+  registerGitHubPrTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

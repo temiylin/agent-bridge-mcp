@@ -1,41 +1,65 @@
 ---
 name: agent-bridge
-description: Directly inspect, monitor, and dispatch tasks to your local Mac/PC from ChatGPT.
+description: Directly inspect, monitor, manage PRs, and dispatch continuous pair-programming tasks to your local Mac/PC from ChatGPT.
 ---
 
 # Agent Bridge Skill
 
-When this plugin is active, you have direct, secure access to the user's local Mac/PC via the Agent Bridge MCP server.
+When this plugin is active, you have direct, secure access to the user's local Mac/PC via the Agent Bridge MCP server (38 specialized tools).
 
 ## When to use each tool:
 
-1. **System & Hardware Inspection**:
-   - `device_info`: Call this when the user asks about their computer's specs, OS version, CPU architecture, memory usage, or disk free space.
-   - `check_port`: Call this to diagnose local network/dev server port conflicts (e.g. 3000, 8080), check whether a port is in use, and identify the listening process PID and command.
+1. **GitHub Pull Request & Review Workflow**:
+   - `pr_list`: List pull requests on GitHub. Supports filtering by `--repo` (e.g. `temiylin/vision_hub`), state (`open`, `closed`, `all`), and limit.
+   - `pr_view`: Inspect PR title, body, state, labels, and review comments. Extract Codex's P0/P1/P2 audit comments and triage rework.
+   - `pr_diff`: Fetch full or partial PR diff directly from GitHub without needing local checkouts.
+   - `pr_checks`: Inspect GitHub Actions / CI status checks (shows total, passed, failed, and pending check runs).
+   - `pr_create`: Open a new pull request on GitHub with title, markdown body, base, and head branch.
+   - `pr_review`: Submit code reviews to GitHub PRs (`COMMENT`, `APPROVE`, `REQUEST_CHANGES`) with review comments.
+   - `pr_merge`: Merge PRs with fast-forward, squash, or merge commits, with optional branch deletion.
 
-2. **Terminal Execution**:
-   - `execute_command`: Call this to execute shell commands directly on the user's machine (e.g. running scripts, builds, tests, or diagnostics). Features configurable `cwd`, `timeout_seconds`, automatic output truncation, and strict interception of destructive commands (`rm -rf /`, `mkfs`, fork bombs).
+2. **Local Git Repository Operations**:
+   - `repo_status`: Inspect Git status of the project, current branch, uncommitted files, or recent commits.
+   - `git_diff`: Query unstaged or staged git diffs, branch diffs, or diff statistics (`stat: true`) to distinguish backend vs frontend changes.
+   - `git_check_fast_forward`: Verify whether a branch or commit can be fast-forward merged into another branch via `git merge-base --is-ancestor`.
+   - `git_log`: Query commit history across branch ranges (`<base>..<head>`) with hashes, authors, and commit subjects.
+   - `git_fetch`: Fetch branches and tags from remotes (`github`, `origin`, or `--all`).
+   - `git_push`: Push specific commits or branches to remote repositories (e.g. `<sha>:refs/heads/develop`) with `--force-with-lease` support.
 
-3. **Git Repository Status**:
-   - `repo_status`: Call this when the user asks about the Git status of the project, current branch, uncommitted files, or recent commits.
+3. **System & Hardware Inspection**:
+   - `device_info`: Query host specs, OS version, Apple Silicon / x86 CPU, memory usage, and free disk space.
+   - `check_port`: Diagnose port conflicts (e.g. 3000, 5001, 8080, 9173), check if a port is listening, and find PID & process command.
 
-4. **Code & File Search**:
-   - `search_code`: Call this to search code or text across project files by keyword or regex pattern. Returns matching files, line numbers, and snippet lines.
-   - `search_files`: Call this to find files by name or glob pattern (e.g. '*.ts', 'config', 'auth*') recursively.
+4. **Terminal Execution**:
+   - `execute_command`: Execute shell commands on the user's machine (e.g. building `frontend/Vue`, running `vitest`, pytest, or restarting services). Features configurable `cwd`, `timeout_seconds`, automatic output truncation, and strict interception of destructive commands (`rm -rf /`, `mkfs`, fork bombs).
 
-5. **Filesystem Reading, Writing & Operations**:
-   - `list_directory`: Call this to see files/folders in a directory or explore project structure. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.).
-   - `read_multiple_files`: Call this when you need to read multiple files simultaneously (e.g. project overview, config files, related modules). Batching reads into a single call dramatically reduces round-trips and response latency.
-   - `read_file`: Call this to read a specific single file or paginate through large files with offset/length.
-   - `tail_file`: Call this to read the end (tail) of large log files or output streams without loading the entire file into memory.
-   - `get_file_info`: Call this to inspect file metadata, size, or permissions.
-   - `write_file`: Call this to create or write full text content to a local file. Automatically creates parent directories.
-   - `edit_block`: Call this to surgically replace a specific text or code block in an existing file without rewriting the entire file.
-   - `move_file`: Call this to move or rename files or directories with overwrite control and cross-device support.
-   - `create_directory`: Call this to create a directory or nested directory structure safely and idempotently.
+5. **Code & File Search**:
+   - `search_code`: Search code or text across project files by keyword or regex pattern. Returns matching files, line numbers, and snippets.
+   - `search_files`: Find files by name or glob pattern (e.g. `*.ts`, `*config*`) recursively while ignoring noise directories.
 
-6. **Local Task Dispatch & AI Models**:
-   - `list_models`: Call this when the user asks what models are installed or available on their Mac/PC (Codex / Antigravity), or to inspect current default models and supported reasoning effort levels.
-   - `send_task`: Call this to dispatch long-running tasks to the local background agent worker. Smart routing is supported: if `agent` is omitted, tasks automatically route based on user rules (e.g. backend/database -> 'codex', frontend/UI -> 'agy'). You can also explicitly specify `agent` ('codex', 'agy'), `model` (e.g. 'gpt-6.1-sol', 'gpt-6-luna', 'o3'), and `reasoning_effort` ('low', 'medium', 'high', 'xhigh', 'max').
-   - `read_result`: Call this to check the results of a previously dispatched task.
-   - `worker_alive_summary`: Call this to check if the local daemon process is healthy.
+6. **Filesystem Reading, Writing & Operations**:
+   - `list_directory`: Safely browse directory trees with configurable `depth` (1-5) and automatic noise filtering (`node_modules`, `.git`, `dist`).
+   - `read_multiple_files`: Batch read contents of multiple files in a single round-trip.
+   - `read_file`: Read specific single files or paginate through large files with offset/length limits.
+   - `tail_file`: Read the tail end of large log files without loading the full file into memory.
+   - `get_file_info`: Inspect file metadata, size, timestamps, and permissions.
+   - `write_file`: Create or write text files directly on disk, auto-creating parent directories.
+   - `edit_block`: Surgically replace a specific code block in an existing file without rewriting the whole file.
+   - `move_file`: Move or rename files or directories with overwrite protection.
+   - `create_directory`: Create a directory or nested directory structure safely and idempotently.
+
+7. **Local Task Dispatch & Session Continuity**:
+   - `list_models`: Discover available models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
+   - `send_task`: Submit an asynchronous task to a target agent or worker daemon.
+     - **Session Continuity**: Set `continue_session: true` to continue pair-programming in the previous session without starting fresh. Pass `session_id` to resume a specific thread (resumes via `codex exec resume` or `agy -p --continue`).
+     - **Model & Reasoning**: Pass `model` (e.g. `gpt-6.1-sol`, `gpt-6-luna`, `o3`) and `reasoning_effort` (`low`, `medium`, `high`, `xhigh`, `max`).
+     - **Smart Routing**: Omit `agent` to automatically route based on user rules configured in the Web Dashboard.
+   - `read_result`: Retrieve the finished task result and markdown output.
+   - `read_result_page`: Paginate through oversized result documents.
+   - `get_task_status`: Non-blocking check of a task's current status (`queued`, `running`, `completed`, `failed`).
+   - `read_task_output`: Stream incremental stdout/stderr logs of a running task.
+   - `wait_task`: Block and wait for a dispatched task to finish with configurable timeout.
+   - `cancel_task`: Safely cancel a running or queued task.
+   - `worker_alive_summary`: Probe health and PID of background worker processes.
+   - `list_tasks_summary`: List queued, running, and recent tasks.
+   - `agent_registry_summary`: List registered subagents and their capabilities.

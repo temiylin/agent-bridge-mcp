@@ -115,6 +115,8 @@ export function parseTaskFile(content: string): {
   prompt: string;
   model?: string;
   reasoningEffort?: string;
+  continueSession?: boolean;
+  sessionId?: string;
 } {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
@@ -124,6 +126,12 @@ export function parseTaskFile(content: string): {
 
   const effortMatch = content.match(/^-[ \t]*\*\*Reasoning Effort\*\*:[ \t]*([^\r\n]*)$/m);
   const reasoningEffort = effortMatch ? effortMatch[1].trim() : "";
+
+  const continueMatch = content.match(/^-[ \t]*\*\*Continue Session\*\*:[ \t]*([^\r\n]*)$/m);
+  const continueSession = continueMatch ? continueMatch[1].trim().toLowerCase() === "true" : false;
+
+  const sessionMatch = content.match(/^-[ \t]*\*\*Session ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const sessionId = sessionMatch ? sessionMatch[1].trim() : "";
 
   const promptHeaderIdx = content.indexOf("## Prompt");
   let prompt = "";
@@ -143,6 +151,8 @@ export function parseTaskFile(content: string): {
     prompt,
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(continueSession ? { continueSession: true } : {}),
+    ...(sessionId ? { sessionId } : {}),
   };
 }
 
@@ -240,7 +250,7 @@ export async function processTaskFile(
   }
 
   const startedAt = new Date().toISOString();
-  const { agentName, prompt, model, reasoningEffort } = parseTaskFile(fileContent);
+  const { agentName, prompt, model, reasoningEffort, continueSession, sessionId } = parseTaskFile(fileContent);
 
   // Check cancellation before start
   const controlDir = path.join(currentRoot, "control");
@@ -354,6 +364,32 @@ export async function processTaskFile(
   const agentConfig: AgentConfig = registry[agentName];
   const command = agentConfig.command;
   const args = [...agentConfig.args];
+
+  // Dynamically handle session resumption / continuation
+  if (continueSession || sessionId) {
+    if (command.includes("codex") || agentName === "codex") {
+      const execIdx = args.indexOf("exec");
+      if (execIdx !== -1) {
+        if (sessionId) {
+          args.splice(execIdx + 1, 0, "resume", sessionId);
+        } else {
+          args.splice(execIdx + 1, 0, "resume", "--last");
+        }
+      } else {
+        if (sessionId) {
+          args.unshift("resume", sessionId);
+        } else {
+          args.unshift("resume", "--last");
+        }
+      }
+    } else if (command.includes("agy") || agentName === "agy") {
+      if (sessionId) {
+        args.push("--conversation", sessionId);
+      } else {
+        args.push("--continue");
+      }
+    }
+  }
 
   // Dynamically inject model parameter if specified
   if (model) {
