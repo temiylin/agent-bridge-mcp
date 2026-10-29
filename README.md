@@ -33,11 +33,14 @@ Control your local developer environment, inspect system health, explore Git rep
 
 - **Multi-Surface AI Control** — Connect seamlessly from ChatGPT Web, ChatGPT Desktop (in ordinary conversations without Codex mode), OpenAI Codex IDE/CLI, and Anthropic Claude Desktop.
 - **Hardware & Resource Telemetry (`device_info`)** — Real-time read-only inspection of host specs, Apple Silicon / ARM64 architecture, unified memory usage, disk storage, and process counts.
-- **Git Repository Intelligence (`repo_status`)** — Instant read-only status reports on branches, uncommitted changes, working tree status, and recent commit history with zero modification risk.
-- **Safe Filesystem Exploration** — Read file snippets with byte-range pagination and stream directories with built-in protection against directory traversal and symlink escape attacks.
+- **GitHub Pull Request & Review Suite (`pr_*`)** — Directly list PRs (`pr_list`), inspect Codex P0/P1/P2 audit comments (`pr_view`), view PR diffs (`pr_diff`), inspect CI status checks (`pr_checks`), submit code reviews (`pr_review`), open pull requests (`pr_create`), and merge with fast-forward or squash (`pr_merge`).
+- **Git Operations & Fast-Forward Verification (`git_*`, `repo_status`)** — Instant read-only status reports, commit range queries (`git_log`), diff statistics (`git_diff` with `--stat` to distinguish backend vs frontend changes), remote fetches (`git_fetch`), and branch fast-forward ancestry verification (`git_check_fast_forward` via `git merge-base --is-ancestor`).
+- **Multi-Turn Session Continuity & Parallel Isolation** — Support for continuous pair-programming on the same branch / session across multiple turns (`continue_session: true`, `session_id`). Supports semantic aliases (e.g. `session_id: "backend_api"`), auto-extracts engine UUIDs, and isolates parallel conversations without context crossover.
+- **Safe Filesystem & Batch Inspection** — Read file snippets with byte-range pagination, surgically edit blocks (`edit_block`), and batch inspect multiple project directories and Git statuses (`inspect_project_directories`) with built-in protection against directory traversal and symlink escape attacks.
 - **Credentials & Private Key Blocklists** — Automatic blocking of accesses targeting `~/.ssh`, `~/.aws`, `~/.kube`, `/etc/shadow`, and private keys (`.pem`, `.key`, `.p12`).
 - **Asynchronous Agent Dispatch** — Dispatch long-running autonomous workflows to background worker agents (`send_task`), monitor execution progress (`get_task_status`), stream live stdout logs (`read_task_output`), and retrieve results (`read_result`).
 - **Zero-Port Tunneling & Multi-Tenant Relay Hub** — Local machines connect outbound via secure WebSocket tunnels to the cloud relay gateway. No inbound ports, no firewall openings, and strict per-device token isolation.
+- **Native Cross-Platform Deployments** — Zero-touch auto-configuration on macOS (LaunchAgent) and Windows (PowerShell user startup & native executable isolation).
 - **Agent Plugins 1.0 Specification Compliance** — Pre-packaged with standard `plugin.json`, `mcp.json`, and `skills/` for one-click drag-and-drop installation into ChatGPT.
 
 ---
@@ -319,6 +322,16 @@ Configure available execution agents in `agents.json`:
 - `args`: Command-line arguments for non-interactive execution.
 - `input`: `"stdin"` (pipe prompt to child stdin) or `"arg"` (append prompt as CLI argument).
 
+### Multi-Turn Session Continuity (`session_id` & `continue_session`)
+
+When dispatching tasks via `send_task`, the system supports continuous pair-programming across multiple turns without re-reading the entire project from scratch:
+
+- **Semantic Aliases**: Pass `session_id: "backend_api"` or `session_id: "vue_frontend"` to isolate independent named workstreams.
+- **Engine Resumption**:
+  - For **Codex**: Automatically maps to `codex exec resume <session_id>` (or `--last` if no session ID was given).
+  - For **Antigravity (AGY)**: Automatically maps to `agy -p --conversation <session_id>` (or `--continue`).
+- **Parallel Isolation**: Parallel tasks with different session IDs never collide. Real session UUIDs emitted by agents are recorded in `sessions.json` and included in `results/<task_id>.md` metadata.
+
 ### Running the Worker
 
 ```bash
@@ -338,6 +351,15 @@ The project includes automated integration suites:
 ```bash
 # Run stdio comprehensive test runner
 npm test
+
+# Run Git & GitHub PR workflow test suite
+npm run test:git-pr
+
+# Run multi-turn session continuity & isolation tests
+npm run test:session
+
+# Run local web dashboard tests
+npm run test:dashboard
 
 # Run HTTP / Streamable transport test suite
 npm run test:http
