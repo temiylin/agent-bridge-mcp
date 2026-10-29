@@ -14,6 +14,8 @@
   "scripts": {
     "setup": "node scripts/auto-setup.mjs",
     "auto-setup": "node scripts/auto-setup.mjs",
+    "url": "node scripts/device-url.mjs",
+    "info": "node scripts/device-url.mjs",
     "agents:ui": "node scripts/agent-admin.mjs",
     "build": "tsc && chmod +x dist/index.js dist/worker.js",
     "start": "node dist/index.js",

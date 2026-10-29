@@ -92,7 +92,7 @@ Codex will read [`AGENTS.md`](AGENTS.md) and execute the turnkey automation scri
 2. Open **ChatGPT** -> **Settings** -> **Connectors / MCP** -> Click **Add Custom MCP Server**.
 3. In the lower-left corner of the modal, click **Upload Plugin Zip** (上传插件压缩包).
 4. Select `agent-bridge-plugin.zip`. All metadata, remote endpoints, and tool skills are loaded automatically without manual input.
-5. *(Alternative manual setup)*: If entering the URL manually, paste the device-specific URL printed by the setup script (`https://<relay-domain>/mcp/<device-token>`) and select **None** for authentication.
+5. *(Alternative manual setup)*: If entering the URL manually, paste the device-specific URL printed by the setup script (`https://<relay-domain>/mcp/<device-token>`) and select **None** for authentication. (Tip: run `npm run url` at any time to retrieve your machine's URL).
 6. In any standard conversation, ask: *"Inspect this Mac's hardware and free disk space"* to invoke your local tools!
 
 </details>
