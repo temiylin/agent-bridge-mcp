@@ -15,6 +15,7 @@ import { registerAgentRegistryTool } from "./agent-registry.js";
 import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
 import { registerModelsTool } from "./models.js";
+import { registerTerminalTools } from "./terminal.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -301,6 +302,7 @@ ${prompt}
   registerDeviceInfoTool(server, rootDir, logger);
   registerLocalFsTools(server, rootDir, logger);
   registerModelsTool(server, rootDir, logger);
+  registerTerminalTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

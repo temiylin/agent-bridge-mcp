@@ -25,9 +25,15 @@ The Agent Bridge MCP server provides the following tools:
 - `list_directory`: Safely browse directory entries. Takes `{ path: string, depth?: number, show_hidden?: boolean, ignore_patterns?: string[] }`. Supports `depth: 2` or `depth: 3` to recursively explore subdirectories in a single call while automatically filtering noise folders (`node_modules`, `.git`, `dist`, etc.).
 - `read_multiple_files`: Batch read contents of multiple files in a single call. Takes `{ paths: string[], max_bytes_per_file?: number }`.
 - `read_file`: Safely read single file content with offset and length limits. Takes `{ path: string, offset?: number, length?: number }`.
+- `tail_file`: Read recent tail lines or bytes of a log or file without loading entire file. Takes `{ path: string, lines?: number, max_bytes?: number }`.
 - `get_file_info`: Read file metadata (size, permissions, timestamps). Takes `{ path: string }`.
 - `write_file`: Directly write text content to a local file path, automatically creating parent directories.
 - `edit_block`: Surgically replace a specific code block in an existing file without rewriting the entire file.
+- `move_file`: Move or rename a file or directory across paths. Takes `{ source: string, destination: string, overwrite?: boolean }`.
+- `create_directory`: Create a new directory or nested folder hierarchy. Takes `{ path: string }`.
+
+### Terminal Execution
+- `execute_command`: Directly execute shell commands with configurable working directory, execution timeout, standard I/O truncation, and dangerous command protection. Takes `{ command: string, cwd?: string, timeout_seconds?: number, env_vars?: Record<string, string> }`.
 
 ### Task Dispatching & Management
 - `list_models`: Discover available AI models on this Mac (Codex / Antigravity), active defaults, and supported reasoning effort levels.
@@ -41,4 +47,4 @@ The Agent Bridge MCP server provides the following tools:
 ## Guidelines
 - Always call `device_info` when asked about Mac hardware, CPU, memory, or disk space.
 - Always call `repo_status` when asked about current git branch or changes.
-- All file operations are strictly read-only and credentials are automatically filtered.
+- Credentials and sensitive keys are strictly protected; dangerous destructive commands are intercepted automatically.

@@ -1021,4 +1021,200 @@ export function registerLocalFsTools(
       };
     }
   );
+
+  // 9. tail_file
+  server.tool(
+    "tail_file",
+    "Read the tail (end) of a file or log, returning the most recent lines without loading the whole file.",
+    {
+      path: z.string().describe("Absolute path to the log or text file"),
+      lines: z.number().int().min(1).max(500).optional().describe("Number of lines from end of file (default: 100, max: 500)"),
+      max_bytes: z.number().int().min(100).max(64000).optional().describe("Maximum bytes to read from end (default: 16000, max: 64000)"),
+    },
+    async ({ path: filePath, lines: lineCount, max_bytes }) => {
+      audit(rootDir, { tool: "tail_file" });
+
+      if (!filePath || typeof filePath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${filePath}".` }] };
+      }
+      if (isBlockedCredentialPath(filePath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${filePath}" is blocked by credential protection policy.` }] };
+      }
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return { isError: true, content: [{ type: "text", text: `Error: path does not exist or is not a regular file: "${filePath}".` }] };
+      }
+
+      try {
+        const stat = fs.statSync(filePath);
+        const reqBytes = Math.max(100, Math.min(64000, max_bytes || 16000));
+        const readLength = Math.min(stat.size, reqBytes);
+        const startOffset = Math.max(0, stat.size - readLength);
+
+        const fd = fs.openSync(filePath, "r");
+        const buffer = Buffer.alloc(readLength);
+        let bytesRead = 0;
+        try {
+          bytesRead = fs.readSync(fd, buffer, 0, readLength, startOffset);
+        } finally {
+          fs.closeSync(fd);
+        }
+
+        const rawText = buffer.slice(0, bytesRead).toString("utf8");
+        const allLines = rawText.split(/\r?\n/);
+        const maxLines = Math.max(1, Math.min(500, lineCount || 100));
+        const returnedLines = allLines.slice(-maxLines);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  path: filePath,
+                  totalSizeBytes: stat.size,
+                  bytesRead,
+                  startOffset,
+                  linesRequested: maxLines,
+                  linesReturned: returnedLines.length,
+                  content: returnedLines.join("\n"),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`tail_file error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error reading tail of file: ${err?.message || String(err)}` }] };
+      }
+    }
+  );
+
+  // 10. move_file
+  server.tool(
+    "move_file",
+    "Move or rename a file or directory from source path to destination path.",
+    {
+      source: z.string().describe("Absolute path to existing source file or directory"),
+      destination: z.string().describe("Absolute path to target destination"),
+      overwrite: z.boolean().optional().describe("Whether to overwrite destination if it exists. Default: false"),
+    },
+    async ({ source, destination, overwrite }) => {
+      audit(rootDir, { tool: "move_file" });
+
+      if (!source || !destination || typeof source !== "string" || typeof destination !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: source and destination must be non-empty strings." }] };
+      }
+      if (!path.isAbsolute(source) || !path.isAbsolute(destination)) {
+        return { isError: true, content: [{ type: "text", text: "Error: source and destination must both be absolute paths." }] };
+      }
+      if (isBlockedCredentialPath(source) || isBlockedCredentialPath(destination)) {
+        return { isError: true, content: [{ type: "text", text: "Access denied by credential protection policy." }] };
+      }
+      if (!fs.existsSync(source)) {
+        return { isError: true, content: [{ type: "text", text: `Error: source path does not exist: "${source}".` }] };
+      }
+
+      if (fs.existsSync(destination) && !overwrite) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: destination already exists at "${destination}". Pass overwrite: true to replace.` }],
+        };
+      }
+
+      try {
+        const destParent = path.dirname(destination);
+        if (!fs.existsSync(destParent)) {
+          fs.mkdirSync(destParent, { recursive: true });
+        }
+
+        try {
+          fs.renameSync(source, destination);
+        } catch (renameErr: any) {
+          // If cross-device link error (EXDEV), copy and unlink
+          if (renameErr.code === "EXDEV") {
+            fs.cpSync(source, destination, { recursive: true, force: Boolean(overwrite) });
+            fs.rmSync(source, { recursive: true, force: true });
+          } else {
+            throw renameErr;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  source,
+                  destination,
+                  message: `Successfully moved from "${source}" to "${destination}".`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`move_file error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error moving file: ${err?.message || String(err)}` }] };
+      }
+    }
+  );
+
+  // 11. create_directory
+  server.tool(
+    "create_directory",
+    "Create a new directory or nested directory structure on the local filesystem.",
+    {
+      path: z.string().describe("Absolute directory path to create"),
+    },
+    async ({ path: dirPath }) => {
+      audit(rootDir, { tool: "create_directory" });
+
+      if (!dirPath || typeof dirPath !== "string") {
+        return { isError: true, content: [{ type: "text", text: "Error: path must be a non-empty string." }] };
+      }
+      if (!path.isAbsolute(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Error: path must be an absolute path: "${dirPath}".` }] };
+      }
+      if (isBlockedCredentialPath(dirPath)) {
+        return { isError: true, content: [{ type: "text", text: `Access denied: path "${dirPath}" is blocked by credential protection policy.` }] };
+      }
+
+      try {
+        const alreadyExists = fs.existsSync(dirPath);
+        if (!alreadyExists) {
+          fs.mkdirSync(dirPath, { recursive: true });
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  path: dirPath,
+                  created: !alreadyExists,
+                  message: alreadyExists ? `Directory already exists at "${dirPath}".` : `Directory successfully created at "${dirPath}".`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`create_directory error: ${err?.message || String(err)}`);
+        return { isError: true, content: [{ type: "text", text: `Error creating directory: ${err?.message || String(err)}` }] };
+      }
+    }
+  );
 }
