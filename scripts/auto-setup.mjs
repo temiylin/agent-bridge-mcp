@@ -97,7 +97,7 @@ async function main() {
       },
       agy: {
         command: "agy",
-        args: ["-p", "--dangerously-skip-permissions"],
+        args: ["--dangerously-skip-permissions"],
         input: "stdin",
       },
     };
