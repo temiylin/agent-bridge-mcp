@@ -83,38 +83,16 @@ async function main() {
     console.log("✅ 已自动配置默认本地执行代理: codex 与 agy\n");
   }
 
-  // 确保 ~/agent-bridge/routing.json 存在默认的场景调度规则
+  // 确保 ~/agent-bridge/routing.json 存在基础调度配置文件（留空由用户在网页端自主设置）
   const routingJsonFile = path.join(bridgeDataDir, "routing.json");
   if (!fs.existsSync(routingJsonFile)) {
     const defaultRouting = {
       defaultAgent: "codex",
-      instructions: "涉及后端架构、服务端接口、数据库、系统脚本的开发任务走 codex；涉及前端界面、UI 组件、Vue/React、CSS 与页面展示的任务走 agy。",
-      rules: [
-        {
-          id: "rule_backend",
-          scenario: "后端及数据服务",
-          keywords: ["后端", "backend", "api", "database", "数据库", "server", "服务", "node", "python", "go", "sql", "redis"],
-          agent: "codex",
-          description: "后端开发、接口与数据库任务优先由 Codex 处理",
-        },
-        {
-          id: "rule_frontend",
-          scenario: "前端与界面交互",
-          keywords: ["前端", "frontend", "ui", "界面", "vue", "react", "css", "html", "web", "样式", "组件", "页面", "tailwind"],
-          agent: "agy",
-          description: "前端页面、UI 组件与可视化交互任务优先由 Antigravity (agy) 处理",
-        },
-        {
-          id: "rule_testing",
-          scenario: "测试与代码审查",
-          keywords: ["测试", "test", "unittest", "review", "审查", "lint", "规范"],
-          agent: "codex",
-          description: "自动化测试与代码静态检查由 Codex 处理",
-        },
-      ],
+      instructions: "",
+      rules: [],
     };
     fs.writeFileSync(routingJsonFile, JSON.stringify(defaultRouting, null, 2), "utf8");
-    console.log("✅ 已自动配置默认场景调度规则: 后端走 codex，前端走 agy\n");
+    console.log("✅ 已初始化场景调度配置 (留空由用户在控制台网页端自主设置)\n");
   }
 
   // 3. 自动将 MCP 注册到本地 AI 客户端 (Codex / Antigravity AGY)
@@ -321,12 +299,12 @@ async function main() {
   console.log("===============================================================");
   console.log(`🔑 本机专属识别码:   \x1b[32m\x1b[1m${deviceToken}\x1b[0m`);
   console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
-  console.log(`🖥️ 本地配置网页端:   \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m (可视化配置前端走 agy、后端走 codex 等)`);
+  console.log(`🖥️ 本地配置网页端:   \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m (可视化自定义 Agent 调度与场景规则)`);
   console.log(`📦 本机专属插件包:   \x1b[33m\x1b[1m${desktopZip}\x1b[0m`);
   console.log("---------------------------------------------------------------");
   console.log("1️⃣  【在本地配置网页端中 (可视化调节)】:");
   console.log(`    打开浏览器访问: \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m`);
-  console.log("    可自由配置调度说明、默认 Agent 及关键词规则（如后端走 codex，前端走 agy）。");
+  console.log("    可由您自主设置本地 Agent 调度规则与说明（默认留空，全由您自定义）。");
   console.log();
   console.log("2️⃣  【在本地 AI 客户端 (Codex / Antigravity AGY) 中】:");
   console.log("    直接在 Codex 或 AGY 对话窗口提问，即可自动调用本地工具！无需任何多余操作。");

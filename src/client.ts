@@ -73,7 +73,7 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
       console.log(`🖥️ 本地控制台页面:   \x1b[35m\x1b[1mhttp://localhost:${localPort}\x1b[0m`);
       console.log(`---------------------------------------------------------------`);
       console.log(`💡 使用方法:`);
-      console.log(`   1. 浏览器打开本地控制台: http://localhost:${localPort} (可设置前端走 agy、后端走 codex 等)`);
+      console.log(`   1. 浏览器打开本地控制台: http://localhost:${localPort} (可自主设置本地 Agent 调度规则等)`);
       console.log(`   2. 在 ChatGPT「添加自定义 MCP 服务器」中：`);
       console.log(`      - 服务器 URL:   ${deviceUrl}`);
       console.log(`      - 身份验证:     无 (None)`);

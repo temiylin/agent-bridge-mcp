@@ -36,14 +36,14 @@ console.log("  📡 Agent Bridge 本机专属 MCP 接入信息");
 console.log("===============================================================");
 console.log(`🔑 本机专属识别码:   \x1b[32m\x1b[1m${deviceToken}\x1b[0m`);
 console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${mcpUrl}\x1b[0m`);
-console.log(`🖥️ 本地配置网页端:   \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m (可视化配置前端走 agy、后端走 codex 等)`);
+console.log(`🖥️ 本地配置网页端:   \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m (可视化自定义 Agent 调度与场景规则)`);
 if (fs.existsSync(desktopZip)) {
   console.log(`📦 本机专属插件包:   \x1b[33m\x1b[1m${desktopZip}\x1b[0m`);
 }
 console.log("---------------------------------------------------------------");
 console.log("💡 使用方法:");
 console.log(`   1. 浏览器打开本地配置页面: \x1b[35m\x1b[1m${localDashboardUrl}\x1b[0m`);
-console.log("      可自由设置本地 Agent 执行偏好（如指定后端走 codex、前端走 agy 等）。");
+console.log("      由您自主配置本地 Agent 调度规则与场景说明（默认留空，按需设置）。");
 console.log("   2. 在 ChatGPT 中使用 (任选一种):");
 console.log("      • 方式 A (最简): 打开 ChatGPT -> 设置 -> Connectors/MCP -> 上传桌面上的 agent-bridge-plugin.zip");
 console.log(`      • 方式 B (手动): MCP URL 填入上面的地址，身份验证选「无 (None)」`);
