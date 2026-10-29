@@ -39,6 +39,7 @@
     "test:local-fs": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-local-fs-test -- tsx test/local-fs-test.ts",
     "test:dashboard": "tsx test/dashboard-test.ts",
     "test:git-pr": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-git-pr-test -- tsx test/git-pr-test.ts",
+    "test:session": "tsx test/session-test.ts",
     "test:agent-admin": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-admin-test -- tsx test/agent-admin-test.ts",
     "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
     "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"

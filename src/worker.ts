@@ -9,6 +9,7 @@ import { isValidTaskId } from "./validator.js";
 import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
 import { writeStatus } from "./status.js";
 import { audit } from "./audit.js";
+import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -168,7 +169,8 @@ export function writeResultFile(
   stdout: string,
   stderr: string,
   model?: string,
-  reasoningEffort?: string
+  reasoningEffort?: string,
+  sessionId?: string
 ): string {
   const finalResultPath = path.join(resultsDir, `${taskId}.md`);
   const tmpResultPath = path.join(resultsDir, `${taskId}.md.tmp`);
@@ -176,6 +178,7 @@ export function writeResultFile(
   let metaLines = `- **Status**: ${status}\n- **Agent**: ${agentName || "(none)"}\n`;
   if (model) metaLines += `- **Model**: ${model}\n`;
   if (reasoningEffort) metaLines += `- **Reasoning Effort**: ${reasoningEffort}\n`;
+  if (sessionId) metaLines += `- **Session ID**: ${sessionId}\n`;
   metaLines += `- **Started At**: ${startedAt}\n- **Finished At**: ${finishedAt}\n- **Exit Code**: ${exitCode !== null ? exitCode : "(none)"}\n`;
 
   let content = `# Execution Result for ${taskId}
@@ -366,26 +369,28 @@ export async function processTaskFile(
   const args = [...agentConfig.args];
 
   // Dynamically handle session resumption / continuation
-  if (continueSession || sessionId) {
+  const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
+
+  if (targetSessionToResume || continueSession) {
     if (command.includes("codex") || agentName === "codex") {
       const execIdx = args.indexOf("exec");
       if (execIdx !== -1) {
-        if (sessionId) {
-          args.splice(execIdx + 1, 0, "resume", sessionId);
-        } else {
+        if (targetSessionToResume) {
+          args.splice(execIdx + 1, 0, "resume", targetSessionToResume);
+        } else if (continueSession) {
           args.splice(execIdx + 1, 0, "resume", "--last");
         }
       } else {
-        if (sessionId) {
-          args.unshift("resume", sessionId);
-        } else {
+        if (targetSessionToResume) {
+          args.unshift("resume", targetSessionToResume);
+        } else if (continueSession) {
           args.unshift("resume", "--last");
         }
       }
     } else if (command.includes("agy") || agentName === "agy") {
-      if (sessionId) {
-        args.push("--conversation", sessionId);
-      } else {
+      if (targetSessionToResume) {
+        args.push("--conversation", targetSessionToResume);
+      } else if (continueSession) {
         args.push("--continue");
       }
     }
@@ -568,6 +573,15 @@ export async function processTaskFile(
     state = "failed";
   }
 
+  const extractedSessionId = extractSessionIdFromOutput(stdoutData);
+  const finalSessionId = extractedSessionId || targetSessionToResume;
+  if (finalSessionId) {
+    recordSession(currentRoot, taskId, finalSessionId);
+    if (sessionId) {
+      recordSession(currentRoot, sessionId, finalSessionId);
+    }
+  }
+
   writeResultFile(
     resultsDir,
     taskId,
@@ -579,7 +593,8 @@ export async function processTaskFile(
     stdoutData,
     stderrData,
     model,
-    reasoningEffort
+    reasoningEffort,
+    finalSessionId || sessionId
   );
 
   writeStatus(currentRoot, taskId, {
@@ -590,6 +605,7 @@ export async function processTaskFile(
     startedAt,
     finishedAt,
     exitCode,
+    ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
   });
 
