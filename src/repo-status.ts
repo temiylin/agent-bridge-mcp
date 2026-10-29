@@ -4,18 +4,20 @@ import { spawnSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
+import { getReadOnlyGitStatus } from "./project-inspection.js";
 
 const MAX_OUTPUT_LENGTH = 8000;
 const TRUNCATION_NOTICE = "\n\n[Output truncated: exceeded 8000 characters limit]";
 
 function runGit(args: string[], cwd: string) {
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
   const env = {
-    ...process.env,
+    ...gitEnv,
     GIT_OPTIONAL_LOCKS: "0",
     GIT_PAGER: "cat",
     GIT_TERMINAL_PROMPT: "0",
   };
-  return spawnSync("git", args, {
+  return spawnSync("git", ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
     cwd,
     shell: false,
     timeout: 5000,
@@ -34,6 +36,7 @@ export function registerRepoStatusTool(
     "repo_status",
     "Get read-only Git repository status summary, current branch, refs, and recent commits.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       audit(rootDir, { tool: "repo_status" });
 
@@ -100,13 +103,10 @@ export function registerRepoStatusTool(
             : "unknown";
 
         // a. ["--no-pager", "status", "--short", "--branch"]
-        const statusRes = runGit(["--no-pager", "status", "--short", "--branch"], repoPath);
-        const statusSummary =
-          statusRes.status === 0 && typeof statusRes.stdout === "string"
-            ? statusRes.stdout.trim()
-            : statusRes.stderr
-            ? statusRes.stderr.trim()
-            : "(clean)";
+        const statusRes = await getReadOnlyGitStatus(repoPath, Date.now() + 10000, MAX_OUTPUT_LENGTH);
+        const statusSummary = statusRes.status === "ok"
+          ? `${statusRes.text || "(clean)"}${statusRes.note ? `\n${statusRes.note}` : ""}`
+          : `Git status unavailable (${statusRes.status})`;
 
         // c. ["--no-pager", "rev-parse", "develop", "main", "origin/develop", "origin/main"]
         const targetRefs = ["develop", "main", "origin/develop", "origin/main"] as const;

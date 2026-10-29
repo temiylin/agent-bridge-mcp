@@ -27,6 +27,7 @@ export function registerListTasksTool(
     {
       limit: z.number().int().optional().describe("Maximum number of tasks to return (1-50, default 20)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ limit }) => {
       audit(rootDir, { tool: "list_tasks_summary" });
 

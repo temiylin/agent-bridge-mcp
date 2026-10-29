@@ -460,7 +460,14 @@ export async function processTaskFile(
       };
 
       try {
-        const pathSep = isWin ? ";" : ":";
+        // Do not route native agents through cmd.exe: it reparses quoted model
+        // settings, prompts, and metacharacters instead of preserving argv.
+        // Batch launchers should be registered using their underlying native
+        // executable (for example node.exe plus the CLI's JavaScript entrypoint).
+        if (isWin && /\.(?:cmd|bat)$/i.test(command)) {
+          throw new Error("Windows batch agent launchers are not supported directly. Register the native .exe, or node.exe with the CLI JavaScript entrypoint, to preserve task arguments.");
+        }
+        const pathSep = path.delimiter;
         const extraPaths = isWin
           ? [
               path.join(process.env.APPDATA || "", "npm"),
@@ -474,15 +481,19 @@ export async function processTaskFile(
               path.join(os.homedir(), ".cargo", "bin"),
             ].filter((p) => fs.existsSync(p));
 
-        const currentPath = process.env.PATH || (isWin ? "" : "/usr/bin:/bin:/usr/sbin:/sbin");
+        // Windows environment names are case insensitive; passing both Path and
+        // PATH causes Node to choose one, potentially dropping the added paths.
+        const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === "path") || "PATH";
+        const currentPath = process.env[pathKey] || (isWin ? "" : "/usr/bin:/bin:/usr/sbin:/sbin");
         const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(pathSep)].filter(Boolean))).join(pathSep);
 
         child = spawn(command, args, {
-          shell: isWin,
+          shell: false,
+          windowsHide: true,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
             ...process.env,
-            PATH: combinedPath,
+            [pathKey]: combinedPath,
             HOME: process.env.HOME || os.homedir(),
           },
         });

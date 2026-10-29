@@ -32,6 +32,7 @@ export function registerOpsTools(
     {
       task_id: z.string().describe("Task ID to query status for"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ task_id }) => {
       if (!isValidTaskId(task_id)) {
         logger.warn(`get_task_status rejected invalid task_id: "${task_id}"`);
@@ -198,6 +199,7 @@ export function registerOpsTools(
       offset: z.number().optional().describe("Byte offset to start reading from (default 0)"),
       length: z.number().optional().describe("Number of bytes to read (default 4000, max 16000)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ task_id, offset, length }) => {
       if (!isValidTaskId(task_id)) {
         logger.warn(`read_task_output rejected invalid task_id: "${task_id}"`);
@@ -306,6 +308,7 @@ export function registerOpsTools(
       offset: z.number().optional().describe("Byte offset to start reading from (default 0)"),
       length: z.number().optional().describe("Number of bytes to read (default 4000, max 16000)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ task_id, offset, length }) => {
       if (!isValidTaskId(task_id)) {
         logger.warn(`read_result_page rejected invalid task_id: "${task_id}"`);
@@ -410,6 +413,7 @@ export function registerOpsTools(
         .optional()
         .describe("Timeout in seconds (1-25, default 20). Out of range values will be clamped."),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ task_id, timeout_seconds }) => {
       if (!isValidTaskId(task_id)) {
         logger.warn(`wait_task rejected invalid task_id: "${task_id}"`);

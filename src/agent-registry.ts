@@ -18,6 +18,7 @@ export function registerAgentRegistryTool(
     "agent_registry_summary",
     "List registered agent names and their enabled status without exposing underlying commands, args, or paths.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       audit(rootDir, { tool: "agent_registry_summary" });
 

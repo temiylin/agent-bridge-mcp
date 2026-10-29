@@ -240,7 +240,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
                 messages: "/messages",
                 dashboard: "/dashboard",
               },
-              toolsAvailable: 38,
+              toolsAvailable: 39,
               activeSessions: sessions.size,
               timestamp: new Date().toISOString(),
             },

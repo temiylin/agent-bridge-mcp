@@ -16,6 +16,7 @@ export function registerDeviceInfoTool(
     "device_info",
     "Get read-only system and hardware environment overview (hostname, OS, CPU, memory, disk, process count, network interfaces, runtime versions).",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       audit(rootDir, { tool: "device_info" });
 
@@ -45,7 +46,7 @@ export function registerDeviceInfoTool(
         // 3. Disk Space (using Node native statfsSync)
         let diskInfo: { totalBytes: number; freeBytes: number; availableBytes: number; freePercentage: number } | null = null;
         try {
-          const rootDrive = process.platform === "win32" ? (path.parse(process.cwd()).root || "C:\\") : "/";
+          const rootDrive = path.parse(path.resolve(rootDir || process.cwd())).root;
           const stat = fs.statfsSync(rootDrive);
           const totalBytes = Number(stat.blocks) * Number(stat.bsize);
           const freeBytes = Number(stat.bfree) * Number(stat.bsize);
@@ -66,11 +67,12 @@ export function registerDeviceInfoTool(
           if (process.platform === "win32") {
             const tasklistRes = spawnSync("tasklist", ["/fo", "csv", "/nh"], {
               shell: false,
+              windowsHide: true,
               timeout: 3000,
               encoding: "utf8",
             });
             if (tasklistRes.status === 0 && typeof tasklistRes.stdout === "string") {
-              runningProcessCount = tasklistRes.stdout.trim().split(/\r?\n/).filter(Boolean).length;
+              runningProcessCount = tasklistRes.stdout.split(/\r?\n/).filter(line => line.trim().startsWith('"')).length;
             }
           } else {
             const psResult = spawnSync("ps", ["-A", "-o", "pid="], {
@@ -105,6 +107,7 @@ export function registerDeviceInfoTool(
         try {
           const gitRes = spawnSync("git", ["--version"], {
             shell: false,
+            windowsHide: true,
             timeout: 3000,
             encoding: "utf8",
           });
@@ -161,6 +164,7 @@ export function registerDeviceInfoTool(
     {
       port: z.number().int().min(1).max(65535).describe("TCP Port number to inspect (1-65535)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ port }) => {
       audit(rootDir, { tool: "check_port" });
 

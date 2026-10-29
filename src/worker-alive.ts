@@ -13,6 +13,7 @@ export function registerWorkerAliveTool(
     "worker_alive_summary",
     "Get read-only summary of local worker process alive state, PID, and last recorded activity timestamp.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       audit(rootDir, { tool: "worker_alive_summary" });
 
