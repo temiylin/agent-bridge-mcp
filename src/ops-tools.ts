@@ -15,43 +15,6 @@ export function getControlDir(root: string): string {
   return controlDir;
 }
 
-/**
- * Intelligently extracts concise, concrete action progress from an agent's execution stdout log.
- * Strictly filters out:
- * 1. Inner monologue / thinking processes (<thought>...</thought>, Thinking Process: ...)
- * 2. Large command outputs / raw file dumps (```...```)
- * Returns the most recent 2-4 lines of concrete actions, test outcomes, section headers, or file modifications.
- */
-export function extractActionProgress(raw: string): string {
-  if (!raw || !raw.trim()) return "任务已在后台启动，Agent 正在分析上下文与准备环境...";
-
-  // 1. Strip internal thoughts (<thought>...</thought>, <thinking>...</thinking>)
-  let clean = raw.replace(/<(thought|thinking)>[\s\S]*?<\/\1>/gi, "");
-  clean = clean.replace(/^(Thinking Process:|Thought for \d+s|思考过程[：:])[\s\S]*?\n\n/gim, "");
-
-  // 2. Strip large code blocks to prevent raw terminal / file dumps
-  clean = clean.replace(/```[\s\S]*?```/g, (match) => {
-    const lines = match.split("\n").length;
-    return lines > 3 ? "" : match;
-  });
-
-  // 3. Split by lines and clean
-  const lines = clean
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith("```") && !l.startsWith("|") && !/^[-=]{3,}$/.test(l));
-
-  if (lines.length === 0) {
-    return "Agent 正在分析上下文与执行阶段性操作...";
-  }
-
-  // 4. Prioritize lines that indicate real actions, progress, files, commits, tests, or section headers
-  const actionKeywords = /测试|修改|通过|失败|passed|failed|分支|commit|worktree|文件|归一|修复|完成|执行|正在|新增|改动|运行|分析|检查|调用链|发现|结论|^#{1,4}\s/i;
-  const actionLines = lines.filter((l) => actionKeywords.test(l));
-
-  const chosen = actionLines.length > 0 ? actionLines.slice(-4) : lines.slice(-3);
-  return chosen.join("\n");
-}
 
 export function registerOpsTools(
   server: McpServer,
