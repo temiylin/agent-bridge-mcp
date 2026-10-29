@@ -6,6 +6,7 @@ import { isValidTaskId, generateTaskId, resolveSafePath } from "./validator.js";
 import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
 import { audit } from "./audit.js";
+import { writeStatus } from "./status.js";
 import { registerOpsTools } from "./ops-tools.js";
 import { registerRepoStatusTool } from "./repo-status.js";
 import { registerWorkerAliveTool } from "./worker-alive.js";
@@ -13,6 +14,7 @@ import { registerListTasksTool } from "./list-tasks.js";
 import { registerAgentRegistryTool } from "./agent-registry.js";
 import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
+import { registerModelsTool } from "./models.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -49,8 +51,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       prompt: z.string().describe("Task prompt content for the local agent (plain text)"),
       title: z.string().optional().describe("Optional task title"),
       agent: z.string().optional().describe("Optional agent name (must be registered in agents.json)"),
+      model: z.string().optional().describe("Optional model identifier for the execution agent (e.g., 'gpt-6.1', 'o3', 'gpt-6-luna')"),
+      reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
     },
-    async ({ prompt, title, agent }) => {
+    async ({ prompt, title, agent, model, reasoning_effort }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -100,18 +104,54 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           agentName = trimmedAgent;
         }
 
+        // Validate model if provided
+        let modelParam = "";
+        if (model !== undefined && model !== null) {
+          if (typeof model !== "string" || !/^[a-zA-Z0-9_.:/-]{1,128}$/.test(model.trim())) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Invalid model "${model}". Model identifier must be 1-128 characters containing only letters, numbers, hyphens, underscores, dots, colons, or slashes.`,
+                },
+              ],
+            };
+          }
+          modelParam = model.trim();
+        }
+
+        // Validate reasoning_effort if provided
+        let effortParam = "";
+        if (reasoning_effort !== undefined && reasoning_effort !== null) {
+          if (typeof reasoning_effort !== "string" || !/^[a-zA-Z0-9_-]{1,32}$/.test(reasoning_effort.trim())) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Invalid reasoning_effort "${reasoning_effort}". Must be 1-32 characters (e.g., 'low', 'medium', 'high', 'xhigh').`,
+                },
+              ],
+            };
+          }
+          effortParam = reasoning_effort.trim().toLowerCase();
+        }
+
         const taskId = generateTaskId();
         const taskFilePath = resolveSafePath(tasksDir, rootDir, `${taskId}.md`);
 
         const createdAt = new Date().toISOString();
         const taskTitle = title && title.trim().length > 0 ? title.trim() : `Task ${taskId}`;
 
+        let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
+        if (modelParam) headerMeta += `- **Model**: ${modelParam}\n`;
+        if (effortParam) headerMeta += `- **Reasoning Effort**: ${effortParam}\n`;
+        headerMeta += `- **Created At**: ${createdAt}\n`;
+
         const content = `# ${taskTitle}
 
-- **Task ID**: ${taskId}
-- **Agent**: ${agentName}
-- **Created At**: ${createdAt}
-
+${headerMeta}
 ---
 
 ## Prompt
@@ -120,15 +160,35 @@ ${prompt}
 `;
 
         fs.writeFileSync(taskFilePath, content, "utf8");
-        logger.info(`send_task success: taskId=${taskId}, path=${taskFilePath}, title="${taskTitle}"`);
+        logger.info(`send_task success: taskId=${taskId}, path=${taskFilePath}, title="${taskTitle}", agent="${agentName}", model="${modelParam}", effort="${effortParam}"`);
 
-        audit(rootDir, { tool: "send_task", taskId, agent: agentName || undefined, state: "dispatched" });
+        audit(rootDir, {
+          tool: "send_task",
+          taskId,
+          agent: agentName || undefined,
+          state: "dispatched",
+        });
+
+        try {
+          writeStatus(rootDir, taskId, {
+            state: "queued",
+            agent: agentName,
+            model: modelParam || undefined,
+            reasoningEffort: effortParam || undefined,
+            startedAt: createdAt,
+          });
+        } catch {}
+
+        let metaDetails = "";
+        if (agentName) metaDetails += `\nagent: ${agentName}`;
+        if (modelParam) metaDetails += `\nmodel: ${modelParam}`;
+        if (effortParam) metaDetails += `\nreasoning_effort: ${effortParam}`;
 
         return {
           content: [
             {
               type: "text",
-              text: `Task dispatched successfully.\ntask_id: ${taskId}\npath: ${taskFilePath}`,
+              text: `Task dispatched successfully.\ntask_id: ${taskId}\npath: ${taskFilePath}${metaDetails}`,
             },
           ],
         };
@@ -240,6 +300,7 @@ ${prompt}
   registerAgentRegistryTool(server, rootDir, logger);
   registerDeviceInfoTool(server, rootDir, logger);
   registerLocalFsTools(server, rootDir, logger);
+  registerModelsTool(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

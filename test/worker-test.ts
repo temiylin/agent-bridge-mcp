@@ -92,6 +92,14 @@ setTimeout(() => {
     "utf8"
   );
 
+  // fake-codex: 打印收到的所有 CLI 参数，用于验证 -m 和 -c model_reasoning_effort 传递
+  const fakeCodexScript = path.join(fakeAgentsDir, "fake-codex.cjs");
+  fs.writeFileSync(
+    fakeCodexScript,
+    `process.stdout.write("CODEX_ARGS: " + JSON.stringify(process.argv.slice(2)));\n`,
+    "utf8"
+  );
+
   // 2. Register fake agents in TEST_ROOT/agents.json
   const agentsJsonPath = path.join(TEST_ROOT, "agents.json");
   const registryConfig = {
@@ -113,6 +121,11 @@ setTimeout(() => {
     "sleep-stubborn": {
       command: "node",
       args: [sleepStubbornScript],
+      input: "stdin",
+    },
+    codex: {
+      command: "node",
+      args: [fakeCodexScript, "exec", "--sandbox", "workspace-write"],
       input: "stdin",
     },
   };
@@ -406,6 +419,48 @@ Sleep stubbornly
 
     await mcpClient.close();
     console.log("✓ Test 9 passed: send_task correctly rejected unregistered agent and listed available names.\n");
+
+    // -------------------------------------------------------------------------
+    // Test 10: Codex 任务指定 model 与 reasoning_effort，worker 正确透传 CLI 参数
+    // -------------------------------------------------------------------------
+    console.log("-------------------------------------------------");
+    console.log("[Test 10] Codex task execution with custom model & reasoning_effort");
+    console.log("-------------------------------------------------");
+    const taskId10 = "task_test_010_model";
+    const taskFile10 = path.join(tasksDir, `${taskId10}.md`);
+    fs.writeFileSync(
+      taskFile10,
+      `# Test Case 10 codex-model
+
+- **Task ID**: ${taskId10}
+- **Agent**: codex
+- **Model**: gpt-6.1-sol
+- **Reasoning Effort**: high
+- **Created At**: ${new Date().toISOString()}
+
+---
+
+## Prompt
+
+Analyze codebase architecture
+`,
+      "utf8"
+    );
+
+    const resultPath10 = path.join(resultsDir, `${taskId10}.md`);
+    const content10 = await waitForFile(resultPath10);
+    console.log("Result file content for Test 10:\n" + content10);
+
+    assert.ok(content10.includes("- **Status**: completed"), "Status must be completed");
+    assert.ok(content10.includes("- **Agent**: codex"), "Agent must be codex");
+    assert.ok(content10.includes("- **Model**: gpt-6.1-sol"), "Result must contain Model header");
+    assert.ok(content10.includes("- **Reasoning Effort**: high"), "Result must contain Reasoning Effort header");
+    assert.ok(content10.includes("- **Exit Code**: 0"), "Exit Code must be 0");
+    assert.ok(content10.includes("-m"), "Output must contain -m flag");
+    assert.ok(content10.includes("gpt-6.1-sol"), "Output must contain model value");
+    assert.ok(content10.includes("-c"), "Output must contain -c flag");
+    assert.ok(content10.includes('model_reasoning_effort=\\"high\\"'), "Output must contain model_reasoning_effort");
+    console.log("✓ Test 10 passed: Codex task executed with -m and -c model_reasoning_effort flags correctly.\n");
   } finally {
     // Terminate worker cleanly
     console.log("[Cleanup] Terminating worker process...");
@@ -417,7 +472,7 @@ Sleep stubbornly
   }
 
   console.log("=================================================");
-  console.log("All 9 worker test assertions passed successfully!");
+  console.log("All 10 worker test assertions passed successfully!");
   console.log("=================================================");
 }
 

@@ -78,6 +78,7 @@ async function runTests() {
     "list_directory",
     "read_file",
     "get_file_info",
+    "list_models",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
@@ -239,6 +240,50 @@ async function runTests() {
   assert.ok(rejectedText.includes("Invalid task_id"), "Error message must state task_id is invalid");
   assert.ok(rejectedText.includes("path traversal"), "Error message must mention path traversal prevention");
   console.log("✓ Assertion passed: Path traversal attempt was strictly rejected with isError: true.");
+
+  // Step 6: list_models tool
+  console.log("\n-------------------------------------------------");
+  console.log("[Test 6] Calling list_models");
+  console.log("-------------------------------------------------");
+  const modelsResult = await client.callTool({
+    name: "list_models",
+    arguments: {},
+  });
+  assert.ok(!modelsResult.isError, "list_models must succeed without error");
+  const modelsJson = JSON.parse((modelsResult.content as Array<{ type: string; text: string }>)[0].text);
+  assert.ok(modelsJson.codex, "list_models must include codex report");
+  assert.ok(Array.isArray(modelsJson.codex.models), "codex must list models array");
+  assert.ok(Array.isArray(modelsJson.codex.supportedReasoningEfforts), "codex must list supportedReasoningEfforts");
+  console.log("Codex models count:", modelsJson.codex.models.length);
+  console.log("Codex current default:", JSON.stringify(modelsJson.codex.currentDefault));
+  console.log("✓ Assertion passed: list_models returned valid agent models report.");
+
+  // Step 7: send_task with custom model and reasoning_effort
+  console.log("\n-------------------------------------------------");
+  console.log("[Test 7] Calling send_task with custom model and reasoning_effort");
+  console.log("-------------------------------------------------");
+  const advancedSendResult = await client.callTool({
+    name: "send_task",
+    arguments: {
+      prompt: "Refactor database queries using compound index",
+      title: "Custom Model Task",
+      model: "gpt-6.1-sol",
+      reasoning_effort: "high",
+    },
+  });
+  assert.ok(!advancedSendResult.isError, "send_task with model and reasoning_effort must succeed");
+  const advancedText = (advancedSendResult.content as Array<{ type: string; text: string }>)[0].text;
+  assert.ok(advancedText.includes("model: gpt-6.1-sol"), "Response must mention model");
+  assert.ok(advancedText.includes("reasoning_effort: high"), "Response must mention reasoning_effort");
+
+  const advTaskIdMatch = advancedText.match(/task_id:\s*([^\s\r\n]+)/);
+  assert.ok(advTaskIdMatch, "Must parse task_id from response");
+  const advTaskId = advTaskIdMatch[1];
+  const advTaskFilePath = path.join(rootDir, "tasks", `${advTaskId}.md`);
+  const advTaskContent = fs.readFileSync(advTaskFilePath, "utf8");
+  assert.ok(advTaskContent.includes("- **Model**: gpt-6.1-sol"), "Task file must contain Model header");
+  assert.ok(advTaskContent.includes("- **Reasoning Effort**: high"), "Task file must contain Reasoning Effort header");
+  console.log("✓ Assertion passed: send_task with model and reasoning_effort verified on disk.");
 
   // Clean up
   console.log("\n-------------------------------------------------");

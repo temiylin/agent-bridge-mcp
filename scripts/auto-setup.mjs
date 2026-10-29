@@ -60,6 +60,29 @@ async function main() {
   }
   console.log(`✅ 设备识别码已锁定: \x1b[32m\x1b[1m${deviceToken}\x1b[0m\n`);
 
+  // 确保 ~/agent-bridge/agents.json 存在默认的 codex 与 agy 执行配置
+  const bridgeDataDir = path.join(HOME, "agent-bridge");
+  const agentsJsonFile = path.join(bridgeDataDir, "agents.json");
+  if (!fs.existsSync(bridgeDataDir)) {
+    fs.mkdirSync(bridgeDataDir, { recursive: true });
+  }
+  if (!fs.existsSync(agentsJsonFile)) {
+    const defaultAgents = {
+      codex: {
+        command: "codex",
+        args: ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check"],
+        input: "stdin",
+      },
+      agy: {
+        command: "agy",
+        args: ["-p", "--dangerously-skip-permissions"],
+        input: "stdin",
+      },
+    };
+    fs.writeFileSync(agentsJsonFile, JSON.stringify(defaultAgents, null, 2), "utf8");
+    console.log("✅ 已自动配置默认本地执行代理: codex 与 agy\n");
+  }
+
   // 3. 自动将 MCP 注册到本地 AI 客户端 (Codex / Antigravity AGY)
   console.log("[3/5] 正在自动挂载到本地 AI 客户端 (Codex / AGY)...");
   let mountedAny = false;
@@ -124,6 +147,13 @@ async function main() {
         <string>--token</string>
         <string>${deviceToken}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}</string>
+        <key>HOME</key>
+        <string>${HOME}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

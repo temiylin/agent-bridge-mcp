@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -109,9 +110,20 @@ function saveProcessedTask(processedMap: Record<string, string>, taskId: string,
 }
 
 // Task file parser
-export function parseTaskFile(content: string): { agentName: string; prompt: string } {
+export function parseTaskFile(content: string): {
+  agentName: string;
+  prompt: string;
+  model?: string;
+  reasoningEffort?: string;
+} {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
+
+  const modelMatch = content.match(/^-[ \t]*\*\*Model\*\*:[ \t]*([^\r\n]*)$/m);
+  const model = modelMatch ? modelMatch[1].trim() : "";
+
+  const effortMatch = content.match(/^-[ \t]*\*\*Reasoning Effort\*\*:[ \t]*([^\r\n]*)$/m);
+  const reasoningEffort = effortMatch ? effortMatch[1].trim() : "";
 
   const promptHeaderIdx = content.indexOf("## Prompt");
   let prompt = "";
@@ -126,7 +138,12 @@ export function parseTaskFile(content: string): { agentName: string; prompt: str
     }
   }
 
-  return { agentName, prompt };
+  return {
+    agentName,
+    prompt,
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
 }
 
 // Atomic result writer
@@ -139,19 +156,21 @@ export function writeResultFile(
   finishedAt: string,
   exitCode: number | null,
   stdout: string,
-  stderr: string
+  stderr: string,
+  model?: string,
+  reasoningEffort?: string
 ): string {
   const finalResultPath = path.join(resultsDir, `${taskId}.md`);
   const tmpResultPath = path.join(resultsDir, `${taskId}.md.tmp`);
 
+  let metaLines = `- **Status**: ${status}\n- **Agent**: ${agentName || "(none)"}\n`;
+  if (model) metaLines += `- **Model**: ${model}\n`;
+  if (reasoningEffort) metaLines += `- **Reasoning Effort**: ${reasoningEffort}\n`;
+  metaLines += `- **Started At**: ${startedAt}\n- **Finished At**: ${finishedAt}\n- **Exit Code**: ${exitCode !== null ? exitCode : "(none)"}\n`;
+
   let content = `# Execution Result for ${taskId}
 
-- **Status**: ${status}
-- **Agent**: ${agentName || "(none)"}
-- **Started At**: ${startedAt}
-- **Finished At**: ${finishedAt}
-- **Exit Code**: ${exitCode !== null ? exitCode : "(none)"}
-
+${metaLines}
 ## Output
 
 ${stdout}
@@ -221,7 +240,7 @@ export async function processTaskFile(
   }
 
   const startedAt = new Date().toISOString();
-  const { agentName, prompt } = parseTaskFile(fileContent);
+  const { agentName, prompt, model, reasoningEffort } = parseTaskFile(fileContent);
 
   // Check cancellation before start
   const controlDir = path.join(currentRoot, "control");
@@ -325,6 +344,8 @@ export async function processTaskFile(
   writeStatus(currentRoot, taskId, {
     state: "running",
     agent: agentName,
+    model,
+    reasoningEffort,
     startedAt,
   });
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "running" });
@@ -333,6 +354,26 @@ export async function processTaskFile(
   const agentConfig: AgentConfig = registry[agentName];
   const command = agentConfig.command;
   const args = [...agentConfig.args];
+
+  // Dynamically inject model parameter if specified
+  if (model) {
+    if (command.includes("codex") || agentName === "codex") {
+      args.push("-m", model);
+    } else if (command.includes("agy") || agentName === "agy") {
+      args.push("--model", model);
+    } else {
+      args.push("--model", model);
+    }
+  }
+
+  // Dynamically inject reasoning effort if specified
+  if (reasoningEffort) {
+    if (command.includes("codex") || agentName === "codex") {
+      args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+    } else if (command.includes("agy") || agentName === "agy") {
+      args.push("--effort", reasoningEffort);
+    }
+  }
 
   if (agentConfig.input === "arg") {
     args.push(prompt);
@@ -360,9 +401,24 @@ export async function processTaskFile(
       let cancelCheckInterval: NodeJS.Timeout | null = null;
 
       try {
+        const extraPaths = [
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+          path.join(os.homedir(), ".local", "bin"),
+          path.join(os.homedir(), ".cargo", "bin"),
+        ].filter(p => fs.existsSync(p));
+
+        const currentPath = process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin";
+        const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(":")])).join(":");
+
         child = spawn(command, args, {
           shell: false,
           stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PATH: combinedPath,
+            HOME: process.env.HOME || os.homedir(),
+          },
         });
       } catch (spawnErr: any) {
         return reject(spawnErr);
@@ -470,12 +526,16 @@ export async function processTaskFile(
     finishedAt,
     exitCode,
     stdoutData,
-    stderrData
+    stderrData,
+    model,
+    reasoningEffort
   );
 
   writeStatus(currentRoot, taskId, {
     state,
     agent: agentName,
+    model,
+    reasoningEffort,
     startedAt,
     finishedAt,
     exitCode,
@@ -559,6 +619,14 @@ export class WorkerService {
     this.isRunning = true;
     logWorker("INFO", `Worker started. Root=${this.root}, PollInterval=${this.pollInterval}ms, Timeout=${this.timeout}ms`);
 
+    // Record worker.pid for worker_alive_summary diagnostics
+    const pidPath = path.join(this.root, "logs", "worker.pid");
+    try {
+      const logsDir = path.dirname(pidPath);
+      if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+      fs.writeFileSync(pidPath, String(process.pid), "utf8");
+    } catch {}
+
     while (this.isRunning && !this.isShuttingDown) {
       await this.scanOnce();
       if (!this.isRunning || this.isShuttingDown) break;
@@ -571,6 +639,18 @@ export class WorkerService {
   public stop(): void {
     this.isShuttingDown = true;
     this.isRunning = false;
+
+    // Clean up worker.pid if it matches current process
+    const pidPath = path.join(this.root, "logs", "worker.pid");
+    try {
+      if (fs.existsSync(pidPath)) {
+        const stored = fs.readFileSync(pidPath, "utf8").trim();
+        if (stored === String(process.pid)) {
+          fs.unlinkSync(pidPath);
+        }
+      }
+    } catch {}
+
     if (this.sleepTimer) {
       clearTimeout(this.sleepTimer);
       this.sleepTimer = null;
