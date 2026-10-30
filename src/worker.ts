@@ -6,10 +6,21 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
-import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
-import { writeStatus } from "./status.js";
+import { loadAgents, AgentRegistry, AgentConfig, agentSupportsEffort } from "./agents.js";
+import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
+import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
+import { sendCompletionCallback } from "./callback.js";
+import { setupGitWorktree } from "./worktree.js";
+import { loadProjectsConfig } from "./project-router.js";
+import {
+  sendDesktopNotification,
+  buildOsascriptNotifyArgs,
+  NotificationLevel,
+  NotificationChannel,
+  dispatchTaskLifecycleNotification,
+} from "./notifier.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -37,26 +48,32 @@ export function logWorker(level: "INFO" | "WARN" | "ERROR", message: string): vo
 
 /**
  * Constructs the argument array for osascript notification.
+ * Backward compatible with legacy 2-argument signature.
  */
-export function buildNotifyArgs(title: string, message: string): string[] {
-  return [
-    "-e",
-    "on run argv",
-    "-e",
-    "display notification (item 1 of argv) with title (item 2 of argv)",
-    "-e",
-    "end run",
-    message,
-    title,
-  ];
+export function buildNotifyArgs(
+  title: string,
+  message: string,
+  subtitle: string = "",
+  soundName: string = ""
+): string[] {
+  return buildOsascriptNotifyArgs(title, message, subtitle, soundName);
 }
 
 /**
- * Sends a native macOS desktop notification using osascript.
- * Skipped on win32/linux or if AGENT_BRIDGE_NOTIFY === "0".
+ * Sends a native desktop notification across platforms (macOS, Windows, Linux).
+ * Skipped if AGENT_BRIDGE_NOTIFY === "0".
  */
-export function notify(title: string, message: string): void {
-  if (process.platform !== "darwin") {
+export function notify(
+  title: string,
+  message: string,
+  options?: {
+    subtitle?: string;
+    level?: NotificationLevel;
+    sound?: boolean | string;
+    channel?: NotificationChannel;
+  }
+): void {
+  if (process.platform !== "darwin" && process.platform !== "win32" && process.platform !== "linux") {
     logWorker("INFO", `Notification skipped on platform ${process.platform}: [${title}] ${message}`);
     return;
   }
@@ -67,20 +84,22 @@ export function notify(title: string, message: string): void {
   }
 
   try {
-    const args = buildNotifyArgs(title, message);
-    const child = spawn("osascript", args, { shell: false });
-
-    child.on("error", (err) => {
-      logWorker("WARN", `Notification failed to spawn osascript: ${err.message}`);
+    const res = sendDesktopNotification({
+      title,
+      message,
+      subtitle: options?.subtitle,
+      level: options?.level || "info",
+      sound: options?.sound !== undefined ? options?.sound : true,
+      channel: options?.channel || "desktop",
     });
 
-    child.on("close", (code) => {
-      if (code !== 0) {
-        logWorker("WARN", `osascript exited with code ${code}`);
-      } else {
-        logWorker("INFO", `Notification sent successfully: [${title}] ${message}`);
-      }
-    });
+    if (res.disabled) {
+      logWorker("INFO", `Notification disabled by AGENT_BRIDGE_NOTIFY=0: [${title}] ${message}`);
+    } else if (res.success) {
+      logWorker("INFO", `Notification sent successfully: [${title}] ${message}`);
+    } else {
+      logWorker("WARN", `Notification failed: [${title}] ${message} (${res.details || "unknown error"})`);
+    }
   } catch (err: any) {
     logWorker("WARN", `Notification error: ${err?.message || String(err)}`);
   }
@@ -118,9 +137,59 @@ export function parseTaskFile(content: string): {
   reasoningEffort?: string;
   continueSession?: boolean;
   sessionId?: string;
+  notify?: boolean;
+  notifyChannel?: NotificationChannel;
+  notifySound?: boolean | string;
+  notifyOn?: Set<string>;
+  timeoutSeconds?: number;
+  projectId?: string;
+  projectName?: string;
+  projectRepo?: string;
+  projectDir?: string;
+  slackChannel?: string;
+  slackWebhookEnv?: string;
+  callbackUrl?: string;
+  callbackHeaders?: Record<string, string>;
+  worktreeName?: string;
+  worktreeBaseBranch?: string;
 } {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
+
+  const projectIdMatch = content.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectId = projectIdMatch ? projectIdMatch[1].trim() : undefined;
+
+  const projectNameMatch = content.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectName = projectNameMatch ? projectNameMatch[1].trim() : undefined;
+
+  const projectRepoMatch = content.match(/^-[ \t]*\*\*Project Repo\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectRepo = projectRepoMatch ? projectRepoMatch[1].trim() : undefined;
+
+  const projectDirMatch = content.match(/^-[ \t]*\*\*Project Dir\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectDir = projectDirMatch ? projectDirMatch[1].trim() : undefined;
+
+  const slackChannelMatch = content.match(/^-[ \t]*\*\*Slack Channel\*\*:[ \t]*([^\r\n]*)$/m);
+  const slackChannel = slackChannelMatch ? slackChannelMatch[1].trim() : undefined;
+
+  const slackWebhookEnvMatch = content.match(/^-[ \t]*\*\*Slack Webhook Env\*\*:[ \t]*([^\r\n]*)$/m);
+  const slackWebhookEnv = slackWebhookEnvMatch ? slackWebhookEnvMatch[1].trim() : undefined;
+
+  const callbackUrlMatch = content.match(/^-[ \t]*\*\*Callback URL\*\*:[ \t]*([^\r\n]*)$/m);
+  const callbackUrl = callbackUrlMatch ? callbackUrlMatch[1].trim() : undefined;
+
+  const callbackHeadersMatch = content.match(/^-[ \t]*\*\*Callback Headers\*\*:[ \t]*([^\r\n]*)$/m);
+  let callbackHeaders: Record<string, string> | undefined;
+  if (callbackHeadersMatch) {
+    try {
+      callbackHeaders = JSON.parse(callbackHeadersMatch[1].trim());
+    } catch {}
+  }
+
+  const worktreeNameMatch = content.match(/^-[ \t]*\*\*Worktree Name\*\*:[ \t]*([^\r\n]*)$/m);
+  const worktreeName = worktreeNameMatch ? worktreeNameMatch[1].trim() : undefined;
+
+  const worktreeBaseBranchMatch = content.match(/^-[ \t]*\*\*Worktree Base Branch\*\*:[ \t]*([^\r\n]*)$/m);
+  const worktreeBaseBranch = worktreeBaseBranchMatch ? worktreeBaseBranchMatch[1].trim() : undefined;
 
   const modelMatch = content.match(/^-[ \t]*\*\*Model\*\*:[ \t]*([^\r\n]*)$/m);
   const model = modelMatch ? modelMatch[1].trim() : "";
@@ -133,6 +202,29 @@ export function parseTaskFile(content: string): {
 
   const sessionMatch = content.match(/^-[ \t]*\*\*Session ID\*\*:[ \t]*([^\r\n]*)$/m);
   const sessionId = sessionMatch ? sessionMatch[1].trim() : "";
+
+  const notifyMatch = content.match(/^-[ \t]*\*\*Notify\*\*:[ \t]*([^\r\n]*)$/m);
+  const notify = notifyMatch ? notifyMatch[1].trim().toLowerCase() !== "false" : true;
+
+  const notifyChannelMatch = content.match(/^-[ \t]*\*\*Notify Channel\*\*:[ \t]*([^\r\n]*)$/m);
+  const notifyChannel = (notifyChannelMatch ? notifyChannelMatch[1].trim().toLowerCase() : "desktop") as NotificationChannel;
+
+  const notifySoundMatch = content.match(/^-[ \t]*\*\*Notify Sound\*\*:[ \t]*([^\r\n]*)$/m);
+  let notifySound: boolean | string = false;
+  if (notifySoundMatch) {
+    const rawSound = notifySoundMatch[1].trim();
+    if (rawSound.toLowerCase() === "false") notifySound = false;
+    else if (rawSound.toLowerCase() === "true") notifySound = true;
+    else notifySound = rawSound;
+  }
+
+  const notifyOnMatch = content.match(/^-[ \t]*\*\*Notify On\*\*:[ \t]*([^\r\n]*)$/m);
+  const notifyOn = notifyOnMatch
+    ? new Set(notifyOnMatch[1].split(",").map((s) => s.trim().toLowerCase()))
+    : new Set(["completed", "failed", "timeout", "stuck"]);
+
+  const timeoutMatch = content.match(/^-[ \t]*\*\*Timeout(?: Seconds)?\*\*:[ \t]*([^\r\n]*)$/m);
+  const timeoutSeconds = timeoutMatch && parseInt(timeoutMatch[1], 10) > 0 ? parseInt(timeoutMatch[1], 10) : undefined;
 
   const promptHeaderIdx = content.indexOf("## Prompt");
   let prompt = "";
@@ -154,6 +246,21 @@ export function parseTaskFile(content: string): {
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(continueSession ? { continueSession: true } : {}),
     ...(sessionId ? { sessionId } : {}),
+    notify,
+    notifyChannel,
+    notifySound,
+    notifyOn,
+    ...(timeoutSeconds ? { timeoutSeconds } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(projectName ? { projectName } : {}),
+    ...(projectRepo ? { projectRepo } : {}),
+    ...(projectDir ? { projectDir } : {}),
+    ...(slackChannel ? { slackChannel } : {}),
+    ...(slackWebhookEnv ? { slackWebhookEnv } : {}),
+    ...(callbackUrl ? { callbackUrl } : {}),
+    ...(callbackHeaders ? { callbackHeaders } : {}),
+    ...(worktreeName ? { worktreeName } : {}),
+    ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}),
   };
 }
 
@@ -301,7 +408,32 @@ async function executeTaskFile(
   }
 
   const startedAt = new Date().toISOString();
-  const { agentName, prompt, model, reasoningEffort, continueSession, sessionId } = parseTaskFile(fileContent);
+  const {
+    agentName,
+    prompt,
+    model,
+    reasoningEffort,
+    continueSession,
+    sessionId,
+    notify: notifyOpt,
+    notifyChannel,
+    notifySound,
+    notifyOn = new Set(["completed", "failed", "timeout", "stuck"]),
+    timeoutSeconds,
+    projectId,
+    projectName,
+    projectRepo,
+    projectDir,
+    slackChannel,
+    slackWebhookEnv,
+    callbackUrl,
+    callbackHeaders,
+    worktreeName,
+    worktreeBaseBranch,
+  } = parseTaskFile(fileContent);
+
+  const effectiveTimeoutMs = timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds * 1000 : timeoutMs;
+  const isNotifyEnabled = notifyOpt !== false && notifyChannel !== "none";
 
   // Check cancellation before start
   const cancelFilePath = path.join(controlDir, `${taskId}.cancel`);
@@ -333,6 +465,21 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "cancelled", exitCode: 1 });
     logWorker("INFO", `Task ${taskId} cancelled before start by request`);
     notify("agent-bridge", `Task ${taskId} cancelled (cancelled by request) [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "cancelled",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
   }
 
@@ -364,6 +511,21 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("ERROR", `Task ${taskId} failed: agents.json not found`);
     notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "failed",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
   }
 
@@ -397,7 +559,49 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("WARN", `Task ${taskId} failed: ${errorMsg}`);
     notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "failed",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
+  }
+
+  // 1. Task Started Lifecycle Notification (Slack only, desktop silent on start)
+  let slackStartTs: string | undefined;
+  if (isNotifyEnabled && (slackChannel || slackWebhookEnv)) {
+    try {
+      const notifyRes = await dispatchTaskLifecycleNotification(
+        {
+          taskId,
+          event: "started",
+          projectName,
+          repo: projectRepo,
+          slackChannel,
+          slackWebhookEnv,
+          agent: agentName,
+          model,
+          promptSummary: prompt,
+          desktop: false,
+        },
+        logWorker
+      );
+      if (notifyRes && notifyRes.slackTs) {
+        slackStartTs = notifyRes.slackTs;
+      }
+    } catch (startNotifyErr: any) {
+      logWorker("WARN", `Error sending started notification: ${startNotifyErr?.message || String(startNotifyErr)}`);
+    }
   }
 
   // Write running status and audit as execution begins
@@ -407,6 +611,7 @@ async function executeTaskFile(
     model,
     reasoningEffort,
     startedAt,
+    ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
   });
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "running" });
 
@@ -443,6 +648,13 @@ async function executeTaskFile(
     }
   }
 
+  // agy agent requirement: use --print mode for non-interactive runs
+  if (command.includes("agy") || agentName === "agy") {
+    if (!args.includes("--print") && !args.includes("-p")) {
+      args.unshift("--print");
+    }
+  }
+
   // Dynamically inject model parameter if specified
   if (model) {
     if (command.includes("codex") || agentName === "codex") {
@@ -454,11 +666,22 @@ async function executeTaskFile(
     }
   }
 
-  // Dynamically inject reasoning effort if specified
+  // Dynamically inject reasoning effort if specified AND supported by agent/model capability
   if (reasoningEffort) {
-    if (command.includes("codex") || agentName === "codex") {
-      args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-    } else if (command.includes("agy") || agentName === "agy") {
+    const isCodex = command.includes("codex") || agentName === "codex";
+    const isAgy = command.includes("agy") || agentName === "agy";
+    const supportsEffort = isCodex || agentSupportsEffort(agentConfig, model);
+
+    if (isCodex) {
+      if (supportsEffort) {
+        args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+      }
+    } else if (isAgy) {
+      // agy agent: never pass --effort/reasoning_effort unless the agent registry explicitly marks the model as supporting it
+      if (supportsEffort) {
+        args.push("--effort", reasoningEffort);
+      }
+    } else if (supportsEffort) {
       args.push("--effort", reasoningEffort);
     }
   }
@@ -473,6 +696,40 @@ async function executeTaskFile(
   let isTimeout = false;
   let isCancelled = false;
   let exitCode: number | null = null;
+
+  let effectiveWorkingDir = projectDir && fs.existsSync(projectDir) ? projectDir : undefined;
+
+  // Worktree setup if requested
+  if (worktreeName && effectiveWorkingDir) {
+    try {
+      const projConfig = loadProjectsConfig(currentRoot);
+      const matchedProj = Object.values(projConfig.projects).find(
+        (p) => (projectId && p.id === projectId) || (projectDir && p.paths && p.paths.includes(projectDir))
+      );
+      const wtRes = setupGitWorktree({
+        repoDir: effectiveWorkingDir,
+        worktreeName,
+        baseBranch: worktreeBaseBranch,
+        worktreeRoot: matchedProj?.worktree_root,
+        symlinkDirs: matchedProj?.symlink_dirs,
+        logger: logWorker,
+      });
+      effectiveWorkingDir = wtRes.worktreeDir;
+      logWorker("INFO", `Task ${taskId} executing inside git worktree: ${effectiveWorkingDir}`);
+    } catch (wtErr: any) {
+      logWorker("WARN", `Failed to setup git worktree "${worktreeName}": ${wtErr?.message || String(wtErr)}`);
+    }
+  }
+
+  let gitHeadBefore: string | undefined;
+  if (effectiveWorkingDir) {
+    try {
+      const gitHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: effectiveWorkingDir, encoding: "utf8" });
+      if (gitHead.status === 0 && gitHead.stdout) {
+        gitHeadBefore = gitHead.stdout.trim();
+      }
+    } catch {}
+  }
 
   // Prepare incremental stdout file in logs/<task_id>.out
   const taskLogsDir = path.join(currentRoot, "logs");
@@ -535,6 +792,7 @@ async function executeTaskFile(
         const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(pathSep)].filter(Boolean))).join(pathSep);
 
         child = spawn(command, args, {
+          cwd: effectiveWorkingDir,
           shell: false,
           windowsHide: true,
           stdio: ["pipe", "pipe", "pipe"],
@@ -548,16 +806,53 @@ async function executeTaskFile(
         return reject(spawnErr);
       }
 
-      if (timeoutMs > 0) {
+      if (effectiveTimeoutMs > 0) {
         timer = setTimeout(() => {
           isTimeout = true;
-          logWorker("WARN", `Task ${taskId} timed out after ${timeoutMs}ms. Sending SIGTERM to process.`);
+          logWorker("WARN", `Task ${taskId} timed out after ${effectiveTimeoutMs}ms. Sending SIGTERM to process.`);
           killChild("SIGTERM");
           killTimer = setTimeout(() => {
             logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
             killChild("SIGKILL");
           }, 5000);
-        }, timeoutMs);
+        }, effectiveTimeoutMs);
+      }
+
+      // Stuck detection: warn if process produces no new output for 3 minutes (180s)
+      const stuckThresholdMs = 180000;
+      let lastOutputTime = Date.now();
+      let stuckWarned = false;
+      let stuckCheckInterval: NodeJS.Timeout | null = null;
+      if (isNotifyEnabled && notifyOn.has("stuck")) {
+        stuckCheckInterval = setInterval(() => {
+          if (!stuckWarned && Date.now() - lastOutputTime >= stuckThresholdMs) {
+            stuckWarned = true;
+            logWorker("WARN", `Task ${taskId} has produced no output for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
+            notify("agent-bridge", `Task ${taskId} 超过 3 分钟无新输出，可能已卡住 [${agentName}]`, {
+              subtitle: "任务可能卡住",
+              level: "warning",
+              channel: notifyChannel,
+              sound: notifySound,
+            });
+            if (callbackUrl) {
+              const stuckDuration = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+              sendCompletionCallback({
+                url: callbackUrl,
+                headers: callbackHeaders,
+                taskId,
+                agent: agentName,
+                status: "stuck",
+                exitCode: null,
+                durationSeconds: stuckDuration,
+                resultPath: path.join(resultsDir, `${taskId}.md`),
+                logPath: taskOutFilePath,
+                outputLog: stdoutData + "\n" + stderrData,
+                project: projectName || projectId,
+                logger: logWorker,
+              }).catch(() => {});
+            }
+          }
+        }, 10000);
       }
 
       // Check for control/<taskId>.cancel every 1 second
@@ -582,6 +877,8 @@ async function executeTaskFile(
       }
 
       child.stdout?.on("data", (chunk) => {
+        lastOutputTime = Date.now();
+        stuckWarned = false;
         const text = chunk.toString("utf8");
         stdoutData += text;
         try {
@@ -590,6 +887,8 @@ async function executeTaskFile(
       });
 
       child.stderr?.on("data", (chunk) => {
+        lastOutputTime = Date.now();
+        stuckWarned = false;
         stderrData += chunk.toString("utf8");
       });
 
@@ -597,6 +896,7 @@ async function executeTaskFile(
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
+        if (stuckCheckInterval) clearInterval(stuckCheckInterval);
         reject(err);
       });
 
@@ -604,6 +904,7 @@ async function executeTaskFile(
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
+        if (stuckCheckInterval) clearInterval(stuckCheckInterval);
         exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
@@ -618,7 +919,14 @@ async function executeTaskFile(
   let state: "completed" | "failed" | "cancelled" = "completed";
   let reason: string | undefined = undefined;
 
-  if (isCancelled) {
+  // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
+  const isAgy = command.includes("agy") || agentName === "agy";
+  const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+  if (isAgy && exitCode !== 0 && runDurationMs <= 30000) {
+    status = "failed";
+    state = "failed";
+    reason = (stderrData || stdoutData || "agy exited with error within 30s").trim();
+  } else if (isCancelled) {
     status = "cancelled (cancelled by request)";
     state = "cancelled";
     reason = "cancelled by request";
@@ -663,6 +971,7 @@ async function executeTaskFile(
     startedAt,
     finishedAt,
     exitCode,
+    ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
     ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
   });
@@ -670,7 +979,137 @@ async function executeTaskFile(
   saveProcessedTask(processedMap, taskId, finishedAt);
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
-  notify("agent-bridge", `Task ${taskId} ${status} [${agentName}]`);
+  if (isNotifyEnabled) {
+    if (isTimeout && notifyOn.has("timeout")) {
+      notify("agent-bridge", `Task ${taskId} timed out after ${Math.round(effectiveTimeoutMs / 1000)}s [${agentName}]`, {
+        subtitle: "执行超时警告",
+        level: "warning",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "completed" && notifyOn.has("completed")) {
+      notify("agent-bridge", `Task ${taskId} completed [${agentName}]`, {
+        subtitle: "任务执行完成",
+        level: "success",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "failed" && notifyOn.has("failed")) {
+      notify("agent-bridge", `Task ${taskId} failed [${agentName}]`, {
+        subtitle: "任务执行失败",
+        level: "error",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "cancelled") {
+      notify("agent-bridge", `Task ${taskId} cancelled (cancelled by request) [${agentName}]`, {
+        subtitle: "任务已取消",
+        level: "info",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    }
+
+    // Dispatch Slack lifecycle card if slackChannel or slackWebhookEnv is configured
+    if (slackChannel || slackWebhookEnv) {
+      if (!slackStartTs) {
+        try {
+          const currentStatus = readStatus(currentRoot, taskId);
+          if (currentStatus?.slackMessageTs) {
+            slackStartTs = currentStatus.slackMessageTs;
+          }
+        } catch {}
+      }
+
+      const durationSeconds = Math.max(1, Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+      let slackEvent: "completed" | "failed" | "timeout" | "cancelled" = "completed";
+      if (isTimeout) slackEvent = "timeout";
+      else if (state === "failed") slackEvent = "failed";
+      else if (state === "cancelled") slackEvent = "cancelled";
+
+      // 1. Extract accurate, real output summary without fabrication
+      const realSummary = extractExecutionSummary(stdoutData, stderrData);
+
+      // 2. Extract error output for non-zero exit codes (last 20 lines)
+      let rawErrorOutput = stderrData || "";
+      if (!rawErrorOutput && fs.existsSync(taskOutFilePath)) {
+        try {
+          rawErrorOutput = fs.readFileSync(taskOutFilePath, "utf8");
+        } catch {}
+      }
+      if (!rawErrorOutput && stdoutData) {
+        rawErrorOutput = stdoutData;
+      }
+
+      // 3. Extract Git PR and commit links
+      const gitLinks = extractGitLinks(stdoutData + "\n" + stderrData, projectRepo);
+      if (effectiveWorkingDir && projectRepo) {
+        try {
+          const gitHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: effectiveWorkingDir, encoding: "utf8" });
+          if (gitHead.status === 0 && gitHead.stdout) {
+            const gitHeadAfter = gitHead.stdout.trim();
+            if (gitHeadBefore && gitHeadAfter && gitHeadBefore !== gitHeadAfter) {
+              const cleanRepo = projectRepo.replace(/\.git$/, "").replace(/^https?:\/\/github\.com\//, "");
+              const commitUrl = `https://github.com/${cleanRepo}/commit/${gitHeadAfter}`;
+              if (!gitLinks.some((l: { url: string }) => l.url === commitUrl)) {
+                gitLinks.unshift({
+                  type: "commit",
+                  title: `Commit ${gitHeadAfter.slice(0, 7)}`,
+                  url: commitUrl,
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+
+      await dispatchTaskLifecycleNotification(
+        {
+          taskId,
+          event: slackEvent,
+          projectName,
+          repo: projectRepo,
+          slackChannel,
+          slackWebhookEnv,
+          agent: agentName,
+          model,
+          durationSeconds,
+          resultSummary: realSummary,
+          errorDetails: rawErrorOutput,
+          exitCode: exitCode ?? (slackEvent === "completed" ? 0 : 1),
+          logFilePath: taskOutFilePath,
+          gitLinks,
+          updateTs: slackStartTs,
+          desktop: false,
+        },
+        logWorker
+      );
+    }
+  }
+
+  // Dispatch completion callback on terminal states (completed/failed/timeout/cancelled/stuck)
+  if (callbackUrl) {
+    const callbackDuration = Math.max(0, Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+    let terminalStatus: "completed" | "failed" | "timeout" | "cancelled" | "stuck" = "completed";
+    if (isTimeout) terminalStatus = "timeout";
+    else if (state === "cancelled") terminalStatus = "cancelled";
+    else if (state === "failed") terminalStatus = "failed";
+
+    sendCompletionCallback({
+      url: callbackUrl,
+      headers: callbackHeaders,
+      taskId,
+      agent: agentName,
+      status: terminalStatus,
+      exitCode: exitCode !== null ? exitCode : (terminalStatus === "completed" ? 0 : 1),
+      durationSeconds: callbackDuration,
+      resultPath: path.join(resultsDir, `${taskId}.md`),
+      logPath: taskOutFilePath,
+      outputLog: stdoutData + "\n" + stderrData,
+      project: projectName || projectId,
+      logger: logWorker,
+    }).catch(() => {});
+  }
   return true;
 }
 

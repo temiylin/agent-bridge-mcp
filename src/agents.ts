@@ -6,6 +6,12 @@ export interface AgentConfig {
   command: string;
   args: string[];
   input: "stdin" | "arg";
+  capabilities?: {
+    effort_models?: string[];
+    supports_effort?: boolean;
+    [key: string]: any;
+  };
+  models?: Record<string, { supports_effort?: boolean; [key: string]: any }>;
 }
 
 export type AgentRegistry = Record<string, AgentConfig>;
@@ -50,7 +56,7 @@ export function loadAgents(root: string): AgentRegistry {
       throw new Error(`Invalid configuration for agent "${name}": Entry must be an object.`);
     }
 
-    const { command, args, input } = config as Record<string, unknown>;
+    const { command, args, input, capabilities, models } = config as Record<string, unknown>;
 
     if (typeof command !== "string" || command.trim() === "") {
       throw new Error(`Invalid configuration for agent "${name}": "command" must be a non-empty string.`);
@@ -68,6 +74,8 @@ export function loadAgents(root: string): AgentRegistry {
       command: command.trim(),
       args: [...args],
       input,
+      ...(capabilities && typeof capabilities === "object" ? { capabilities: capabilities as any } : {}),
+      ...(models && typeof models === "object" ? { models: models as any } : {}),
     };
   }
 
@@ -86,6 +94,33 @@ export function getAgent(root: string, name: string): AgentConfig {
     throw new Error(`Agent "${name}" not found in agents.json. Available agents: [${available}]`);
   }
   return registry[name];
+}
+
+/**
+ * Helper to determine if an agent or specific model supports reasoning effort.
+ */
+export function agentSupportsEffort(agentConfig: AgentConfig, model?: string): boolean {
+  if (model && agentConfig.models && agentConfig.models[model]) {
+    if (typeof agentConfig.models[model].supports_effort === "boolean") {
+      return agentConfig.models[model].supports_effort!;
+    }
+  }
+
+  if (agentConfig.capabilities) {
+    if (Array.isArray(agentConfig.capabilities.effort_models) && model) {
+      return agentConfig.capabilities.effort_models.includes(model);
+    }
+    if (typeof agentConfig.capabilities.supports_effort === "boolean") {
+      return agentConfig.capabilities.supports_effort;
+    }
+  }
+
+  // Codex natively supports reasoning effort (by command name or agent name)
+  if (agentConfig.command.includes("codex")) {
+    return true;
+  }
+
+  return false;
 }
 
 // Alias for compatibility

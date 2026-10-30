@@ -102,6 +102,8 @@ async function runTests() {
     "pr_create",
     "pr_review",
     "pr_merge",
+    "notify_device",
+    "self_check",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

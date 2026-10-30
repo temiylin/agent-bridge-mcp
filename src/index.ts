@@ -3,10 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createBridgeMcpServer } from "./server.js";
 import { startHttpServer } from "./http-server.js";
 import { startRelayClient } from "./client.js";
+import { resolveDeviceToken } from "./token.js";
 
 export { createBridgeMcpServer } from "./server.js";
 export { startHttpServer } from "./http-server.js";
 export { startRelayClient } from "./client.js";
+export { resolveDeviceToken } from "./token.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -24,26 +26,13 @@ async function main() {
       serverUrl = args[serverIdx + 1];
     }
 
-    let token = process.env.DEVICE_TOKEN || "";
+    let cliToken: string | undefined;
     const tokenIdx = args.findIndex((arg) => arg === "--token" || arg === "-t");
     if (tokenIdx !== -1 && args[tokenIdx + 1]) {
-      token = args[tokenIdx + 1];
+      cliToken = args[tokenIdx + 1];
     }
-    if (!token) {
-      try {
-        const fs = await import("node:fs");
-        const path = await import("node:path");
-        const os = await import("node:os");
-        const cfgPath = path.join(os.homedir(), ".agent-bridge", "config.json");
-        if (fs.existsSync(cfgPath)) {
-          const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
-          if (cfg.deviceToken) token = cfg.deviceToken;
-        }
-      } catch {}
-    }
-    if (!token) {
-      token = "dev_default";
-    }
+    const tokenResult = resolveDeviceToken(cliToken);
+    const token = tokenResult.token;
 
     await startRelayClient({ serverUrl, token });
     return;

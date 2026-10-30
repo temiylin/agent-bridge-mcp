@@ -80,7 +80,7 @@ export function registerGitHubPrTools(
     "pr_list",
     "List pull requests for a GitHub repository (supports private repositories using host credentials).",
     {
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub'). If omitted, uses local Git remote."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo'). If omitted, uses local Git remote."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
       state: z.enum(["open", "closed", "merged", "all"]).optional().describe("PR state filter: 'open' (default), 'closed', 'merged', or 'all'."),
       limit: z.number().int().min(1).max(50).optional().describe("Maximum number of PRs to return (default: 15, max: 50)."),
@@ -144,7 +144,7 @@ export function registerGitHubPrTools(
     "View detailed information, body description, and discussion comments (including Codex P0/P1/P2 reviews) for a Pull Request.",
     {
       pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
       include_comments: z.boolean().optional().describe("Whether to include discussion comments and review findings (default: true)."),
     },
@@ -213,7 +213,7 @@ export function registerGitHubPrTools(
     "Get the unified code diff for a Pull Request to perform in-depth code review directly in chat.",
     {
       pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
       max_bytes: z.number().int().min(500).max(128000).optional().describe("Maximum bytes to return (default: 48000)."),
     },
@@ -266,7 +266,7 @@ export function registerGitHubPrTools(
     "Inspect CI / GitHub Actions status and check suites for a Pull Request.",
     {
       pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
     async ({ pr_number, repo, repo_path }) => {
@@ -335,7 +335,7 @@ export function registerGitHubPrTools(
       base: z.string().optional().describe("Target base branch, e.g. 'develop' or 'main' (defaults to default branch)"),
       head: z.string().optional().describe("Head branch containing commits (defaults to current branch)"),
       draft: z.boolean().optional().describe("Whether to create the PR as a draft. Default: false."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
     async ({ title, body = "", base, head, draft, repo, repo_path }) => {
@@ -393,7 +393,7 @@ export function registerGitHubPrTools(
       pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
       action: z.enum(["comment", "approve", "request-changes"]).describe("Review action: 'comment', 'approve', or 'request-changes'."),
       body: z.string().describe("Review comment body in Markdown."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
     async ({ pr_number, action, body, repo, repo_path }) => {
@@ -448,7 +448,7 @@ export function registerGitHubPrTools(
       pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
       method: z.enum(["merge", "squash", "rebase"]).optional().describe("Merge method: 'merge' (default), 'squash', or 'rebase'."),
       delete_branch: z.boolean().optional().describe("Whether to delete head branch after merge. Default: false."),
-      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'temiylin/vision_hub')."),
+      repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
     async ({ pr_number, method = "merge", delete_branch = false, repo, repo_path }) => {
