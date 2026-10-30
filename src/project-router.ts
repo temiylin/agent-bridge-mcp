@@ -3,18 +3,44 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { resolveBridgeRoot } from "./config.js";
 
+export interface ServiceConfig {
+  name: string;
+  command: string;
+  port: number;
+  health_url: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  changed_paths?: string[];
+  health_timeout_seconds?: number;
+}
+
+export interface VerifyPrConfig {
+  test_commands?: string[];
+  timeout_seconds?: number;
+}
+
+export interface MergeDeployConfig {
+  checkout_path?: string;
+  target_branch?: string;
+  services?: string[];
+}
+
 export interface ProjectDefinition {
   id: string;
   name: string;
   repo?: string;
   slack_channel?: string;
   slack_webhook_env?: string;
+  slack_user_id?: string;
   callback_url?: string;
   callback_headers?: Record<string, string>;
   worktree_root?: string;
   symlink_dirs?: string[];
   paths?: string[];
   description?: string;
+  services?: Record<string, ServiceConfig>;
+  verify_pr?: VerifyPrConfig;
+  merge_deploy?: MergeDeployConfig;
 }
 
 export interface ProjectsConfig {
@@ -116,6 +142,7 @@ export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): Proje
           repo: typeof p.repo === "string" ? p.repo.trim() : undefined,
           slack_channel: typeof p.slack_channel === "string" ? p.slack_channel.trim() : undefined,
           slack_webhook_env: typeof p.slack_webhook_env === "string" ? p.slack_webhook_env.trim() : undefined,
+          slack_user_id: typeof p.slack_user_id === "string" ? p.slack_user_id.trim() : undefined,
           callback_url: typeof p.callback_url === "string" ? p.callback_url.trim() : undefined,
           callback_headers: p.callback_headers && typeof p.callback_headers === "object" && !Array.isArray(p.callback_headers)
             ? p.callback_headers
@@ -128,6 +155,9 @@ export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): Proje
             ? p.paths.map((x: any) => String(x).trim()).filter(Boolean)
             : [],
           description: typeof p.description === "string" ? p.description.trim() : undefined,
+          services: p.services && typeof p.services === "object" && !Array.isArray(p.services) ? p.services : undefined,
+          verify_pr: p.verify_pr && typeof p.verify_pr === "object" && !Array.isArray(p.verify_pr) ? p.verify_pr : undefined,
+          merge_deploy: p.merge_deploy && typeof p.merge_deploy === "object" && !Array.isArray(p.merge_deploy) ? p.merge_deploy : undefined,
         };
       }
     }
