@@ -1,5 +1,6 @@
 import { createBridgeMcpServer } from "./server.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { resolveDeviceToken } from "./token.js";
 
 export interface RelayClientOptions {
   serverUrl?: string;
@@ -24,7 +25,8 @@ export interface RelayClientHandle {
  */
 export async function startRelayClient(options: RelayClientOptions = {}): Promise<RelayClientHandle> {
   const serverUrl = options.serverUrl || process.env.RELAY_SERVER || "wss://bridge.krow.top/ws";
-  const primaryToken = options.token || process.env.DEVICE_TOKEN || "dev_news";
+  const resolvedToken = options.token || resolveDeviceToken().token;
+  const primaryToken = resolvedToken || "dev_news";
   const tokensToConnect = Array.from(new Set([primaryToken, ...(options.tokens || []), "dev_news"].filter(Boolean))) as string[];
   const localPort = process.env.AGENT_BRIDGE_PORT || process.env.PORT ? parseInt((process.env.AGENT_BRIDGE_PORT || process.env.PORT)!, 10) : 38080;
 
@@ -59,29 +61,23 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
   };
 
   function connectSingleToken(token: string) {
-    logger.info(`Connecting to Relay Hub at ${serverUrl} with token: ${token.slice(0, 10)}...`);
+    logger.info(`Connecting to Relay Hub at ${serverUrl} with configured token...`);
     const ws = new (globalThis as any).WebSocket(`${serverUrl}?token=${encodeURIComponent(token)}`);
 
     ws.onopen = () => {
       activeSockets.add(ws);
-      logger.info(`✅ Successfully connected to Relay Hub for token: ${token.slice(0, 10)}...`);
+      logger.info(`✅ Successfully connected to Relay Hub for configured token`);
       // Connection URLs are credentials. Keep them out of redirected daemon logs.
       if (process.stdout.isTTY && token === primaryToken) {
-        const httpBase = process.env.RELAY_HTTP || serverUrl.replace(/^ws/, "http").replace(/\/ws$/, "/mcp");
-        const deviceUrl = `${httpBase}/${token}`;
         console.log(`\n===============================================================`);
         console.log(`🎉 已成功连接到 Agent Bridge 云端中继网关！`);
         console.log(`===============================================================`);
-        console.log(`📡 本机专属 MCP 地址: \x1b[36m\x1b[1m${deviceUrl}\x1b[0m`);
-        console.log(`🔑 你的设备识别码:     \x1b[32m\x1b[1m${token}\x1b[0m`);
+        console.log(`🔑 你的设备识别码已由安全凭证系统加载`);
         console.log(`🖥️ 本地控制台页面:   \x1b[35m\x1b[1mhttp://localhost:${localPort}\x1b[0m`);
         console.log(`---------------------------------------------------------------`);
         console.log(`💡 使用方法:`);
         console.log(`   1. 浏览器打开本地控制台: http://localhost:${localPort} (可自主设置本地 Agent 调度规则等)`);
-        console.log(`   2. 在 ChatGPT「添加自定义 MCP 服务器」中：`);
-        console.log(`      - 服务器 URL:   ${deviceUrl}`);
-        console.log(`      - 身份验证:     无 (None)`);
-        console.log(`      (或 URL: ${httpBase}，身份验证: Bearer Token: ${token})`);
+        console.log(`   2. 在 ChatGPT「添加自定义 MCP 服务器」中：使用设备配置的 MCP 端点与认证凭据`);
         console.log(`===============================================================\n`);
       }
       options.onConnect?.();
@@ -115,13 +111,13 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
       activeSockets.delete(ws);
       options.onDisconnect?.();
       if (shouldReconnect) {
-        logger.warn(`Connection to Relay Hub lost for ${token.slice(0, 10)}... Reconnecting in 3 seconds...`);
+        logger.warn(`Connection to Relay Hub lost. Reconnecting in 3 seconds...`);
         setTimeout(() => connectSingleToken(token), 3000);
       }
     };
 
     ws.onerror = (err: any) => {
-      logger.error(`WebSocket error for ${token.slice(0, 10)}...: ${err?.message || String(err)}`);
+      logger.error(`WebSocket error: ${err?.message || String(err)}`);
     };
   }
 

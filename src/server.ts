@@ -19,7 +19,10 @@ import { registerTerminalTools } from "./terminal.js";
 import { registerProjectInspectionTool } from "./project-inspection.js";
 import { registerGitTools } from "./git-tools.js";
 import { registerGitHubPrTools } from "./github-pr.js";
+import { registerNotificationTools } from "./notification-tools.js";
+import { registerSelfCheckTool } from "./self-check-tool.js";
 import { resolveTaskAgent } from "./routing.js";
+import { resolveProject } from "./project-router.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -60,8 +63,47 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
       continue_session: z.boolean().optional().describe("If true, resumes and continues the previous agent conversation session (e.g., codex exec resume --last or agy --continue)"),
       session_id: z.string().optional().describe("Optional specific session or thread ID to resume"),
+      notify: z
+        .union([
+          z.boolean().describe("简单布尔值：传 true 开启默认本地电脑通知（完成/超时/卡住/失败时弹窗+声音），传 false 关闭"),
+          z
+            .object({
+              enabled: z.boolean().optional().describe("是否启用通知，默认 true"),
+              channel: z
+                .enum(["desktop", "sound_only", "none"])
+                .optional()
+                .describe("通知方式: 'desktop' (桌面横幅+声音), 'sound_only' (仅声音), 'none' (静默)"),
+              sound: z
+                .union([z.boolean(), z.string()])
+                .optional()
+                .describe("是否播放提示音 (true/false) 或指定声音名 (如 'Hero', 'Ping', 'Basso')"),
+              on: z
+                .array(z.enum(["completed", "failed", "timeout", "stuck"]))
+                .optional()
+                .describe("何时通知，默认全部包含: ['completed', 'failed', 'timeout', 'stuck']"),
+              timeout_seconds: z
+                .number()
+                .optional()
+                .describe("规定时间内没有完成告警的超时秒数"),
+            })
+            .describe("二级通知配置对象"),
+        ])
+        .optional()
+        .describe("任务通知配置：传 true 开启默认电脑通知；或传二级参数对象精细控制方式与时机"),
+      timeout_seconds: z.number().optional().describe("规定时间内没有完成告警的超时秒数（简写参数，与 notify.timeout_seconds 作用一致）"),
+      project_id: z.string().optional().describe("所属项目标识，用于路由至对应的 Slack 项目频道及配置项目属性"),
+      project_dir: z.string().optional().describe("项目工作目录路径，用于根据 projects.json 自动匹配项目归属"),
+      callback_url: z.string().optional().describe("任务完成后的 HTTP Webhook 回调地址 (POST JSON)"),
+      callback_headers: z.record(z.string(), z.string()).optional().describe("回调请求自定义 Headers 字典 (键值对，环境变量名格式如 $API_KEY 或 API_KEY)"),
+      worktree: z
+        .object({
+          base_branch: z.string().optional().describe("创建 worktree 的基准分支（默认当前或远程 HEAD）"),
+          name: z.string().describe("worktree 目录及分支名称"),
+        })
+        .optional()
+        .describe("可选 Git worktree 隔离环境配置"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -157,11 +199,69 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const createdAt = new Date().toISOString();
         const taskTitle = title && title.trim().length > 0 ? title.trim() : `Task ${taskId}`;
 
+        // Project Resolution & Slack Channel lookup
+        const projectResolution = resolveProject(rootDir, {
+          projectId: project_id,
+          projectDir: project_dir,
+        });
+
+        if (projectResolution.conflict) {
+          logger.warn(`Project routing conflict for task ${taskId}: ${projectResolution.reason}`);
+        } else if (projectResolution.matched) {
+          logger.info(`Task ${taskId} routed to project "${projectResolution.project?.name}" (${projectResolution.reason}) -> Slack: ${projectResolution.channelId || "(no channel)"}`);
+        }
+
         let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
+        if (projectResolution.project?.id) headerMeta += `- **Project ID**: ${projectResolution.project.id}\n`;
+        if (projectResolution.project?.name) headerMeta += `- **Project Name**: ${projectResolution.project.name}\n`;
+        if (projectResolution.project?.repo) headerMeta += `- **Project Repo**: ${projectResolution.project.repo}\n`;
+        if (projectResolution.project?.slack_webhook_env) headerMeta += `- **Slack Webhook Env**: ${projectResolution.project.slack_webhook_env}\n`;
+        const effectiveProjectDir = project_dir || projectResolution.project?.paths?.[0];
+        if (effectiveProjectDir) headerMeta += `- **Project Dir**: ${effectiveProjectDir}\n`;
+        if (projectResolution.channelId) headerMeta += `- **Slack Channel**: ${projectResolution.channelId}\n`;
+        if (projectResolution.conflict) headerMeta += `- **Routing Conflict**: true\n`;
+
+        // Callback URL & Headers configuration (per-task or per-project fallback)
+        const effectiveCallbackUrl = callback_url || projectResolution.project?.callback_url;
+        const effectiveCallbackHeaders = callback_headers || projectResolution.project?.callback_headers;
+        if (effectiveCallbackUrl) headerMeta += `- **Callback URL**: ${effectiveCallbackUrl}\n`;
+        if (effectiveCallbackHeaders) headerMeta += `- **Callback Headers**: ${JSON.stringify(effectiveCallbackHeaders)}\n`;
+
+        // Worktree configuration
+        if (worktree && worktree.name) {
+          headerMeta += `- **Worktree Name**: ${worktree.name.trim()}\n`;
+          if (worktree.base_branch) headerMeta += `- **Worktree Base Branch**: ${worktree.base_branch.trim()}\n`;
+        }
         if (modelParam) headerMeta += `- **Model**: ${modelParam}\n`;
         if (effortParam) headerMeta += `- **Reasoning Effort**: ${effortParam}\n`;
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
+
+        // Parse notification settings (boolean or nested object)
+        let notifyEnabled: boolean | undefined;
+        let notifyChannel: string | undefined;
+        let notifySound: boolean | string | undefined;
+        let notifyOn: string[] | undefined;
+        let effectiveTimeoutSec = timeout_seconds && timeout_seconds > 0 ? timeout_seconds : undefined;
+
+        if (typeof notify === "boolean") {
+          notifyEnabled = notify;
+        } else if (notify && typeof notify === "object") {
+          notifyEnabled = notify.enabled !== undefined ? notify.enabled : true;
+          notifyChannel = notify.channel;
+          notifySound = notify.sound;
+          notifyOn = notify.on;
+          if (notify.timeout_seconds && notify.timeout_seconds > 0) {
+            effectiveTimeoutSec = notify.timeout_seconds;
+          }
+        }
+
+        if (notifyEnabled !== undefined) headerMeta += `- **Notify**: ${notifyEnabled}\n`;
+        if (notifyChannel) headerMeta += `- **Notify Channel**: ${notifyChannel}\n`;
+        if (notifySound !== undefined) headerMeta += `- **Notify Sound**: ${notifySound}\n`;
+        if (notifyOn && notifyOn.length > 0) headerMeta += `- **Notify On**: ${notifyOn.join(",")}\n`;
+        if (effectiveTimeoutSec) headerMeta += `- **Timeout Seconds**: ${effectiveTimeoutSec}\n`;
+
         headerMeta += `- **Created At**: ${createdAt}\n`;
 
         const content = `# ${taskTitle}
@@ -195,11 +295,19 @@ ${prompt}
         } catch {}
 
         let metaDetails = "";
+        if (projectResolution.project?.name) metaDetails += `\nproject: ${projectResolution.project.name}`;
+        if (projectResolution.channelId) metaDetails += `\nslack_channel: ${projectResolution.channelId}`;
+        if (projectResolution.conflict) metaDetails += `\nrouting_conflict: true`;
         if (agentName) metaDetails += `\nagent: ${agentName}`;
         if (modelParam) metaDetails += `\nmodel: ${modelParam}`;
         if (effortParam) metaDetails += `\nreasoning_effort: ${effortParam}`;
         if (continue_session) metaDetails += `\ncontinue_session: true`;
         if (session_id && session_id.trim()) metaDetails += `\nsession_id: ${session_id.trim()}`;
+        if (effectiveCallbackUrl) metaDetails += `\ncallback_url: ${effectiveCallbackUrl}`;
+        if (worktree && worktree.name) metaDetails += `\nworktree: ${worktree.name}`;
+        if (notifyEnabled !== undefined) metaDetails += `\nnotify: ${notifyEnabled}`;
+        if (notifyChannel) metaDetails += `\nnotify_channel: ${notifyChannel}`;
+        if (effectiveTimeoutSec) metaDetails += `\ntimeout_seconds: ${effectiveTimeoutSec}`;
 
         return {
           content: [
@@ -323,6 +431,8 @@ ${prompt}
   registerProjectInspectionTool(server, rootDir, logger);
   registerGitTools(server, rootDir, logger);
   registerGitHubPrTools(server, rootDir, logger);
+  registerNotificationTools(server, rootDir, logger);
+  registerSelfCheckTool(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }
