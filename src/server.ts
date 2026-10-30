@@ -21,6 +21,7 @@ import { registerGitTools } from "./git-tools.js";
 import { registerGitHubPrTools } from "./github-pr.js";
 import { registerNotificationTools } from "./notification-tools.js";
 import { registerSelfCheckTool } from "./self-check-tool.js";
+import { registerBridgeRound2Tools } from "./round2-tools.js";
 import { resolveTaskAgent } from "./routing.js";
 import { resolveProject } from "./project-router.js";
 
@@ -102,8 +103,29 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         })
         .optional()
         .describe("可选 Git worktree 隔离环境配置"),
+      on_success: z
+        .union([
+          z.string().describe("单条后续任务 prompt 或配置文件中的预设 prompt"),
+          z.array(z.string()).describe("多条后续任务 prompt 列表"),
+          z.object({
+            prompt: z.string().describe("后续任务 prompt"),
+            title: z.string().optional().describe("后续任务标题"),
+            agent: z.string().optional().describe("后续任务 agent"),
+            model: z.string().optional().describe("后续任务 model"),
+          }),
+          z.array(
+            z.object({
+              prompt: z.string().describe("后续任务 prompt"),
+              title: z.string().optional().describe("后续任务标题"),
+              agent: z.string().optional().describe("后续任务 agent"),
+              model: z.string().optional().describe("后续任务 model"),
+            })
+          ),
+        ])
+        .optional()
+        .describe("任务成功后自动触发的后续任务链 (Task chains)"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -227,6 +249,11 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (effectiveCallbackUrl) headerMeta += `- **Callback URL**: ${effectiveCallbackUrl}\n`;
         if (effectiveCallbackHeaders) headerMeta += `- **Callback Headers**: ${JSON.stringify(effectiveCallbackHeaders)}\n`;
 
+        // Task Chains configuration (on_success)
+        if (on_success) {
+          headerMeta += `- **On Success**: ${JSON.stringify(on_success)}\n`;
+        }
+
         // Worktree configuration
         if (worktree && worktree.name) {
           headerMeta += `- **Worktree Name**: ${worktree.name.trim()}\n`;
@@ -338,12 +365,13 @@ ${prompt}
    */
   server.tool(
     "read_result",
-    "Read the execution result of a task by its task_id.",
+    "Read the execution result of a task by its task_id. Returns a compact summary by default (status, changed files, test results, PR url); full output on demand via full_output=true.",
     {
       task_id: z.string().describe("Task ID to retrieve result for"),
+      full_output: z.boolean().optional().describe("If true, returns full unabridged execution result output. Default: false (compact summary)."),
     },
     { readOnlyHint: true, destructiveHint: false },
-    async ({ task_id }) => {
+    async ({ task_id, full_output = false }) => {
       try {
         // 1. Security constraint: task_id character whitelist validation
         if (!isValidTaskId(task_id)) {
@@ -390,16 +418,64 @@ ${prompt}
           };
         }
 
-        // 4. Return result file content
+        // 4. Return result: full output on demand, compact summary by default
         const fileContent = fs.readFileSync(resultFilePath, "utf8");
-        logger.info(`read_result: successfully retrieved result for taskId=${task_id}`);
+        logger.info(`read_result: successfully retrieved result for taskId=${task_id} (full_output=${full_output})`);
         audit(rootDir, { tool: "read_result", taskId: task_id, state: "read" });
+
+        if (full_output || process.env.AGENT_BRIDGE_RAW_RESULT === "1") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: fileContent,
+              },
+            ],
+          };
+        }
+
+        // Generate compact summary (status, changed files, test results, PR url)
+        const statusMatch = fileContent.match(/^-[ \t]*\*\*Status\*\*:[ \t]*([^\r\n]*)$/m);
+        const statusStr = statusMatch ? statusMatch[1].trim() : "completed";
+
+        const gitPrMatches = [...fileContent.matchAll(/https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/(\d+)/g)];
+        const prUrl = gitPrMatches.length > 0 ? gitPrMatches[0][0] : undefined;
+
+        // Changed files count / list
+        const changedFilesMatch = [...fileContent.matchAll(/(?:modified|added|deleted|renamed|M|A|D|R):\s+([^\r\n]+)/g)];
+        const changedFiles = changedFilesMatch.map((m) => m[1].trim());
+
+        // Test pass/fail counts
+        const passedMatch = fileContent.match(/(\d+)\s+(?:passing|passed)/i);
+        const failedMatch = fileContent.match(/(\d+)\s+(?:failing|failed)/i);
+        let testResults: { passed: number; failed: number } | undefined;
+        if (passedMatch || failedMatch) {
+          testResults = {
+            passed: passedMatch ? parseInt(passedMatch[1], 10) : 0,
+            failed: failedMatch ? parseInt(failedMatch[1], 10) : 0,
+          };
+        }
+
+        const summaryLines: string[] = [
+          `# Compact Result Summary for ${task_id}`,
+          `- **Status**: ${statusStr}`,
+        ];
+        if (changedFiles.length > 0) {
+          summaryLines.push(`- **Changed Files**: ${changedFiles.length} file(s) [${changedFiles.slice(0, 5).join(", ")}${changedFiles.length > 5 ? "..." : ""}]`);
+        }
+        if (testResults) {
+          summaryLines.push(`- **Test Results**: ${testResults.passed} passed, ${testResults.failed} failed`);
+        }
+        if (prUrl) {
+          summaryLines.push(`- **PR URL**: ${prUrl}`);
+        }
+        summaryLines.push("\n*(Pass full_output=true to read the full execution log and output body)*");
 
         return {
           content: [
             {
               type: "text",
-              text: fileContent,
+              text: summaryLines.join("\n"),
             },
           ],
         };
@@ -433,6 +509,7 @@ ${prompt}
   registerGitHubPrTools(server, rootDir, logger);
   registerNotificationTools(server, rootDir, logger);
   registerSelfCheckTool(server, rootDir, logger);
+  registerBridgeRound2Tools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

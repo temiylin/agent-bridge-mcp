@@ -104,6 +104,13 @@ async function runTests() {
     "pr_merge",
     "notify_device",
     "self_check",
+    "restart_service",
+    "verify_pr",
+    "merge_and_deploy",
+    "list_project_tasks",
+    "slack_post",
+    "list_agent_accounts",
+    "switch_agent_account",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

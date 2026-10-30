@@ -152,6 +152,7 @@ export function parseTaskFile(content: string): {
   callbackHeaders?: Record<string, string>;
   worktreeName?: string;
   worktreeBaseBranch?: string;
+  onSuccess?: any;
 } {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
@@ -190,6 +191,16 @@ export function parseTaskFile(content: string): {
 
   const worktreeBaseBranchMatch = content.match(/^-[ \t]*\*\*Worktree Base Branch\*\*:[ \t]*([^\r\n]*)$/m);
   const worktreeBaseBranch = worktreeBaseBranchMatch ? worktreeBaseBranchMatch[1].trim() : undefined;
+
+  const onSuccessMatch = content.match(/^-[ \t]*\*\*On Success\*\*:[ \t]*([^\r\n]*)$/m);
+  let onSuccess: any = undefined;
+  if (onSuccessMatch) {
+    try {
+      onSuccess = JSON.parse(onSuccessMatch[1].trim());
+    } catch {
+      onSuccess = onSuccessMatch[1].trim();
+    }
+  }
 
   const modelMatch = content.match(/^-[ \t]*\*\*Model\*\*:[ \t]*([^\r\n]*)$/m);
   const model = modelMatch ? modelMatch[1].trim() : "";
@@ -261,6 +272,7 @@ export function parseTaskFile(content: string): {
     ...(callbackHeaders ? { callbackHeaders } : {}),
     ...(worktreeName ? { worktreeName } : {}),
     ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}),
+    onSuccess,
   };
 }
 
@@ -430,6 +442,7 @@ async function executeTaskFile(
     callbackHeaders,
     worktreeName,
     worktreeBaseBranch,
+    onSuccess,
   } = parseTaskFile(fileContent);
 
   const effectiveTimeoutMs = timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds * 1000 : timeoutMs;
@@ -1110,6 +1123,51 @@ async function executeTaskFile(
       logger: logWorker,
     }).catch(() => {});
   }
+
+  // Trigger task chains on_success
+  if (state === "completed" && onSuccess) {
+    try {
+      const nextTasks = Array.isArray(onSuccess) ? onSuccess : [onSuccess];
+      for (const nextItem of nextTasks) {
+        let nextPrompt = "";
+        let nextTitle = "";
+        let nextAgent = agentName;
+        let nextModel = model;
+
+        if (typeof nextItem === "string") {
+          nextPrompt = nextItem;
+          nextTitle = `Follow-up to ${taskId}`;
+        } else if (nextItem && typeof nextItem === "object") {
+          nextPrompt = nextItem.prompt;
+          nextTitle = nextItem.title || `Follow-up to ${taskId}`;
+          if (nextItem.agent) nextAgent = nextItem.agent;
+          if (nextItem.model) nextModel = nextItem.model;
+        }
+
+        if (nextPrompt && nextPrompt.trim()) {
+          const nextTaskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+          const nextTaskPath = path.join(tasksDir, `${nextTaskId}.md`);
+          let nextContent = `# ${nextTitle}\n\n`;
+          nextContent += `- **Task ID**: ${nextTaskId}\n`;
+          if (nextAgent) nextContent += `- **Agent**: ${nextAgent}\n`;
+          if (projectId) nextContent += `- **Project ID**: ${projectId}\n`;
+          if (projectName) nextContent += `- **Project Name**: ${projectName}\n`;
+          if (projectRepo) nextContent += `- **Project Repo**: ${projectRepo}\n`;
+          if (projectDir) nextContent += `- **Project Dir**: ${projectDir}\n`;
+          if (slackChannel) nextContent += `- **Slack Channel**: ${slackChannel}\n`;
+          if (slackStartTs) nextContent += `- **Slack Thread**: ${slackStartTs}\n`;
+          if (nextModel) nextContent += `- **Model**: ${nextModel}\n`;
+          nextContent += `- **Created At**: ${new Date().toISOString()}\n\n---\n\n## Prompt\n\n${nextPrompt}\n`;
+
+          fs.writeFileSync(nextTaskPath, nextContent, "utf8");
+          logWorker("INFO", `Task chain triggered: created follow-up task ${nextTaskId} for parent ${taskId}`);
+        }
+      }
+    } catch (chainErr: any) {
+      logWorker("WARN", `Failed to trigger on_success chain for task ${taskId}: ${chainErr?.message || String(chainErr)}`);
+    }
+  }
+
   return true;
 }
 
