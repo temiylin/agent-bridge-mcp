@@ -62,7 +62,7 @@ export function normalizeRealpath(targetPath: string): string {
 }
 
 /**
- * Safe directory boundary match. Prevents /code/TradeCore matching /code/TradeCore-backup.
+ * Safe directory boundary match. Prevents /code/my-project matching /code/my-project-backup.
  */
 export function isPathInsideOrEqual(candidateChild: string, configuredParent: string): boolean {
   const normChild = normalizeRealpath(candidateChild);

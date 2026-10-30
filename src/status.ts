@@ -14,6 +14,7 @@ export interface TaskStatusInfo {
   finishedAt?: string;
   exitCode?: number | null;
   reason?: string;
+  slackMessageTs?: string;
 }
 
 export function getStatusDir(root: string): string {
@@ -50,6 +51,7 @@ export function writeStatus(
     finishedAt: info.finishedAt,
     exitCode: info.exitCode !== undefined ? info.exitCode : null,
     ...(info.reason ? { reason: info.reason } : {}),
+    ...(info.slackMessageTs ? { slackMessageTs: info.slackMessageTs } : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");

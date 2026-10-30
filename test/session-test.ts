@@ -32,7 +32,7 @@ function runSessionTests() {
   // 3. Extract session ID from Codex stdout
   const mockCodexStdout = `OpenAI Codex v0.162.1
 --------
-workdir: /Users/news/code/mcp/vision_hub
+workdir: /code/my-project
 model: gpt-6.1-terra
 session id: 01a186a0-6d19-7e92-b3d7-f27e5f096e32
 --------

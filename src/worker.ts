@@ -1051,7 +1051,7 @@ async function executeTaskFile(
             if (gitHeadBefore && gitHeadAfter && gitHeadBefore !== gitHeadAfter) {
               const cleanRepo = projectRepo.replace(/\.git$/, "").replace(/^https?:\/\/github\.com\//, "");
               const commitUrl = `https://github.com/${cleanRepo}/commit/${gitHeadAfter}`;
-              if (!gitLinks.some((l) => l.url === commitUrl)) {
+              if (!gitLinks.some((l: { url: string }) => l.url === commitUrl)) {
                 gitLinks.unshift({
                   type: "commit",
                   title: `Commit ${gitHeadAfter.slice(0, 7)}`,
