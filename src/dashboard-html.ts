@@ -889,7 +889,7 @@ export function renderDashboardHtml(): string {
           <div>
             <div class="section-title">👥 agy 多账号并发隔离 Profile 池 (agy-pool.json)</div>
             <p class="section-desc" style="margin-bottom:0">
-              每个 Profile 拥有独立的 <code>$HOME</code> 运行空间，登录相互隔离。任务分发时自动优先指派高额度、闲置 Profile 并发执行。
+              每个 Profile 拥有独立的 <code>$HOME</code> 运行空间。初始化时从 Cockpit 已登录会话同步 agy 凭证；未登录的 Profile 不会被派发任务。
             </p>
           </div>
           <div style="display:flex; gap:10px;">
@@ -906,14 +906,15 @@ export function renderDashboardHtml(): string {
                 <th>隔离主目录 (HOME)</th>
                 <th style="width:180px;">对齐 Cockpit 邮箱</th>
                 <th style="width:100px;">调度状态</th>
+                <th style="width:120px;">登录状态</th>
                 <th style="width:140px;">当前执行任务</th>
                 <th style="width:90px;">今日任务数</th>
                 <th style="width:100px;">额度参考</th>
-                <th style="width:200px; text-align:right;">操作</th>
+                <th style="width:240px; text-align:right;">操作</th>
               </tr>
             </thead>
             <tbody id="pool-profiles-tbody">
-              <tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+              <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1014,17 +1015,29 @@ export function renderDashboardHtml(): string {
     </div>
   </div>
 
-  <!-- Modal: Profile Login Command -->
+  <!-- Modal: Profile Login / Auth -->
   <div id="modal-login-cmd" class="modal-overlay">
-    <div class="modal-box">
-      <div class="section-title" style="margin-bottom:14px;">🔑 Profile 独立认证登录命令</div>
-      <p class="section-desc" style="margin-bottom:8px;">
-        请在系统终端中执行以下命令，为该 Profile 完成独立的 agy CLI 登录授权：
+    <div class="modal-box" style="max-width:640px;">
+      <div class="section-title" style="margin-bottom:14px;">🔑 Profile 登录</div>
+      <p class="section-desc" style="margin-bottom:10px;">
+        推荐：直接从 Cockpit 已登录账号同步凭证到该 Profile（无需终端、无需粘贴授权码）。
       </p>
-      <div class="code-box" id="login-cmd-text"></div>
+      <div id="login-status-box" style="margin-bottom:12px; padding:10px 12px; border-radius:8px; background:rgba(148,163,184,0.12); font-size:13px;"></div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
+        <button class="btn-primary" onclick="syncProfileAuthFromModal()">⟳ 从 Cockpit 同步登录态</button>
+      </div>
+      <details style="margin-top:4px;">
+        <summary style="cursor:pointer; color:var(--text-muted); font-size:13px;">高级：终端登录命令（备用）</summary>
+        <p class="section-desc" style="margin:10px 0 8px;">
+          仅在 Cockpit 同步失败时使用。在系统终端执行：
+        </p>
+        <div class="code-box" id="login-cmd-text"></div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:12px;">
+          <button class="btn-secondary" onclick="copyLoginCmd()">📋 复制命令</button>
+        </div>
+      </details>
       <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
         <button class="btn-secondary" onclick="closeModal('modal-login-cmd')">关闭</button>
-        <button class="btn-primary" onclick="copyLoginCmd()">📋 复制命令</button>
       </div>
     </div>
   </div>
@@ -1034,7 +1047,7 @@ export function renderDashboardHtml(): string {
     <div class="modal-box" style="max-width:640px;">
       <div class="section-title" style="margin-bottom:14px;">👥 从 Cockpit 账号初始化 Profile</div>
       <p class="section-desc" style="margin-bottom:12px;">
-        选择上方列表中的一个 Cockpit 账号。别名与 HOME 目录将按邮箱自动生成，无需手填；已绑定的账号不可再次初始化。
+        选择一个 Cockpit 账号。别名与 HOME 自动生成；初始化后会立刻从 Cockpit 同步 agy 登录态，无需终端登录。已绑定账号不可再次初始化。
       </p>
       <div id="init-profile-account-list" style="max-height:360px; overflow:auto; display:flex; flex-direction:column; gap:8px;"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
@@ -1090,9 +1103,19 @@ export function renderDashboardHtml(): string {
     }
 
     let activeLoginCommand = "";
+    let activeLoginAlias = "";
     function showLoginCmd(home, alias) {
       activeLoginCommand = "HOME=" + home + " agy";
-      document.getElementById("login-cmd-text").textContent = activeLoginCommand;
+      activeLoginAlias = alias || "";
+      const cmdEl = document.getElementById("login-cmd-text");
+      if (cmdEl) cmdEl.textContent = activeLoginCommand;
+      const box = document.getElementById("login-status-box");
+      if (box) {
+        const stat = (lastPoolData.pool || []).find(function(s) { return s.alias === alias; });
+        const label = (stat && stat.login_label) ? stat.login_label : "未登录";
+        const reason = (stat && stat.login_reason) ? (" · " + stat.login_reason) : "";
+        box.textContent = "当前登录状态：" + label + reason;
+      }
       openModal("modal-login-cmd");
     }
 
@@ -1101,6 +1124,43 @@ export function renderDashboardHtml(): string {
       navigator.clipboard.writeText(activeLoginCommand).then(() => {
         showToast("📋 已复制认证命令: " + activeLoginCommand);
       });
+    }
+
+    async function syncProfileAuthFromModal() {
+      if (!activeLoginAlias) { alert("未选择 Profile"); return; }
+      try {
+        showToast("正在从 Cockpit 同步登录态...");
+        const res = await fetch("/api/pool", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "sync_auth", alias: activeLoginAlias }),
+        });
+        const d = await res.json();
+        if (!res.ok || !d.success) throw new Error(d.error || "同步失败");
+        showToast("✅ " + activeLoginAlias + " 已同步为" + (d.login_label || "已登录"));
+        const box = document.getElementById("login-status-box");
+        if (box) box.textContent = "当前登录状态：" + (d.login_label || "已登录");
+        await loadPool();
+      } catch (err) {
+        alert("同步登录态失败: " + err.message);
+      }
+    }
+
+    async function syncProfileAuth(alias) {
+      try {
+        showToast("正在从 Cockpit 同步登录态...");
+        const res = await fetch("/api/pool", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "sync_auth", alias: alias }),
+        });
+        const d = await res.json();
+        if (!res.ok || !d.success) throw new Error(d.error || "同步失败");
+        showToast("✅ " + alias + " → " + (d.login_label || "已登录"));
+        await loadPool();
+      } catch (err) {
+        alert("同步登录态失败: " + err.message);
+      }
     }
 
     // --- Tab 1: Recent Tasks ---
@@ -1483,7 +1543,7 @@ export function renderDashboardHtml(): string {
       const cockpitTbody = document.getElementById("cockpit-accounts-tbody");
       const profilesTbody = document.getElementById("pool-profiles-tbody");
       if (cockpitTbody) cockpitTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>';
-      if (profilesTbody) profilesTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>';
+      if (profilesTbody) profilesTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>';
 
       try {
         const res = await fetch("/api/pool");
@@ -1539,7 +1599,7 @@ export function renderDashboardHtml(): string {
 
         if (profilesTbody) {
           if (profiles.length === 0) {
-            profilesTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">暂无 agy Profile 配置。点击「+ 初始化新 Profile」创建独立账号环境。</td></tr>';
+            profilesTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:24px;">暂无 agy Profile 配置。点击「+ 初始化新 Profile」创建独立账号环境。</td></tr>';
           } else {
             profilesTbody.innerHTML = profiles.map(p => {
               const stat = poolStatus.find(s => s.alias === p.alias);
@@ -1550,13 +1610,25 @@ export function renderDashboardHtml(): string {
                 ? '<span class="badge badge-completed">ACTIVE</span>'
                 : '<span class="badge badge-paused">PAUSED</span>';
 
+              const loginStatus = stat && stat.login_status ? stat.login_status : "logged_out";
+              const loginLabel = stat && stat.login_label ? stat.login_label : "未登录";
+              const loginReason = stat && stat.login_reason ? String(stat.login_reason) : "";
+              let loginBadge = '<span class="badge badge-paused">' + escapeHtml(loginLabel) + '</span>';
+              if (loginStatus === "logged_in") loginBadge = '<span class="badge badge-completed">' + escapeHtml(loginLabel) + '</span>';
+              else if (loginStatus === "login_failed") loginBadge = '<span class="badge" style="background:rgba(239,68,68,0.15); color:var(--red);">' + escapeHtml(loginLabel) + '</span>';
+              else if (loginStatus === "awaiting_code") loginBadge = '<span class="badge badge-running">' + escapeHtml(loginLabel) + '</span>';
+              if (loginReason) {
+                loginBadge += '<div style="font-size:11px; color:var(--text-muted); margin-top:4px; max-width:160px; white-space:normal;">' + escapeHtml(loginReason) + '</div>';
+              }
+
               const quotaFrac = stat ? stat.cockpit_remaining : "unknown";
 
               const actions = 
-                '<div style="display:flex; justify-content:flex-end; gap:6px;">' +
+                '<div style="display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap;">' +
                   (p.enabled ? '<button class="btn-sm" onclick="pauseProfile(\\'' + p.alias + '\\')">⏸ 暂停</button>' : '<button class="btn-sm" style="color:var(--green);" onclick="resumeProfile(\\'' + p.alias + '\\')">▶ 恢复</button>') +
                   '<button class="btn-sm" onclick="bindEmailProfile(\\'' + p.alias + '\\')">🔗 绑定邮箱</button>' +
-                  '<button class="btn-sm" onclick="showLoginCmd(\\'' + p.home + '\\', \\'' + p.alias + '\\')">🔑 登录命令</button>' +
+                  '<button class="btn-sm" style="color:var(--accent);" onclick="syncProfileAuth(\\'' + p.alias + '\\')">⟳ 同步登录</button>' +
+                  '<button class="btn-sm" onclick="showLoginCmd(\\'' + p.home + '\\', \\'' + p.alias + '\\')">🔑 登录</button>' +
                 '</div>';
 
               return '<tr>' +
@@ -1564,6 +1636,7 @@ export function renderDashboardHtml(): string {
                 '<td><span style="font-family:monospace; font-size:12px; color:var(--text-muted);">' + escapeHtml(p.home) + '</span></td>' +
                 '<td>' + (p.email ? escapeHtml(p.email) : '<span style="color:var(--yellow); font-size:12px;">(未对齐邮箱)</span>') + '</td>' +
                 '<td>' + statusBadge + '</td>' +
+                '<td>' + loginBadge + '</td>' +
                 '<td>' + (isRunning ? '<span class="badge badge-running">● ' + runningTaskIds + '</span>' : '<span style="color:var(--text-muted); font-size:12px;">闲置</span>') + '</td>' +
                 '<td>' + (p.tasks_today || 0) + '</td>' +
                 '<td>' + quotaFrac + '</td>' +
@@ -1574,7 +1647,7 @@ export function renderDashboardHtml(): string {
         }
       } catch (err) {
         if (cockpitTbody) cockpitTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
-        if (profilesTbody) profilesTbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
+        if (profilesTbody) profilesTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
       }
     }
 
@@ -1637,7 +1710,7 @@ export function renderDashboardHtml(): string {
         return;
       }
       const email = String(ca.email).trim();
-      if (!confirm("确认为账号 " + email + " 初始化独立 Profile？\\n别名与 HOME 将自动生成，不会复制 Cockpit token。")) return;
+      if (!confirm("确认为账号 " + email + " 初始化独立 Profile？\\n将自动从 Cockpit 同步该账号的 agy 登录态到独立 HOME。")) return;
 
       try {
         showToast("正在初始化 Profile...");
@@ -1653,11 +1726,17 @@ export function renderDashboardHtml(): string {
         const d = await res.json();
         if (!res.ok || !d.success) throw new Error(d.error || "初始化失败");
         closeModal("modal-init-profile");
-        showToast("✅ Profile " + (d.profile && d.profile.alias ? d.profile.alias : "") + " 初始化成功！");
+        if (d.authSync && d.authSync.success === false) {
+          showToast("⚠ Profile 已创建，但 Cockpit 登录同步失败");
+          alert("Profile 已创建，但同步 Cockpit 登录态失败：\\n" + (d.authSync.error || d.login_reason || "未知错误") + "\\n\\n可稍后在列表中点「同步登录」重试。");
+        } else {
+          const loginMsg = d.login_label ? ("，登录状态：" + d.login_label) : "";
+          showToast("✅ Profile " + (d.profile && d.profile.alias ? d.profile.alias : "") + " 初始化成功" + loginMsg);
+        }
+        await loadPool();
         if (d.profile && d.profile.home) {
           showLoginCmd(d.profile.home, d.profile.alias);
         }
-        await loadPool();
       } catch (err) {
         alert("初始化 Profile 失败: " + err.message);
       }

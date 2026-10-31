@@ -376,3 +376,186 @@ export async function switchAgentAccount(
     ws.send(JSON.stringify(reqPayload));
   });
 }
+
+export interface CockpitAuthSyncResult {
+  success: boolean;
+  email?: string;
+  accountId?: string;
+  filesWritten?: string[];
+  error?: string;
+  restoredPrevious?: boolean;
+}
+
+function readCockpitAccountsJson(
+  cockpitDir: string = path.join(os.homedir(), ".antigravity_cockpit")
+): { current_account_id?: string; accounts?: Array<{ id: string; email?: string }> } {
+  const p = path.join(cockpitDir, "accounts.json");
+  if (!fs.existsSync(p)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * After Cockpit switch_account, materialize the resulting agy CLI auth files
+ * into an isolated profile HOME. Does NOT decrypt cockpit accounts/*.json.
+ * Flow: remember current → switch_account(target) → copy jetski/oauth files → restore previous.
+ */
+export async function syncCockpitAuthIntoProfileHome(options: {
+  profileHome: string;
+  accountId: string;
+  email?: string;
+  cockpitConfigPath?: string;
+  runtimeTarget?: string;
+  restorePrevious?: boolean;
+  logger?: BridgeLogger;
+}): Promise<CockpitAuthSyncResult> {
+  const profileHome = path.resolve(options.profileHome);
+  const accountId = String(options.accountId || "").trim();
+  if (!accountId) {
+    return { success: false, error: "accountId is required to sync Cockpit auth into a profile HOME." };
+  }
+  if (!fs.existsSync(profileHome)) {
+    return { success: false, error: `Profile HOME does not exist: ${profileHome}` };
+  }
+
+  const cockpitDir = path.join(os.homedir(), ".antigravity_cockpit");
+  const index = readCockpitAccountsJson(cockpitDir);
+  const previousId = index.current_account_id ? String(index.current_account_id) : undefined;
+  const emailFromIndex = (index.accounts || []).find((a) => a.id === accountId)?.email;
+  const email = (options.email || emailFromIndex || "").trim().toLowerCase() || undefined;
+
+  const switchRes = await switchAgentAccount({
+    provider: "antigravity",
+    targetEmailOrAccount: accountId,
+    runtimeTarget: options.runtimeTarget || "antigravity",
+    cockpitConfigPath: options.cockpitConfigPath,
+    logger: options.logger,
+  });
+  if (!switchRes.success) {
+    return {
+      success: false,
+      accountId,
+      email,
+      error: switchRes.error || "Cockpit switch_account failed",
+    };
+  }
+
+  // Give cockpit a brief moment to flush jetski-standalone-oauth-token
+  await sleep(700);
+
+  const realGemini = path.join(os.homedir(), ".gemini");
+  const jetskiSrc = path.join(realGemini, "jetski-standalone-oauth-token");
+  if (!fs.existsSync(jetskiSrc)) {
+    return {
+      success: false,
+      accountId: switchRes.accountId || accountId,
+      email: switchRes.email || email,
+      error: "Cockpit switch succeeded but ~/.gemini/jetski-standalone-oauth-token was not written.",
+    };
+  }
+
+  let jetski: any;
+  try {
+    jetski = JSON.parse(fs.readFileSync(jetskiSrc, "utf8"));
+  } catch (err: any) {
+    return {
+      success: false,
+      accountId: switchRes.accountId || accountId,
+      email: switchRes.email || email,
+      error: `Failed to parse jetski-standalone-oauth-token: ${err?.message || String(err)}`,
+    };
+  }
+
+  const token = jetski?.token && typeof jetski.token === "object" ? jetski.token : null;
+  if (!token?.access_token || !token?.refresh_token) {
+    return {
+      success: false,
+      accountId: switchRes.accountId || accountId,
+      email: switchRes.email || email,
+      error: "jetski-standalone-oauth-token is missing access_token/refresh_token after switch.",
+    };
+  }
+
+  const profileGemini = path.join(profileHome, ".gemini");
+  const profileCli = path.join(profileGemini, "antigravity-cli");
+  fs.mkdirSync(profileCli, { recursive: true });
+
+  const filesWritten: string[] = [];
+  const writeJson = (rel: string, data: unknown) => {
+    const full = path.join(profileGemini, rel);
+    const parent = path.dirname(full);
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
+    fs.writeFileSync(full, JSON.stringify(data, null, 2), "utf8");
+    filesWritten.push(full);
+  };
+
+  // Primary file agy reads after cockpit switch
+  fs.copyFileSync(jetskiSrc, path.join(profileGemini, "jetski-standalone-oauth-token"));
+  filesWritten.push(path.join(profileGemini, "jetski-standalone-oauth-token"));
+
+  // Mirror into oauth_creds.json (Gemini CLI shape)
+  let expiryDate: number | undefined;
+  if (typeof token.expiry === "string") {
+    const ms = Date.parse(token.expiry);
+    if (!Number.isNaN(ms)) expiryDate = ms;
+  } else if (typeof token.expiry === "number") {
+    expiryDate = token.expiry > 1e12 ? token.expiry : token.expiry * 1000;
+  } else if (typeof token.expiry_date === "number") {
+    expiryDate = token.expiry_date;
+  }
+
+  writeJson("oauth_creds.json", {
+    access_token: token.access_token,
+    token_type: token.token_type || "Bearer",
+    refresh_token: token.refresh_token,
+    ...(expiryDate !== undefined ? { expiry_date: expiryDate } : {}),
+    ...(jetski.id_token ? { id_token: jetski.id_token } : {}),
+    ...(jetski.scope || token.scope ? { scope: jetski.scope || token.scope } : {}),
+  });
+
+  const activeEmail = switchRes.email || email || "";
+  if (activeEmail) {
+    writeJson("google_accounts.json", { active: activeEmail, old: [] });
+  }
+
+  const cliPayload = {
+    auth_method: jetski.auth_method || jetski.authMethod || "consumer",
+    authMethod: jetski.authMethod || jetski.auth_method || "consumer",
+    token,
+  };
+  writeJson(path.join("antigravity-cli", "oauth_creds.json"), cliPayload);
+  writeJson(path.join("antigravity-cli", "antigravity-oauth-token"), cliPayload);
+
+  let restoredPrevious = false;
+  const shouldRestore = options.restorePrevious !== false;
+  if (shouldRestore && previousId && previousId !== accountId) {
+    const restoreRes = await switchAgentAccount({
+      provider: "antigravity",
+      targetEmailOrAccount: previousId,
+      runtimeTarget: options.runtimeTarget || "antigravity",
+      cockpitConfigPath: options.cockpitConfigPath,
+      logger: options.logger,
+    });
+    restoredPrevious = !!restoreRes.success;
+    if (!restoreRes.success) {
+      options.logger?.warn(
+        `syncCockpitAuthIntoProfileHome: auth copied but failed to restore previous cockpit account ${previousId}: ${restoreRes.error}`
+      );
+    }
+  }
+
+  return {
+    success: true,
+    accountId: switchRes.accountId || accountId,
+    email: activeEmail || undefined,
+    filesWritten,
+    restoredPrevious,
+  };
+}

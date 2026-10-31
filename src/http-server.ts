@@ -39,6 +39,8 @@ import {
   resumePoolProfile,
   bindProfileEmail,
   getRunningTasksPerProfile,
+  syncProfileAuthFromCockpit,
+  detectProfileLoginStatus,
 } from "./account-pool.js";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
 
@@ -559,8 +561,54 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
                 email,
                 cockpit_account_id,
               });
-              res.statusCode = result.success ? 200 : 400;
-              res.end(JSON.stringify(result));
+              if (!result.success || !result.profile) {
+                res.statusCode = 400;
+                res.end(JSON.stringify(result));
+                return;
+              }
+
+              // Primary path: reuse Cockpit auth into the new profile HOME (no terminal / paste).
+              let authSync: any = null;
+              const accountId = String(cockpit_account_id || result.profile.cockpit_account_id || "").trim();
+              if (accountId || result.profile.email) {
+                authSync = await syncProfileAuthFromCockpit(
+                  defaultInstance.rootDir,
+                  result.profile.alias,
+                  { logger, accountId: accountId || undefined }
+                );
+              }
+
+              const login = detectProfileLoginStatus(
+                loadPoolConfig(defaultInstance.rootDir).find((p) => p.alias === result.profile!.alias) ||
+                  result.profile
+              );
+
+              res.statusCode = 200;
+              res.end(
+                JSON.stringify({
+                  ...result,
+                  authSync,
+                  login_status: login.status,
+                  login_label: login.label,
+                  ...(login.reason ? { login_reason: login.reason } : {}),
+                })
+              );
+              return;
+            }
+
+            if (action === "sync_auth") {
+              const { alias, cockpit_account_id } = body;
+              if (!alias || typeof alias !== "string") {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "alias is required" }));
+                return;
+              }
+              const syncRes = await syncProfileAuthFromCockpit(defaultInstance.rootDir, alias.trim(), {
+                logger,
+                accountId: cockpit_account_id ? String(cockpit_account_id).trim() : undefined,
+              });
+              res.statusCode = syncRes.success ? 200 : 400;
+              res.end(JSON.stringify(syncRes));
               return;
             }
 

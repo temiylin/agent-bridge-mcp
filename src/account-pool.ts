@@ -3,8 +3,11 @@ import path from "node:path";
 import os from "node:os";
 import { resolveBridgeRoot } from "./config.js";
 import { resolveSafePath } from "./validator.js";
-import { listAccountsFromCockpitStorage } from "./account-manager.js";
+import { listAccountsFromCockpitStorage, syncCockpitAuthIntoProfileHome } from "./account-manager.js";
+import type { BridgeLogger } from "./logger.js";
 import { getSessionAccount, recordSessionAccount } from "./sessions.js";
+
+export type ProfileLoginStatus = "logged_out" | "awaiting_code" | "logged_in" | "login_failed";
 
 export interface AgyPoolProfile {
   alias: string;
@@ -16,6 +19,10 @@ export interface AgyPoolProfile {
   cockpit_account_id?: string;
   tasks_today?: number;
   last_task_date?: string; // YYYY-MM-DD
+  /** Last auth sync / login failure reason (cleared on success). */
+  login_error?: string;
+  /** ISO timestamp of last successful cockpit→profile auth sync. */
+  login_synced_at?: string;
 }
 
 export interface PoolStatusLine {
@@ -26,6 +33,9 @@ export interface PoolStatusLine {
   paused_until: string; // ISO string or "none"
   tasks_today: number;
   cockpit_remaining: string; // e.g. "0.98" or "1.00" or "unknown"
+  login_status: ProfileLoginStatus;
+  login_label: string; // 未登录 / 等待授权码 / 已登录 / 登录失败
+  login_reason?: string;
 }
 
 export function getPoolConfigFile(rootDir: string = resolveBridgeRoot()): string {
@@ -59,6 +69,8 @@ export function loadPoolConfig(rootDir: string = resolveBridgeRoot()): AgyPoolPr
         cockpit_account_id: p.cockpit_account_id ? String(p.cockpit_account_id) : undefined,
         tasks_today: typeof p.tasks_today === "number" ? p.tasks_today : 0,
         last_task_date: p.last_task_date ? String(p.last_task_date) : undefined,
+        login_error: p.login_error ? String(p.login_error) : undefined,
+        login_synced_at: p.login_synced_at ? String(p.login_synced_at) : undefined,
       })).filter((p) => p.alias && p.home);
     }
     return [];
@@ -136,6 +148,81 @@ export function isProfilePaused(profile: AgyPoolProfile, now: number = Date.now(
   const pausedTime = new Date(profile.paused_until).getTime();
   if (isNaN(pausedTime)) return false;
   return pausedTime > now;
+}
+
+const LOGIN_LABELS: Record<ProfileLoginStatus, string> = {
+  logged_out: "未登录",
+  awaiting_code: "等待授权码",
+  logged_in: "已登录",
+  login_failed: "登录失败",
+};
+
+function hasUsableAuthFiles(profileHome: string): boolean {
+  const gemini = path.join(profileHome, ".gemini");
+  const candidates = [
+    path.join(gemini, "jetski-standalone-oauth-token"),
+    path.join(gemini, "oauth_creds.json"),
+    path.join(gemini, "antigravity-cli", "oauth_creds.json"),
+    path.join(gemini, "antigravity-cli", "antigravity-oauth-token"),
+  ];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    try {
+      const raw = fs.readFileSync(file, "utf8");
+      const parsed = JSON.parse(raw);
+      const token = parsed?.token && typeof parsed.token === "object" ? parsed.token : parsed;
+      if (token?.access_token && token?.refresh_token) return true;
+      if (parsed?.access_token && parsed?.refresh_token) return true;
+    } catch {
+      // ignore malformed
+    }
+  }
+  return false;
+}
+
+/**
+ * Detect login state from profile HOME auth files (+ optional recorded login_error).
+ * Separate from ACTIVE/PAUSED scheduling state.
+ */
+export function detectProfileLoginStatus(
+  profile: Pick<AgyPoolProfile, "home" | "login_error"> | string
+): { status: ProfileLoginStatus; label: string; reason?: string } {
+  const home = typeof profile === "string" ? profile : profile.home;
+  const loginError = typeof profile === "string" ? undefined : profile.login_error;
+  if (hasUsableAuthFiles(home)) {
+    return { status: "logged_in", label: LOGIN_LABELS.logged_in };
+  }
+  if (loginError && String(loginError).trim()) {
+    return {
+      status: "login_failed",
+      label: LOGIN_LABELS.login_failed,
+      reason: String(loginError).trim(),
+    };
+  }
+  return { status: "logged_out", label: LOGIN_LABELS.logged_out };
+}
+
+export function isProfileLoggedIn(
+  profile: Pick<AgyPoolProfile, "home" | "login_error"> | string
+): boolean {
+  return detectProfileLoginStatus(profile).status === "logged_in";
+}
+
+export function recordProfileLoginResult(
+  rootDir: string,
+  alias: string,
+  result: { success: boolean; error?: string }
+): void {
+  const profiles = loadPoolConfig(rootDir);
+  const target = profiles.find((p) => p.alias === alias);
+  if (!target) return;
+  if (result.success) {
+    delete target.login_error;
+    target.login_synced_at = new Date().toISOString();
+  } else {
+    target.login_error = result.error || "登录失败";
+  }
+  savePoolConfig(rootDir, profiles);
 }
 
 /**
@@ -428,8 +515,11 @@ export function selectPoolAccount(
   const req = options?.requestedAccount?.trim();
   if (req && req !== "auto") {
     const matched = profiles.find((p) => p.alias === req);
-    if (matched) {
+    if (matched && isProfileLoggedIn(matched)) {
       return { alias: matched.alias, home: matched.home, profile: matched };
+    }
+    if (matched && !isProfileLoggedIn(matched)) {
+      return undefined;
     }
   }
 
@@ -438,7 +528,7 @@ export function selectPoolAccount(
     const boundAlias = getSessionAccount(rootDir, options.session_id);
     if (boundAlias) {
       const boundProfile = profiles.find((p) => p.alias === boundAlias);
-      if (boundProfile) {
+      if (boundProfile && isProfileLoggedIn(boundProfile)) {
         return { alias: boundProfile.alias, home: boundProfile.home, profile: boundProfile };
       }
     }
@@ -449,6 +539,7 @@ export function selectPoolAccount(
   const eligible = profiles.filter((p) => {
     if (!p.enabled) return false;
     if (isProfilePaused(p, now)) return false;
+    if (!isProfileLoggedIn(p)) return false;
     const runningCount = (runningMap.get(p.alias) || []).length;
     if (runningCount >= (p.max_concurrent || 1)) return false;
     return true;
@@ -599,6 +690,7 @@ export function queryPoolStatus(rootDir: string = resolveBridgeRoot()): PoolStat
     const tasksToday = p.last_task_date === today ? (p.tasks_today || 0) : 0;
     const isPaused = isProfilePaused(p, now);
 
+    const login = detectProfileLoginStatus(p);
     return {
       alias: p.alias,
       email: p.email || "(unbound)",
@@ -607,6 +699,72 @@ export function queryPoolStatus(rootDir: string = resolveBridgeRoot()): PoolStat
       paused_until: p.paused_until && isPaused ? p.paused_until : "none",
       tasks_today: tasksToday,
       cockpit_remaining: remFrac,
+      login_status: login.status,
+      login_label: login.label,
+      ...(login.reason ? { login_reason: login.reason } : {}),
     };
   });
+}
+
+/**
+ * Sync Cockpit's already-authenticated session into a pool profile HOME
+ * via cockpit WS switch_account + copy of agy auth files.
+ */
+export async function syncProfileAuthFromCockpit(
+  rootDir: string,
+  alias: string,
+  options?: { logger?: BridgeLogger; accountId?: string; restorePrevious?: boolean }
+): Promise<{ success: boolean; login_status?: ProfileLoginStatus; login_label?: string; error?: string; filesWritten?: string[] }> {
+  const profiles = loadPoolConfig(rootDir);
+  const profile = profiles.find((p) => p.alias === alias);
+  if (!profile) {
+    return { success: false, error: `Profile "${alias}" not found` };
+  }
+
+  const accountId = (options?.accountId || profile.cockpit_account_id || "").trim();
+  if (!accountId && !profile.email) {
+    return {
+      success: false,
+      error: `Profile "${alias}" has no cockpit_account_id or email to sync from.`,
+    };
+  }
+
+  // Prefer explicit id; fall back to email lookup through switchAgentAccount resolution
+  const target = accountId || profile.email || "";
+  const syncRes = await syncCockpitAuthIntoProfileHome({
+    profileHome: profile.home,
+    accountId: target,
+    email: profile.email,
+    restorePrevious: options?.restorePrevious,
+    logger: options?.logger,
+  });
+
+  if (!syncRes.success) {
+    recordProfileLoginResult(rootDir, alias, { success: false, error: syncRes.error });
+    const login = detectProfileLoginStatus({ home: profile.home, login_error: syncRes.error });
+    return {
+      success: false,
+      error: syncRes.error,
+      login_status: login.status,
+      login_label: login.label,
+    };
+  }
+
+  // Persist cockpit id / email if we learned them
+  const refreshed = loadPoolConfig(rootDir);
+  const targetProfile = refreshed.find((p) => p.alias === alias);
+  if (targetProfile) {
+    if (syncRes.accountId) targetProfile.cockpit_account_id = syncRes.accountId;
+    if (syncRes.email && !targetProfile.email) targetProfile.email = syncRes.email;
+    savePoolConfig(rootDir, refreshed);
+  }
+
+  recordProfileLoginResult(rootDir, alias, { success: true });
+  const login = detectProfileLoginStatus(profile.home);
+  return {
+    success: true,
+    login_status: login.status,
+    login_label: login.label,
+    filesWritten: syncRes.filesWritten,
+  };
 }
