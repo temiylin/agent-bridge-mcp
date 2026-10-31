@@ -250,6 +250,7 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `cancel_queue_item` | Auto Task Queue | Remove and cancel a queued task item | Immediate queue removal and position re-indexing |
 | `pause_queue` | Auto Task Queue | Pause automatic dispatching for a session's task queue | Manually hold dispatching; persists across restarts |
 | `resume_queue` | Auto Task Queue | Resume automatic dispatching for a session's task queue | Immediately enables next ready dispatch |
+| `list_recent_tasks` / `dashboard` | Dashboard | Compact overview of recent tasks and queued items | Shows topic/session_id, taskId, status (`running`/`completed`/`failed`/`queued`/`paused`), elapsed or finished_at, PR URL, last log line (~120 chars) |
 
 ### Read-only queries in Gemini
 

@@ -117,6 +117,8 @@ async function runTests() {
     "cancel_queue_item",
     "pause_queue",
     "resume_queue",
+    "list_recent_tasks",
+    "dashboard",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

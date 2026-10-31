@@ -21,6 +21,7 @@ import { registerGitTools } from "./git-tools.js";
 import { registerGitHubPrTools } from "./github-pr.js";
 import { registerRequirementsTools } from "./requirements-tools.js";
 import { registerQueueTools } from "./queue-tools.js";
+import { registerRecentTasksTool } from "./recent-tasks.js";
 import { resolveTaskAgent } from "./routing.js";
 
 export interface BridgeMcpServerInstance {
@@ -327,6 +328,7 @@ ${prompt}
   registerGitHubPrTools(server, rootDir, logger);
   registerRequirementsTools(server, rootDir, logger);
   registerQueueTools(server, rootDir, logger);
+  registerRecentTasksTool(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }
