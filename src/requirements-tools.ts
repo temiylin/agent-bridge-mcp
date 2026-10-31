@@ -449,6 +449,7 @@ export function registerRequirementsTools(
         .object({
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
+          account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
           queue_if_busy: z.boolean().optional(),
           on_complete: z
             .object({
@@ -493,6 +494,7 @@ export function registerRequirementsTools(
               agent,
               model: options?.model,
               reasoning_effort: options?.reasoning_effort,
+              account: options?.account,
               requirement_id: record.id,
               on_complete: options?.on_complete,
             },
@@ -530,6 +532,7 @@ export function registerRequirementsTools(
           reasoning_effort: options?.reasoning_effort,
           continue_session: !!effectiveSessionId,
           session_id: effectiveSessionId,
+          account: options?.account,
           on_complete: options?.on_complete,
         });
 

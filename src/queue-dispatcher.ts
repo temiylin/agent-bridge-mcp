@@ -22,6 +22,7 @@ export interface TaskDispatchParams {
   reasoning_effort?: string;
   continue_session?: boolean;
   session_id?: string;
+  account?: string;
   on_complete?: TaskWebhookConfig;
 }
 
@@ -69,6 +70,7 @@ export function dispatchTaskDirect(
   if (params.reasoning_effort) headerMeta += `- **Reasoning Effort**: ${params.reasoning_effort.trim().toLowerCase()}\n`;
   if (params.continue_session) headerMeta += `- **Continue Session**: true\n`;
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
+  if (params.account && params.account.trim()) headerMeta += `- **Account**: ${params.account.trim()}\n`;
   headerMeta += `- **Created At**: ${createdAt}\n`;
 
   const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}\n`;
@@ -88,6 +90,7 @@ export function dispatchTaskDirect(
       agent: agentName,
       model: params.model || undefined,
       reasoningEffort: params.reasoning_effort || undefined,
+      account: params.account?.trim() || undefined,
       startedAt: createdAt,
     });
   } catch {}
@@ -183,6 +186,7 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     reasoning_effort: item.options?.reasoning_effort,
     continue_session: true, // Auto queue continues same session
     session_id: sessionId,
+    account: item.options?.account,
     on_complete: item.options?.on_complete,
   });
 

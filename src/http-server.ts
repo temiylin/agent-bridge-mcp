@@ -12,6 +12,35 @@ import { BridgeLogger } from "./logger.js";
 import { renderDashboardHtml } from "./dashboard-html.js";
 import { loadAgents, saveAgents } from "./agents.js";
 import { loadRoutingConfig, saveRoutingConfig } from "./routing.js";
+import { queryRecentTasks } from "./recent-tasks.js";
+import {
+  listRequirements,
+  getRequirement,
+  writeRequirement,
+  deleteRequirement,
+  generateRequirementId,
+} from "./requirements.js";
+import { dispatchTaskDirect, isSessionBusy } from "./queue-dispatcher.js";
+import {
+  listAllSessionQueues,
+  listQueue,
+  enqueueTask,
+  reorderQueue,
+  updateQueueItem,
+  cancelQueueItem,
+  pauseQueue,
+  resumeQueue,
+} from "./queue.js";
+import {
+  queryPoolStatus,
+  loadPoolConfig,
+  initPoolProfile,
+  pausePoolProfile,
+  resumePoolProfile,
+  bindProfileEmail,
+  getRunningTasksPerProfile,
+} from "./account-pool.js";
+import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
 
 export interface HttpServerOptions {
   port?: number;
@@ -222,6 +251,360 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           })
         );
         return;
+      }
+
+      // API: Recent Tasks
+      if (pathname === "/api/recent-tasks" && method === "GET") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : 50;
+        const status = url.searchParams.get("status") || undefined;
+        const project = url.searchParams.get("project") || undefined;
+        const sessionId = url.searchParams.get("session_id") || undefined;
+
+        try {
+          const tasks = queryRecentTasks(defaultInstance.rootDir, {
+            limit,
+            status,
+            project,
+            session_id: sessionId,
+          });
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, tasks }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Requirements Backlog
+      if (pathname === "/api/requirements") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        if (method === "GET") {
+          const project = url.searchParams.get("project") || undefined;
+          const status = (url.searchParams.get("status") as any) || undefined;
+          const topic = url.searchParams.get("topic") || undefined;
+
+          try {
+            const requirements = listRequirements(defaultInstance.rootDir, { project, status, topic });
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, requirements }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+
+        if (method === "POST") {
+          const body = await readBody();
+          const action = body?.action;
+
+          try {
+            if (action === "create") {
+              const { project, title, raw_text, topic, session_id, tags } = body;
+              if (!project || !title || !raw_text) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "Missing required fields: project, title, raw_text" }));
+                return;
+              }
+              const id = generateRequirementId();
+              const now = new Date().toISOString();
+              const rec = {
+                id,
+                project: String(project).trim(),
+                topic: (topic || session_id || "").trim() || undefined,
+                session_id: (session_id || topic || "").trim() || undefined,
+                title: String(title).trim(),
+                raw_text: String(raw_text).trim(),
+                tags: Array.isArray(tags) ? tags : [],
+                status: "draft" as const,
+                created_at: now,
+                updated_at: now,
+              };
+              writeRequirement(defaultInstance.rootDir, rec);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, requirement: rec }));
+              return;
+            }
+
+            if (action === "update") {
+              const { id, title, raw_text, tags, topic, status } = body;
+              const rec = getRequirement(defaultInstance.rootDir, id);
+              if (!rec) {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, error: `Requirement "${id}" not found` }));
+                return;
+              }
+              if (title !== undefined) rec.title = String(title).trim();
+              if (raw_text !== undefined) rec.raw_text = String(raw_text).trim();
+              if (tags !== undefined) rec.tags = Array.isArray(tags) ? tags : [];
+              if (topic !== undefined) {
+                rec.topic = topic ? String(topic).trim() : undefined;
+                rec.session_id = rec.topic;
+              }
+              if (status !== undefined) rec.status = status;
+              rec.updated_at = new Date().toISOString();
+              writeRequirement(defaultInstance.rootDir, rec);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, requirement: rec }));
+              return;
+            }
+
+            if (action === "delete") {
+              const { id } = body;
+              const ok = deleteRequirement(defaultInstance.rootDir, id);
+              res.statusCode = ok ? 200 : 404;
+              res.end(JSON.stringify({ success: ok, error: ok ? undefined : "Not found" }));
+              return;
+            }
+
+            if (action === "archive") {
+              const { id } = body;
+              const rec = getRequirement(defaultInstance.rootDir, id);
+              if (!rec) {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, error: `Requirement "${id}" not found` }));
+                return;
+              }
+              rec.status = "archived";
+              rec.updated_at = new Date().toISOString();
+              writeRequirement(defaultInstance.rootDir, rec);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, requirement: rec }));
+              return;
+            }
+
+            if (action === "dispatch") {
+              const { id, agent, model, reasoning_effort, account, queue_if_busy } = body;
+              const rec = getRequirement(defaultInstance.rootDir, id);
+              if (!rec) {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, error: `Requirement "${id}" not found` }));
+                return;
+              }
+              const effectiveSessionId = rec.session_id || rec.topic;
+              if (effectiveSessionId && queue_if_busy && isSessionBusy(defaultInstance.rootDir, effectiveSessionId)) {
+                const enqRes = enqueueTask(defaultInstance.rootDir, {
+                  session_id: effectiveSessionId,
+                  prompt: rec.raw_text,
+                  options: {
+                    title: rec.title,
+                    agent,
+                    model,
+                    reasoning_effort,
+                    account,
+                    requirement_id: rec.id,
+                  },
+                  mode: "auto",
+                });
+                res.statusCode = 200;
+                res.end(JSON.stringify({ success: true, queued: true, queueId: enqRes.id, position: enqRes.position }));
+                return;
+              }
+
+              const dispatchRes = dispatchTaskDirect(defaultInstance.rootDir, {
+                prompt: rec.raw_text,
+                title: rec.title,
+                agent,
+                model,
+                reasoning_effort,
+                account,
+                continue_session: !!effectiveSessionId,
+                session_id: effectiveSessionId,
+              });
+
+              const now = new Date().toISOString();
+              rec.status = "dispatched";
+              rec.task_id = dispatchRes.taskId;
+              rec.dispatched_at = now;
+              rec.updated_at = now;
+              writeRequirement(defaultInstance.rootDir, rec);
+
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, taskId: dispatchRes.taskId }));
+              return;
+            }
+
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Unknown action: "${action}"` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+      }
+
+      // API: Task Queue
+      if (pathname === "/api/queue") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        if (method === "GET") {
+          const sessionId = url.searchParams.get("session_id") || undefined;
+          try {
+            const queues = listAllSessionQueues(defaultInstance.rootDir);
+            const items = listQueue(defaultInstance.rootDir, sessionId);
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, queues, items }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+
+        if (method === "POST") {
+          const body = await readBody();
+          const action = body?.action;
+
+          try {
+            if (action === "pause") {
+              const { session_id, reason } = body;
+              const ok = pauseQueue(defaultInstance.rootDir, session_id, reason);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: ok }));
+              return;
+            }
+
+            if (action === "resume") {
+              const { session_id } = body;
+              const ok = resumeQueue(defaultInstance.rootDir, session_id);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: ok }));
+              return;
+            }
+
+            if (action === "cancel") {
+              const { id } = body;
+              const ok = cancelQueueItem(defaultInstance.rootDir, id);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: ok }));
+              return;
+            }
+
+            if (action === "reorder") {
+              const { session_id, ordered_ids, move_id, to_position } = body;
+              const moveItem =
+                move_id && to_position !== undefined
+                  ? { id: String(move_id), target_position: Number(to_position) }
+                  : undefined;
+              const result = reorderQueue(
+                defaultInstance.rootDir,
+                String(session_id || "").trim(),
+                ordered_ids,
+                moveItem
+              );
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "update") {
+              const { id, prompt, mode, options } = body;
+              const ok = updateQueueItem(defaultInstance.rootDir, id, { prompt, mode, options });
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: ok }));
+              return;
+            }
+
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Unknown queue action: "${action}"` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+      }
+
+      // API: Account Pool & Cockpit Integration
+      if (pathname === "/api/pool") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        if (method === "GET") {
+          try {
+            const pool = queryPoolStatus(defaultInstance.rootDir);
+            const profiles = loadPoolConfig(defaultInstance.rootDir);
+            let cockpitAccounts: any[] = [];
+            try {
+              cockpitAccounts = listAccountsFromCockpitStorage("antigravity");
+            } catch {}
+            const runningTasks = Object.fromEntries(getRunningTasksPerProfile(defaultInstance.rootDir));
+
+            res.statusCode = 200;
+            res.end(
+              JSON.stringify({
+                success: true,
+                pool,
+                profiles,
+                cockpitAccounts,
+                runningTasks,
+              })
+            );
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+
+        if (method === "POST") {
+          const body = await readBody();
+          const action = body?.action;
+
+          try {
+            if (action === "init") {
+              const { alias, email } = body;
+              const result = initPoolProfile(defaultInstance.rootDir, { alias, email });
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "pause") {
+              const { alias, until } = body;
+              const result = pausePoolProfile(defaultInstance.rootDir, alias, until);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "resume") {
+              const { alias } = body;
+              const result = resumePoolProfile(defaultInstance.rootDir, alias);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "bind_email") {
+              const { alias, email } = body;
+              const result = bindProfileEmail(defaultInstance.rootDir, alias, email);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "switch_cockpit") {
+              const { account, runtime_target } = body;
+              const result = await switchAgentAccount({
+                provider: "antigravity",
+                targetEmailOrAccount: account,
+                runtimeTarget: runtime_target || "antigravity",
+                logger,
+              });
+              res.statusCode = result.success ? 200 : 500;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Unknown pool action: "${action}"` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
       }
 
       // 5. Health & Status

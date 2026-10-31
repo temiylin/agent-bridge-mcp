@@ -19,10 +19,14 @@ export interface ModelQuotaInfo {
 export interface AgentAccountSummary {
   accountId: string;
   email: string;
+  name?: string;
   current: boolean;
   disabled: boolean;
   provider: string;
   quotas: Record<string, ModelQuotaInfo>;
+  remainingFractionSummary?: number; // 0.0 to 1.0
+  resetTime?: string | number;
+  lastUsed?: number;
 }
 
 export function resolveCockpitConfigPath(customPath?: string): string {
@@ -116,45 +120,162 @@ export function listAccountsFromCockpitStorage(
   cockpitDir: string = path.join(os.homedir(), ".antigravity_cockpit")
 ): AgentAccountSummary[] {
   const normProvider = (provider || "antigravity").toLowerCase().trim();
-  const accountsDir = path.join(cockpitDir, "accounts");
   const results: AgentAccountSummary[] = [];
 
-  // Determine current active account for this provider
-  let currentAccountId = "";
-  try {
-    const currentFile = path.join(cockpitDir, "antigravity_runtime_current_accounts.json");
-    if (fs.existsSync(currentFile)) {
-      const parsed = JSON.parse(fs.readFileSync(currentFile, "utf8"));
-      currentAccountId = parsed?.currentAccounts?.antigravity_ide || parsed?.currentAccounts?.[normProvider] || "";
+  // 1. Preload quota cache from ~/.antigravity_cockpit/cache/quota_api_v1_desktop/authorized/
+  const quotaByEmail = new Map<
+    string,
+    {
+      updatedAt: number;
+      quotas: Record<string, ModelQuotaInfo>;
+      remainingFractionSummary: number;
+      resetTime?: string;
     }
-  } catch {}
+  >();
 
-  if (!fs.existsSync(accountsDir)) {
-    return results;
-  }
-
-  const files = fs.readdirSync(accountsDir);
-  for (const file of files) {
-    if (!file.endsWith(".json") || file.endsWith(".bak")) continue;
-    const filePath = path.join(accountsDir, file);
+  const quotaDir = path.join(cockpitDir, "cache", "quota_api_v1_desktop", "authorized");
+  if (fs.existsSync(quotaDir)) {
     try {
-      const content = fs.readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(content);
-      const kind = (parsed.kind || "").toLowerCase();
-      if (kind === normProvider || file.startsWith(`${normProvider}_`)) {
-        const accountId = file.replace(/\.json$/, "");
-        results.push({
-          accountId,
-          email: parsed.email || `${accountId}@local`,
-          current: accountId === currentAccountId,
-          disabled: parsed.disabled === true,
-          provider: normProvider,
-          quotas: parsed.quotas || {
-            default: { remainingFraction: 1.0 },
-          },
-        });
+      const qFiles = fs.readdirSync(quotaDir);
+      for (const qFile of qFiles) {
+        if (!qFile.endsWith(".json") || qFile.endsWith(".bak")) continue;
+        const qPath = path.join(quotaDir, qFile);
+        try {
+          const raw = fs.readFileSync(qPath, "utf8");
+          const parsed = JSON.parse(raw);
+          if (!parsed.email) continue;
+          const emailKey = String(parsed.email).toLowerCase().trim();
+          const updatedAt = Number(parsed.updatedAt) || 0;
+          const existing = quotaByEmail.get(emailKey);
+          if (!existing || updatedAt > existing.updatedAt) {
+            const quotas: Record<string, ModelQuotaInfo> = {};
+            let minFraction = 1.0;
+            let earliestReset: string | undefined = undefined;
+
+            if (parsed.payload?.models && typeof parsed.payload.models === "object") {
+              for (const [mName, mVal] of Object.entries(parsed.payload.models as Record<string, any>)) {
+                if (mVal && mVal.quotaInfo) {
+                  const frac =
+                    typeof mVal.quotaInfo.remainingFraction === "number"
+                      ? mVal.quotaInfo.remainingFraction
+                      : 1.0;
+                  const rTime = mVal.quotaInfo.resetTime ? String(mVal.quotaInfo.resetTime) : undefined;
+                  quotas[mName] = {
+                    remainingFraction: frac,
+                    ...(rTime ? { resetTime: rTime } : {}),
+                  };
+                  if (frac < minFraction) {
+                    minFraction = frac;
+                    earliestReset = rTime;
+                  }
+                }
+              }
+            }
+
+            quotaByEmail.set(emailKey, {
+              updatedAt,
+              quotas: Object.keys(quotas).length > 0 ? quotas : { default: { remainingFraction: 1.0 } },
+              remainingFractionSummary: Math.round(minFraction * 100) / 100,
+              resetTime: earliestReset,
+            });
+          }
+        } catch {}
       }
     } catch {}
+  }
+
+  // 2. Read accounts list from cockpit JSON files (accounts.json or <provider>_accounts.json)
+  let accountsJsonFile = "";
+  if (normProvider === "antigravity") {
+    accountsJsonFile = path.join(cockpitDir, "accounts.json");
+  } else {
+    accountsJsonFile = path.join(cockpitDir, `${normProvider}_accounts.json`);
+    if (!fs.existsSync(accountsJsonFile) && normProvider === "codex") {
+      accountsJsonFile = path.join(cockpitDir, "accounts.json");
+    }
+  }
+
+  let accountsLoadedFromFile = false;
+
+  if (fs.existsSync(accountsJsonFile)) {
+    try {
+      const raw = fs.readFileSync(accountsJsonFile, "utf8");
+      const parsed = JSON.parse(raw);
+      const currentAccountId = parsed.current_account_id || "";
+      const rawAccounts = Array.isArray(parsed.accounts) ? parsed.accounts : [];
+
+      for (const acc of rawAccounts) {
+        const accountId = String(acc.id || acc.accountId || "");
+        if (!accountId) continue;
+        const email = String(acc.email || `${accountId}@local`);
+        const emailKey = email.toLowerCase().trim();
+        const quotaInfo = quotaByEmail.get(emailKey);
+
+        results.push({
+          accountId,
+          email,
+          name: acc.name ? String(acc.name) : undefined,
+          current: accountId === currentAccountId,
+          disabled: acc.disabled === true,
+          provider: normProvider,
+          quotas: quotaInfo?.quotas || {
+            default: { remainingFraction: 1.0 },
+          },
+          remainingFractionSummary: quotaInfo ? quotaInfo.remainingFractionSummary : 1.0,
+          resetTime: quotaInfo?.resetTime,
+          lastUsed: acc.last_used ? Number(acc.last_used) : undefined,
+        });
+      }
+      accountsLoadedFromFile = true;
+    } catch {}
+  }
+
+  // 3. Fallback to accounts/ directory if accounts.json was not found
+  if (!accountsLoadedFromFile) {
+    const accountsDir = path.join(cockpitDir, "accounts");
+    let currentAccountId = "";
+    try {
+      const currentFile = path.join(cockpitDir, "antigravity_runtime_current_accounts.json");
+      if (fs.existsSync(currentFile)) {
+        const parsed = JSON.parse(fs.readFileSync(currentFile, "utf8"));
+        currentAccountId = parsed?.currentAccounts?.antigravity_ide || parsed?.currentAccounts?.[normProvider] || "";
+      }
+    } catch {}
+
+    if (fs.existsSync(accountsDir)) {
+      try {
+        const files = fs.readdirSync(accountsDir);
+        for (const file of files) {
+          if (!file.endsWith(".json") || file.endsWith(".bak")) continue;
+          const filePath = path.join(accountsDir, file);
+          try {
+            const content = fs.readFileSync(filePath, "utf8");
+            const parsed = JSON.parse(content);
+            const kind = (parsed.kind || "").toLowerCase();
+            if (kind === normProvider || file.startsWith(`${normProvider}_`)) {
+              const accountId = file.replace(/\.json$/, "");
+              const email = parsed.email || `${accountId}@local`;
+              const emailKey = email.toLowerCase().trim();
+              const quotaInfo = quotaByEmail.get(emailKey);
+              results.push({
+                accountId,
+                email,
+                name: parsed.name ? String(parsed.name) : undefined,
+                current: accountId === currentAccountId,
+                disabled: parsed.disabled === true,
+                provider: normProvider,
+                quotas: quotaInfo?.quotas || parsed.quotas || {
+                  default: { remainingFraction: 1.0 },
+                },
+                remainingFractionSummary: quotaInfo ? quotaInfo.remainingFractionSummary : 1.0,
+                resetTime: quotaInfo?.resetTime,
+                lastUsed: parsed.last_used ? Number(parsed.last_used) : undefined,
+              });
+            }
+          } catch {}
+        }
+      } catch {}
+    }
   }
 
   return results;
@@ -193,8 +314,8 @@ export async function switchAgentAccount(
     if (targetAccountId === "auto") {
       // Pick account with highest remaining quota
       accounts.sort((a, b) => {
-        const qA = a.quotas?.default?.remainingFraction ?? 0;
-        const qB = b.quotas?.default?.remainingFraction ?? 0;
+        const qA = a.remainingFractionSummary ?? a.quotas?.default?.remainingFraction ?? 0;
+        const qB = b.remainingFractionSummary ?? b.quotas?.default?.remainingFraction ?? 0;
         return qB - qA;
       });
       targetAccountId = accounts[0].accountId;

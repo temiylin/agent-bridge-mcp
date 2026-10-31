@@ -37,6 +37,7 @@ export function registerQueueTools(
           agent: z.string().optional(),
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
+          account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
         })
         .optional()
         .describe("Optional agent/model options"),
@@ -226,6 +227,7 @@ export function registerQueueTools(
           agent: z.string().optional(),
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
+          account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
         })
         .optional()
         .describe("Updated options"),

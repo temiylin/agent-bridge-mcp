@@ -54,7 +54,9 @@
     "test:queue": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-queue-test -- tsx test/queue-test.ts",
     "test:recent-tasks": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-recent-tasks-test -- tsx test/recent-tasks-test.ts",
     "test:webhook": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-webhook-test -- tsx test/webhook-test.ts",
-    "test:resume-quota": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-resume-quota-test -- tsx test/resume-quota-test.ts"
+    "test:resume-quota": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-resume-quota-test -- tsx test/resume-quota-test.ts",
+    "test:account-pool": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-account-pool-test -- tsx test/account-pool-test.ts",
+    "test:dashboard-tabs": "tsx test/dashboard-pool-tabs-test.ts"
   },
   "keywords": [
     "mcp",

@@ -132,6 +132,11 @@ async function runTests() {
     "clear_task_webhook",
     "resume_after_account_switch",
     "auto_resume_on_account_ready",
+    "pool_status",
+    "pool_init_profile",
+    "pool_pause",
+    "pool_resume",
+    "pool_bind_email",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
