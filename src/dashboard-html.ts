@@ -690,7 +690,7 @@ export function renderDashboardHtml(): string {
       <button class="tab-btn" onclick="switchTab('tab-recent-tasks', this); loadRecentTasks();">🕒 最近任务</button>
       <button class="tab-btn" onclick="switchTab('tab-requirements', this); loadRequirements();">📋 需求暂存</button>
       <button class="tab-btn" onclick="switchTab('tab-queue', this); loadQueue();">⏳ 自动排队</button>
-      <button class="tab-btn" onclick="switchTab('tab-pool', this); loadPool();">👥 账号池</button>
+      <button class="tab-btn" onclick="switchTab('tab-pool', this); loadPool();">👥 agy 账号池</button>
       <button class="tab-btn" onclick="switchTab('tab-system', this); loadSystemStats();">💻 硬件监控与诊断</button>
     </div>
 
