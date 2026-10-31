@@ -68,15 +68,36 @@ export function registerAccountPoolTools(
    */
   server.tool(
     "pool_init_profile",
-    "Initialize an isolated profile directory for an agy account, set up safe configuration symlinks, and output the interactive login command.",
+    "Initialize an isolated agy profile from a Cockpit account email (preferred) or an explicit alias. Alias/HOME are auto-derived from the email local-part when omitted. Rejects duplicate email bindings and alias/HOME collisions. Never copies cockpit tokens.",
     {
-      alias: z.string().describe("Unique identifier for this profile (alphanumeric, hyphens, underscores only; no emails)"),
-      email: z.string().optional().describe("Optional email address bound to this profile to map Cockpit quota and prevent concurrent duplicate usage"),
+      email: z
+        .string()
+        .optional()
+        .describe("Cockpit account email to bind. Preferred: when set without alias, alias and HOME are auto-generated from the email local-part."),
+      alias: z
+        .string()
+        .optional()
+        .describe("Optional explicit profile alias (alphanumeric, hyphens, underscores only). If omitted, derived from email. Rejected if it already exists."),
+      cockpit_account_id: z
+        .string()
+        .optional()
+        .describe("Optional Cockpit account id to record alongside the email binding."),
     },
-    async ({ alias, email }) => {
+    async ({ alias, email, cockpit_account_id }) => {
       audit(rootDir, { tool: "pool_init_profile" });
       try {
-        const res = initPoolProfile(rootDir, { alias, email });
+        if (!alias && !email) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "Error: Provide email (preferred) or alias to initialize a profile.",
+              },
+            ],
+          };
+        }
+        const res = initPoolProfile(rootDir, { alias, email, cockpit_account_id });
         if (!res.success) {
           return {
             isError: true,
@@ -84,19 +105,23 @@ export function registerAccountPoolTools(
           };
         }
 
+        const createdAlias = res.profile?.alias || alias || "(unknown)";
         return {
           content: [
             {
               type: "text",
               text: [
-                `Profile "${alias}" initialized successfully at "${res.profile?.home}".`,
+                `Profile "${createdAlias}" initialized successfully at "${res.profile?.home}".`,
+                res.profile?.email ? `Bound email: ${res.profile.email}` : "",
                 "",
                 "Login instructions:",
                 "Run this command in a terminal to authenticate this profile with agy:",
                 `  ${res.loginCommand}`,
                 "",
                 "Once logged in, tasks assigned to this profile will run concurrently with an independent session.",
-              ].join("\n"),
+              ]
+                .filter((line) => line !== undefined)
+                .join("\n"),
             },
           ],
         };

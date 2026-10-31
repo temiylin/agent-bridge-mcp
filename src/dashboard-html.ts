@@ -1029,6 +1029,20 @@ export function renderDashboardHtml(): string {
     </div>
   </div>
 
+  <!-- Modal: Init Profile from Cockpit Account -->
+  <div id="modal-init-profile" class="modal-overlay">
+    <div class="modal-box" style="max-width:640px;">
+      <div class="section-title" style="margin-bottom:14px;">👥 从 Cockpit 账号初始化 Profile</div>
+      <p class="section-desc" style="margin-bottom:12px;">
+        选择上方列表中的一个 Cockpit 账号。别名与 HOME 目录将按邮箱自动生成，无需手填；已绑定的账号不可再次初始化。
+      </p>
+      <div id="init-profile-account-list" style="max-height:360px; overflow:auto; display:flex; flex-direction:column; gap:8px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+        <button class="btn-secondary" onclick="closeModal('modal-init-profile')">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentConfig = {
       deviceToken: "",
@@ -1040,6 +1054,8 @@ export function renderDashboardHtml(): string {
         rules: []
       }
     };
+
+    let lastPoolData = { cockpitAccounts: [], profiles: [], pool: [], runningTasks: {} };
 
     function copyText(elementId) {
       const text = document.getElementById(elementId).textContent;
@@ -1473,6 +1489,7 @@ export function renderDashboardHtml(): string {
         const res = await fetch("/api/pool");
         if (!res.ok) throw new Error("获取账号池信息失败");
         const data = await res.json();
+        lastPoolData = data;
 
         // 1. Render Cockpit accounts
         const cAccounts = data.cockpitAccounts || [];
@@ -1562,23 +1579,85 @@ export function renderDashboardHtml(): string {
     }
 
     async function initNewProfileModal() {
-      const alias = prompt("请输入新 Profile 别名（纯字母、数字、下划线，例如 worker-1）：");
-      if (!alias) return;
-      const email = prompt("（选填）绑定对应的 Cockpit 邮箱（例如 user1@example.com，用于对齐额度并防止重复调度）：", "");
+      const listEl = document.getElementById("init-profile-account-list");
+      if (!listEl) return;
+      listEl.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:16px;">加载账号列表...</div>';
+      openModal("modal-init-profile");
 
       try {
+        if (!lastPoolData || !(lastPoolData.cockpitAccounts || []).length) {
+          const res = await fetch("/api/pool");
+          if (!res.ok) throw new Error("获取账号池信息失败");
+          lastPoolData = await res.json();
+        }
+
+        const accounts = lastPoolData.cockpitAccounts || [];
+        const profiles = lastPoolData.profiles || [];
+        const boundByEmail = {};
+        profiles.forEach(function(p) {
+          if (p.email) boundByEmail[String(p.email).toLowerCase()] = p.alias;
+        });
+
+        if (accounts.length === 0) {
+          listEl.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:16px;">未检测到 Cockpit 账号。请确认 ~/.antigravity_cockpit 存在。</div>';
+          return;
+        }
+
+        listEl.innerHTML = accounts.map(function(ca, idx) {
+          const email = ca.email || "";
+          const emailKey = String(email).toLowerCase();
+          const boundAlias = boundByEmail[emailKey];
+          const fraction = typeof ca.remainingFractionSummary === "number" ? ca.remainingFractionSummary : 1.0;
+          const pct = Math.round(fraction * 100);
+          const meta = escapeHtml(email) +
+            '<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">额度 ' + pct + '% · ID ' + escapeHtml(ca.accountId || "") + '</div>';
+
+          if (boundAlias) {
+            return '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 14px; border:1px solid var(--card-border); border-radius:10px; opacity:0.55;">' +
+              '<div>' + meta + '<div style="font-size:12px; color:var(--yellow); margin-top:4px;">已绑定 Profile: ' + escapeHtml(boundAlias) + '</div></div>' +
+              '<button class="btn-sm" disabled style="opacity:0.6; cursor:not-allowed;">不可选</button>' +
+              '</div>';
+          }
+
+          return '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 14px; border:1px solid rgba(56,189,248,0.35); border-radius:10px; background:rgba(56,189,248,0.06);">' +
+            '<div>' + meta + '<div style="font-size:12px; color:var(--text-muted); margin-top:4px;">别名 / HOME 将按邮箱自动生成</div></div>' +
+            '<button class="btn-primary" style="white-space:nowrap;" onclick="confirmInitProfileFromAccount(' + idx + ')">初始化</button>' +
+            '</div>';
+        }).join("");
+      } catch (err) {
+        listEl.innerHTML = '<div style="text-align:center; color:var(--red); padding:16px;">加载失败: ' + escapeHtml(err.message || String(err)) + '</div>';
+      }
+    }
+
+    async function confirmInitProfileFromAccount(idx) {
+      const accounts = (lastPoolData && lastPoolData.cockpitAccounts) || [];
+      const ca = accounts[idx];
+      if (!ca || !ca.email) {
+        alert("无效的 Cockpit 账号选择");
+        return;
+      }
+      const email = String(ca.email).trim();
+      if (!confirm("确认为账号 " + email + " 初始化独立 Profile？\\n别名与 HOME 将自动生成，不会复制 Cockpit token。")) return;
+
+      try {
+        showToast("正在初始化 Profile...");
         const res = await fetch("/api/pool", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "init", alias, email: email ? email.trim() : undefined }),
+          body: JSON.stringify({
+            action: "init",
+            email: email,
+            cockpit_account_id: ca.accountId || undefined
+          }),
         });
         const d = await res.json();
         if (!res.ok || !d.success) throw new Error(d.error || "初始化失败");
-        showToast("✅ Profile 初始化成功！");
-        if (d.loginCommand) {
+        closeModal("modal-init-profile");
+        showToast("✅ Profile " + (d.profile && d.profile.alias ? d.profile.alias : "") + " 初始化成功！");
+        if (d.profile && d.profile.home) {
           showLoginCmd(d.profile.home, d.profile.alias);
         }
-        loadPool();
+        await loadPool();
       } catch (err) {
         alert("初始化 Profile 失败: " + err.message);
       }

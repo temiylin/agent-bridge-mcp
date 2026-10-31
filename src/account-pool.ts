@@ -91,6 +91,43 @@ export function isValidAlias(alias: unknown): alias is string {
 }
 
 /**
+ * Sanitize an email local-part into a stable alias candidate.
+ * e.g. "jianjianlin380@gmail.com" -> "jianjianlin380"
+ */
+export function sanitizeEmailLocalPart(email: string): string {
+  const local = String(email || "").trim().split("@")[0] || "";
+  let cleaned = local
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "");
+  if (!cleaned) cleaned = "profile";
+  // Cap length to keep HOME paths readable
+  if (cleaned.length > 48) cleaned = cleaned.slice(0, 48).replace(/[_-]+$/g, "") || "profile";
+  return cleaned;
+}
+
+/**
+ * Derive a unique, stable alias from an email address.
+ * Uses the sanitized local-part; appends -2, -3, ... on alias collision.
+ */
+export function deriveUniqueAlias(
+  email: string,
+  existingAliases: Iterable<string>
+): string {
+  const taken = new Set(
+    [...existingAliases].map((a) => String(a || "").trim().toLowerCase()).filter(Boolean)
+  );
+  const base = sanitizeEmailLocalPart(email);
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}-${i}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${base}-${Date.now()}`;
+}
+
+/**
  * Checks whether a profile is currently paused.
  */
 export function isProfilePaused(profile: AgyPoolProfile, now: number = Date.now()): boolean {
@@ -136,9 +173,44 @@ export function getRunningTasksPerProfile(rootDir: string): Map<string, string[]
  */
 export function initPoolProfile(
   rootDir: string,
-  params: { alias: string; email?: string }
+  params: { alias?: string; email?: string; cockpit_account_id?: string }
 ): { success: boolean; profile?: AgyPoolProfile; loginCommand?: string; error?: string } {
-  const alias = params.alias ? params.alias.trim() : "";
+  const emailRaw = params.email ? String(params.email).trim() : "";
+  const email = emailRaw ? emailRaw.toLowerCase() : undefined;
+  if (email && !email.includes("@")) {
+    return {
+      success: false,
+      error: `Invalid email address "${params.email}".`,
+    };
+  }
+
+  const profiles = loadPoolConfig(rootDir);
+
+  // Invariant: One account must never be used in two profile dirs at once.
+  if (email) {
+    const duplicate = profiles.find((p) => p.email && p.email.toLowerCase() === email);
+    if (duplicate) {
+      return {
+        success: false,
+        error: `Cannot bind account "${email}": it is already bound to profile "${duplicate.alias}". One account cannot be used in two profile dirs at once.`,
+      };
+    }
+  }
+
+  let alias = params.alias ? String(params.alias).trim() : "";
+  if (!alias) {
+    if (!email) {
+      return {
+        success: false,
+        error: "Either alias or email is required to initialize a profile.",
+      };
+    }
+    alias = deriveUniqueAlias(
+      email,
+      profiles.map((p) => p.alias)
+    );
+  }
+
   if (!isValidAlias(alias)) {
     return {
       success: false,
@@ -146,28 +218,29 @@ export function initPoolProfile(
     };
   }
 
-  const email = params.email ? params.email.trim().toLowerCase() : undefined;
-  const profiles = loadPoolConfig(rootDir);
-
-  // Invariant: One account must never be used in two profile dirs at once.
-  if (email) {
-    const duplicate = profiles.find((p) => p.email && p.email.toLowerCase() === email && p.alias !== alias);
-    if (duplicate) {
-      return {
-        success: false,
-        error: `Cannot bind account "${email}" to profile "${alias}": it is already bound to profile "${duplicate.alias}". One account cannot be used in two profile dirs at once.`,
-      };
-    }
+  // Alias / HOME collision: never overwrite an existing profile slot
+  const existingByAlias = profiles.find((p) => p.alias === alias);
+  if (existingByAlias) {
+    return {
+      success: false,
+      error: `Alias "${alias}" already exists (HOME=${existingByAlias.home}). Choose a different alias or remove the existing profile first.`,
+    };
   }
 
   // Profile directory under agy-profiles/<alias>
   const baseDir = getProfilesBaseDir(rootDir);
   const profileDir = path.join(baseDir, alias);
 
+  if (fs.existsSync(profileDir)) {
+    // Orphan HOME dir without a pool entry still counts as a collision
+    return {
+      success: false,
+      error: `HOME directory already exists at "${profileDir}". Remove it or pick a different alias.`,
+    };
+  }
+
   try {
-    if (!fs.existsSync(profileDir)) {
-      fs.mkdirSync(profileDir, { recursive: true });
-    }
+    fs.mkdirSync(profileDir, { recursive: true });
 
     // Symlink safe developer configs from user's real home
     const realHome = os.homedir();
@@ -185,7 +258,7 @@ export function initPoolProfile(
       }
     }
 
-    // Copy (not symlink) .gemini/settings.json and MCP config if present — NEVER copy credentials
+    // Copy (not symlink) .gemini/settings.json and MCP config if present — NEVER copy credentials / cockpit tokens
     const realGemini = path.join(realHome, ".gemini");
     const profileGemini = path.join(profileDir, ".gemini");
     if (fs.existsSync(realGemini)) {
@@ -208,22 +281,19 @@ export function initPoolProfile(
       }
     }
 
-    // Find or create profile record
-    let profile = profiles.find((p) => p.alias === alias);
-    if (!profile) {
-      profile = {
-        alias,
-        home: profileDir,
-        ...(email ? { email } : {}),
-        enabled: true,
-        max_concurrent: 1,
-      };
-      profiles.push(profile);
-    } else {
-      profile.home = profileDir;
-      if (email) profile.email = email;
-      profile.enabled = true;
-    }
+    const cockpitId = params.cockpit_account_id
+      ? String(params.cockpit_account_id).trim()
+      : undefined;
+
+    const profile: AgyPoolProfile = {
+      alias,
+      home: profileDir,
+      ...(email ? { email } : {}),
+      ...(cockpitId ? { cockpit_account_id: cockpitId } : {}),
+      enabled: true,
+      max_concurrent: 1,
+    };
+    profiles.push(profile);
 
     savePoolConfig(rootDir, profiles);
 
