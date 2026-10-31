@@ -13,6 +13,8 @@ import {
   recordTaskStartUnderProfile,
   handlePoolQuotaPaused,
   queryPoolStatus,
+  sanitizeEmailLocalPart,
+  deriveUniqueAlias,
 } from "../src/account-pool.js";
 import { getSessionAccount, recordSessionAccount } from "../src/sessions.js";
 import { writeStatus } from "../src/status.js";
@@ -131,6 +133,46 @@ async function runAccountPoolTests() {
   const alphaStat = poolStatuses.find((s) => s.alias === "worker-alpha");
   assert.equal(alphaStat?.enabled, false, "Paused profile must report enabled=false");
   console.log("✓ Assertion passed: queryPoolStatus returned valid status lines:", poolStatuses);
+
+  // Test 11: sanitize + derive alias from email local-part
+  console.log("[Test 11] Testing alias derivation from email...");
+  assert.equal(sanitizeEmailLocalPart("jianjianlin380@gmail.com"), "jianjianlin380");
+  assert.equal(sanitizeEmailLocalPart("Jia.Un-Lind+tag@gmail.com"), "jia_un-lind_tag");
+  assert.equal(
+    deriveUniqueAlias("user1@example.com", ["worker-alpha", "worker-beta"]),
+    "user1"
+  );
+  assert.equal(
+    deriveUniqueAlias("user1@example.com", ["user1", "worker-beta"]),
+    "user1-2"
+  );
+  console.log("✓ Assertion passed: email local-part sanitized and collision suffix applied.");
+
+  // Test 12: email-only init auto-generates alias/HOME
+  console.log("[Test 12] Testing email-only initPoolProfile...");
+  const emailOnly = initPoolProfile(TEST_ROOT, { email: "mmei49293@gmail.com" });
+  assert.equal(emailOnly.success, true, "email-only init must succeed");
+  assert.equal(emailOnly.profile?.alias, "mmei49293");
+  assert.equal(emailOnly.profile?.email, "mmei49293@gmail.com");
+  assert.ok(emailOnly.profile?.home.includes("mmei49293"), "HOME must include derived alias");
+  assert.ok(emailOnly.loginCommand?.includes(`HOME=${emailOnly.profile?.home} agy`));
+  console.log("✓ Assertion passed: email-only init created alias mmei49293:", emailOnly.loginCommand);
+
+  // Test 13: duplicate email rejected; alias collision rejected
+  console.log("[Test 13] Testing email and alias collision rejection...");
+  const dupEmail = initPoolProfile(TEST_ROOT, { email: "mmei49293@gmail.com" });
+  assert.equal(dupEmail.success, false);
+  assert.ok(dupEmail.error?.includes("already bound"), "duplicate email must be rejected");
+
+  const aliasClash = initPoolProfile(TEST_ROOT, { alias: "mmei49293", email: "other@example.com" });
+  assert.equal(aliasClash.success, false);
+  assert.ok(aliasClash.error?.includes("already exists"), "alias collision must be rejected");
+
+  // Same local-part email but different domain still needs unique alias suffix when local alias taken
+  const sameLocal = initPoolProfile(TEST_ROOT, { email: "mmei49293@example.com" });
+  assert.equal(sameLocal.success, true);
+  assert.equal(sameLocal.profile?.alias, "mmei49293-2", "colliding local-part must get -2 suffix");
+  console.log("✓ Assertion passed: conflicts rejected; colliding local-part got suffix alias.");
 
   console.log("=================================================");
   console.log("  All Account Pool Tests Passed! 🎉              ");

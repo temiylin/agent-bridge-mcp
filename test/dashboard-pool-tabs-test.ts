@@ -23,6 +23,10 @@ async function runDashboardTabsTests() {
   assert.ok(html.includes('id="tab-requirements"'), "HTML must include id='tab-requirements'");
   assert.ok(html.includes('id="tab-queue"'), "HTML must include id='tab-queue'");
   assert.ok(html.includes('id="tab-pool"'), "HTML must include id='tab-pool'");
+  assert.ok(html.includes('id="modal-init-profile"'), "HTML must include cockpit account picker modal");
+  assert.ok(html.includes("confirmInitProfileFromAccount"), "HTML must include confirmInitProfileFromAccount");
+  assert.ok(html.includes("function switchTab"), "HTML must keep switchTab helper");
+  assert.ok(!html.includes('prompt("请输入新 Profile 别名'), "Init must not prompt for alias text input");
   console.log("✓ Assertion passed: All 4 new tab IDs verified in dashboard HTML.");
 
   // 2. Start HTTP server
@@ -166,6 +170,36 @@ async function runDashboardTabsTests() {
     });
     assert.equal(resumePoolResp.status, 200);
     console.log("✓ Assertion passed: /api/pool CRUD operations verified.");
+
+    // 6b. email-only init + duplicate email rejection
+    console.log("[Test 6b] Testing /api/pool email-only init and conflict rejection...");
+    const emailInitResp = await fetch(`${baseUrl}/api/pool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "init",
+        email: "picker-user@example.com",
+      }),
+    });
+    assert.equal(emailInitResp.status, 200);
+    const emailInitData = await emailInitResp.json();
+    assert.equal(emailInitData.success, true);
+    assert.equal(emailInitData.profile.alias, "picker-user");
+    assert.ok(emailInitData.loginCommand.includes("HOME="));
+
+    const dupEmailResp = await fetch(`${baseUrl}/api/pool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "init",
+        email: "picker-user@example.com",
+      }),
+    });
+    assert.equal(dupEmailResp.status, 400);
+    const dupEmailData = await dupEmailResp.json();
+    assert.equal(dupEmailData.success, false);
+    assert.ok(String(dupEmailData.error || "").includes("already bound"));
+    console.log("✓ Assertion passed: email-only init and duplicate email rejection verified.");
 
   } finally {
     await handle.close();

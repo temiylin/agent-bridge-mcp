@@ -553,8 +553,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
           try {
             if (action === "init") {
-              const { alias, email } = body;
-              const result = initPoolProfile(defaultInstance.rootDir, { alias, email });
+              const { alias, email, cockpit_account_id } = body;
+              const result = initPoolProfile(defaultInstance.rootDir, {
+                alias,
+                email,
+                cockpit_account_id,
+              });
               res.statusCode = result.success ? 200 : 400;
               res.end(JSON.stringify(result));
               return;
