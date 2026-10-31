@@ -133,6 +133,7 @@ async function runTests() {
     "resume_after_account_switch",
     "auto_resume_on_account_ready",
     "pool_status",
+    "pool_sync_auth",
     "pool_init_profile",
     "pool_pause",
     "pool_resume",
@@ -344,6 +345,23 @@ async function runTests() {
   console.log("✓ Assertion passed: send_task with model and reasoning_effort verified on disk.");
 
   // Clean up
+  console.log("-------------------------------------------------");
+  console.log("[Test 8] send_task rejects a model not in list_models");
+  console.log("-------------------------------------------------");
+  const badModel: any = await client.callTool({ name: "send_task", arguments: { prompt: "x", agent: "codex", model: "definitely-not-a-model-xyz" } });
+  assert.equal(badModel.isError, true, "invalid model must be rejected");
+  assert.match(badModel.content[0].text, /Valid models: \[/);
+  console.log("✓ Assertion passed: invalid model rejected with valid list.\n");
+
+  console.log("-------------------------------------------------");
+  console.log("[Test 9] list_models compact + agent filter");
+  console.log("-------------------------------------------------");
+  const compactRes: any = await client.callTool({ name: "list_models", arguments: { agent: "codex", compact: true, include_quota: false } });
+  const compactJson = JSON.parse(compactRes.content[0].text);
+  assert.deepEqual(Object.keys(compactJson), ["codex"]);
+  assert.ok(Array.isArray(compactJson.codex.models) && typeof compactJson.codex.models[0] === "string");
+  console.log("✓ Assertion passed: compact list_models.\n");
+
   console.log("\n-------------------------------------------------");
   console.log("[Cleanup] Closing client connection");
   console.log("-------------------------------------------------");
