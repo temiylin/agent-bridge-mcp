@@ -50,10 +50,15 @@ export function registerBridgeRound2Tools(
     "Run configured test commands on a pull request branch, returning structured pass/fail counts, failing cases, and log tail.",
     {
       project: z.string().describe("Project ID configured in projects.json"),
-      pr: z.union([z.number(), z.string()]).describe("Pull request number (e.g. 12)"),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull request number (e.g. 12)"),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
     },
-    async ({ project, pr }) => {
+    async ({ project, pr_number, pr: prAlias }) => {
       audit(rootDir, { tool: "verify_pr" });
+      const pr = pr_number ?? prAlias;
+      if (pr === undefined || String(pr).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       try {
         const result = await verifyPr(rootDir, project, pr, logger);
         return {
@@ -80,11 +85,16 @@ export function registerBridgeRound2Tools(
     "Merge pull request, fast-forward target checkout, and restart services according to changed-path rules.",
     {
       project: z.string().describe("Project ID configured in projects.json"),
-      pr: z.union([z.number(), z.string()]).describe("Pull request number (e.g. 12)"),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull request number (e.g. 12)"),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       method: z.enum(["merge", "squash", "rebase"]).optional().describe("Merge method (default: 'merge')"),
     },
-    async ({ project, pr, method }) => {
+    async ({ project, pr_number, pr: prAlias, method }) => {
       audit(rootDir, { tool: "merge_and_deploy" });
+      const pr = pr_number ?? prAlias;
+      if (pr === undefined || String(pr).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       try {
         const result = await mergeAndDeploy(rootDir, project, pr, { method, logger });
         return {

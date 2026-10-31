@@ -23,17 +23,19 @@ export function registerWebhookTools(
     "set_task_webhook",
     "Attach an opt-in completion webhook to a specific task. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete.",
     {
-      taskId: z.string().describe("Task ID to attach completion webhook to"),
+      task_id: z.string().optional().describe("Task ID to attach completion webhook to"),
+      taskId: z.string().optional().describe("Alias of task_id (legacy)"),
       on_complete: z
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
           headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
-          events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
+          events: z.array(z.enum(["completed", "failed", "pr_opened", "stalled"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed', 'stalled'])"),
           secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
         })
         .describe("Opt-in webhook configuration for this specific task"),
     },
-    async ({ taskId, on_complete }) => {
+    async ({ task_id, taskId: taskIdAlias, on_complete }) => {
+      const taskId = (task_id || taskIdAlias || "").trim();
       try {
         if (!isValidTaskId(taskId)) {
           return {
@@ -60,7 +62,7 @@ export function registerWebhookTools(
                   taskId,
                   attached: true,
                   url: on_complete.url,
-                  events: on_complete.events || ["completed", "failed"],
+                  events: on_complete.events || ["completed", "failed", "stalled"],
                 },
                 null,
                 2
@@ -86,9 +88,11 @@ export function registerWebhookTools(
     "clear_task_webhook",
     "Clear and remove any completion webhook attached to a specific task.",
     {
-      taskId: z.string().describe("Task ID whose webhook should be removed"),
+      task_id: z.string().optional().describe("Task ID whose webhook should be removed"),
+      taskId: z.string().optional().describe("Alias of task_id (legacy)"),
     },
-    async ({ taskId }) => {
+    async ({ task_id, taskId: taskIdAlias }) => {
+      const taskId = (task_id || taskIdAlias || "").trim();
       try {
         if (!isValidTaskId(taskId)) {
           return {
@@ -104,7 +108,7 @@ export function registerWebhookTools(
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ taskId, cleared: true }, null, 2),
+              text: JSON.stringify({ taskId, cleared, ...(cleared ? {} : { message: "no webhook was attached to this task" }) }, null, 2),
             },
           ],
         };

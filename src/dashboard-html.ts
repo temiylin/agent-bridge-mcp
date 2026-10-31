@@ -1189,6 +1189,8 @@ export function renderDashboardHtml(): string {
           else if (t.status === "completed") { badgeClass = "badge-completed"; statusText = "✓ 已完成"; }
           else if (t.status === "failed") { badgeClass = "badge-failed"; statusText = "✕ 失败/取消"; }
           else if (t.status === "paused_quota" || t.status === "paused") { badgeClass = "badge-paused"; statusText = "⏸ 额度暂停"; }
+          if (t.state === "suspected_stalled") { badgeClass = "badge-paused"; statusText = "⚠ 疑似卡住"; }
+          else if (t.state === "cancelled") { statusText = "✕ 已取消"; }
 
           const prLink = t.pr_url
             ? '<a href="' + t.pr_url + '" target="_blank" style="color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; gap:4px;">🔗 查看 PR</a>'
@@ -1198,7 +1200,9 @@ export function renderDashboardHtml(): string {
 
           const sessionDisplay = t.session_id ? '<span style="font-family:monospace; font-size:12px;">' + t.session_id + '</span>' : (t.project ? '<span>' + t.project + '</span>' : '<span style="color:var(--text-muted);">-</span>');
           const elapsedDisplay = t.elapsed || (t.finished_at ? new Date(t.finished_at).toLocaleTimeString() : "-");
-          const logDisplay = t.last_log_line
+          const logDisplay = t.reason
+            ? '<span style="font-family:monospace; font-size:12px; color:var(--red); word-break:break-all;" title="reason">' + escapeHtml(t.reason) + '</span>'
+            : t.last_log_line
             ? '<span style="font-family:monospace; font-size:12px; color:var(--text-muted); word-break:break-all;">' + escapeHtml(t.last_log_line) + '</span>'
             : '<span style="color:var(--text-muted);">-</span>';
 

@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 
-export type TaskState = "queued" | "running" | "completed" | "failed" | "cancelled" | "paused_quota";
+export type TaskState = "queued" | "running" | "suspected_stalled" | "completed" | "failed" | "cancelled" | "paused_quota";
+
+/** States in which a task is believed to still be executing. */
+export const ACTIVE_STATES: TaskState[] = ["running", "suspected_stalled"];
 
 export interface TaskStatusInfo {
   taskId?: string;
@@ -16,6 +19,16 @@ export interface TaskStatusInfo {
   exitCode?: number | null;
   reason?: string;
   slackMessageTs?: string;
+  sessionId?: string;
+  /** Agent child process pid. */
+  pid?: number;
+  /** Worker (relay) process pid that owns the child. */
+  workerPid?: number;
+  logPath?: string;
+  workDir?: string;
+  lastActivityAt?: string;
+  /** Last lines of the task log when the task failed or stalled. */
+  logTail?: string;
 }
 
 export function getStatusDir(root: string): string {
@@ -54,6 +67,13 @@ export function writeStatus(
     exitCode: info.exitCode !== undefined ? info.exitCode : null,
     ...(info.reason ? { reason: info.reason } : {}),
     ...(info.slackMessageTs ? { slackMessageTs: info.slackMessageTs } : {}),
+    ...(info.sessionId ? { sessionId: info.sessionId } : {}),
+    ...(info.pid ? { pid: info.pid } : {}),
+    ...(info.workerPid ? { workerPid: info.workerPid } : {}),
+    ...(info.logPath ? { logPath: info.logPath } : {}),
+    ...(info.workDir ? { workDir: info.workDir } : {}),
+    ...(info.lastActivityAt ? { lastActivityAt: info.lastActivityAt } : {}),
+    ...(info.logTail ? { logTail: info.logTail } : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");

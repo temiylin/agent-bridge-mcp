@@ -143,13 +143,18 @@ export function registerGitHubPrTools(
     "pr_view",
     "View detailed information, body description, and discussion comments (including Codex P0/P1/P2 reviews) for a Pull Request.",
     {
-      pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
       include_comments: z.boolean().optional().describe("Whether to include discussion comments and review findings (default: true)."),
     },
-    async ({ pr_number, repo, repo_path, include_comments = true }) => {
+    async ({ pr_number: prNumberArg, pr: prAlias, repo, repo_path, include_comments = true }) => {
       audit(rootDir, { tool: "pr_view" });
+      const pr_number = prNumberArg ?? prAlias;
+      if (pr_number === undefined || String(pr_number).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       const cwd = resolveCwd(rootDir, repo_path);
 
       const jsonFields = [
@@ -212,13 +217,18 @@ export function registerGitHubPrTools(
     "pr_diff",
     "Get the unified code diff for a Pull Request to perform in-depth code review directly in chat.",
     {
-      pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
       max_bytes: z.number().int().min(500).max(128000).optional().describe("Maximum bytes to return (default: 48000)."),
     },
-    async ({ pr_number, repo, repo_path, max_bytes = 48000 }) => {
+    async ({ pr_number: prNumberArg, pr: prAlias, repo, repo_path, max_bytes = 48000 }) => {
       audit(rootDir, { tool: "pr_diff" });
+      const pr_number = prNumberArg ?? prAlias;
+      if (pr_number === undefined || String(pr_number).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       const cwd = resolveCwd(rootDir, repo_path);
 
       const args = ["pr", "diff", String(pr_number).trim()];
@@ -265,12 +275,17 @@ export function registerGitHubPrTools(
     "pr_checks",
     "Inspect CI / GitHub Actions status and check suites for a Pull Request.",
     {
-      pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
-    async ({ pr_number, repo, repo_path }) => {
+    async ({ pr_number: prNumberArg, pr: prAlias, repo, repo_path }) => {
       audit(rootDir, { tool: "pr_checks" });
+      const pr_number = prNumberArg ?? prAlias;
+      if (pr_number === undefined || String(pr_number).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       const cwd = resolveCwd(rootDir, repo_path);
 
       const args = [
@@ -390,14 +405,19 @@ export function registerGitHubPrTools(
     "pr_review",
     "Submit code review comments, approvals, or changes requested directly to a GitHub Pull Request.",
     {
-      pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       action: z.enum(["comment", "approve", "request-changes"]).describe("Review action: 'comment', 'approve', or 'request-changes'."),
       body: z.string().describe("Review comment body in Markdown."),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
-    async ({ pr_number, action, body, repo, repo_path }) => {
+    async ({ pr_number: prNumberArg, pr: prAlias, action, body, repo, repo_path }) => {
       audit(rootDir, { tool: "pr_review" });
+      const pr_number = prNumberArg ?? prAlias;
+      if (pr_number === undefined || String(pr_number).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       const cwd = resolveCwd(rootDir, repo_path);
 
       const args = ["pr", "review", String(pr_number).trim(), "--body", body.trim()];
@@ -445,14 +465,19 @@ export function registerGitHubPrTools(
     "pr_merge",
     "Merge a Pull Request on GitHub using merge, squash, or rebase.",
     {
-      pr_number: z.union([z.number(), z.string()]).describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr_number: z.union([z.number(), z.string()]).optional().describe("Pull Request number (e.g. 60), branch name, or PR URL."),
+      pr: z.union([z.number(), z.string()]).optional().describe("Alias of pr_number"),
       method: z.enum(["merge", "squash", "rebase"]).optional().describe("Merge method: 'merge' (default), 'squash', or 'rebase'."),
       delete_branch: z.boolean().optional().describe("Whether to delete head branch after merge. Default: false."),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
-    async ({ pr_number, method = "merge", delete_branch = false, repo, repo_path }) => {
+    async ({ pr_number: prNumberArg, pr: prAlias, method = "merge", delete_branch = false, repo, repo_path }) => {
       audit(rootDir, { tool: "pr_merge" });
+      const pr_number = prNumberArg ?? prAlias;
+      if (pr_number === undefined || String(pr_number).trim() === "") {
+        return { isError: true, content: [{ type: "text", text: "Error: pr_number (or pr) is required." }] };
+      }
       const cwd = resolveCwd(rootDir, repo_path);
 
       const args = ["pr", "merge", String(pr_number).trim()];

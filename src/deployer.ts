@@ -123,7 +123,7 @@ export async function mergeAndDeploy(
   logger?.info(`merge_and_deploy: Fast-forwarding branch ${targetBranch} in ${checkoutDir}`);
   let fastForwarded = false;
 
-  const pullRes = spawnSync("git", ["pull", "--ff-only", "origin", targetBranch], {
+  const pullRes = spawnSync("git", ["pull", "--ff-only", proj.merge_deploy?.remote || "origin", targetBranch], {
     cwd: checkoutDir,
     encoding: "utf8",
     shell: false,
