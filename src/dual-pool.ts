@@ -223,7 +223,7 @@ function safeCockpitAccounts(): AgentAccountSummary[] {
 export type AccountSelection =
   | { pool: "custom"; alias: string; home: string; email?: string; profile: AgyPoolProfile }
   | { pool: "default"; home: string; email?: string; cockpitAccountId?: string; needsSwitch: boolean; legacy: boolean }
-  | { pool: "none"; reason: string };
+  | { pool: "none"; reason: string; kind?: "busy" | "no_quota"; earliest_reset?: string };
 
 export interface SelectOptions {
   session_id?: string;
@@ -262,7 +262,7 @@ export function selectDualPoolAccount(rootDir: string, opts: SelectOptions = {})
   // 2. Default pool (single default HOME — only one default task at a time since a switch would affect it)
   const defaultHome = opts.defaultHome || process.env.HOME || os.homedir();
   const defBusy = getDefaultPoolBusyTask(rootDir);
-  if (defBusy) return { pool: "none", reason: `default pool busy with ${defBusy}; no custom profile available` };
+  if (defBusy) return { pool: "none", kind: "busy", reason: `default pool busy with ${defBusy}; no custom profile available` };
 
   const usable = cockpit.filter((c) => !c.disabled && c.email);
   if (usable.length === 0) {
@@ -283,7 +283,26 @@ export function selectDualPoolAccount(rootDir: string, opts: SelectOptions = {})
     const c = others[0];
     return { pool: "default", home: defaultHome, email: c.email, cockpitAccountId: c.accountId, needsSwitch: true, legacy: false };
   }
-  return { pool: "none", reason: "all accounts in both pools are paused, out of quota, or busy" };
+  // Distinguish "someone is busy" (wait) from "every account is exhausted" (tell the caller).
+  const anyBusy = usable.some((c) => !!getEmailBusyTask(rootDir, c.email, profiles)) ||
+    profiles.some((p) => p.email && !!getEmailBusyTask(rootDir, p.email, profiles));
+  if (anyBusy) return { pool: "none", kind: "busy", reason: "all usable accounts are busy" };
+  const resets: number[] = [];
+  for (const c of usable) {
+    const pu = isEmailPaused(rootDir, c.email, now);
+    if (pu) resets.push(new Date(pu).getTime());
+    else if (c.resetTime) {
+      const t = typeof c.resetTime === "number" ? c.resetTime : new Date(c.resetTime).getTime();
+      if (!isNaN(t) && t > now) resets.push(t);
+    }
+  }
+  const earliest = resets.length ? new Date(Math.min(...resets)).toISOString() : undefined;
+  return {
+    pool: "none",
+    kind: "no_quota",
+    reason: `all agy accounts are out of quota${earliest ? `; earliest reset ${earliest}` : ""}`,
+    ...(earliest ? { earliest_reset: earliest } : {}),
+  };
 }
 
 /**
@@ -304,7 +323,7 @@ export async function acquireDualPoolAccount(
     pool: sel.pool,
     ...(sel.pool === "custom" ? { alias: sel.alias } : {}),
   });
-  if (!locked) return { pool: "none", reason: `account ${email} was just claimed by another task` };
+  if (!locked) return { pool: "none", kind: "busy", reason: `account ${email} was just claimed by another task` };
 
   if (sel.pool === "default" && sel.needsSwitch && sel.cockpitAccountId) {
     const sw = await (opts.switchFn || switchAgentAccount)({
@@ -314,7 +333,7 @@ export async function acquireDualPoolAccount(
     if (!sw.success) {
       releaseAccountLock(rootDir, email, taskId);
       opts.logger?.("WARN", `Default pool: Cockpit switch to ${email} failed: ${sw.error}`);
-      return { pool: "none", reason: `cockpit switch to ${email} failed: ${sw.error}` };
+      return { pool: "none", kind: "busy", reason: `cockpit switch to ${email} failed: ${sw.error}` };
     }
     opts.logger?.("INFO", `Default pool: switched Cockpit current account to ${email}`);
   }

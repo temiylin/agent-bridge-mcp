@@ -288,6 +288,7 @@ async function runAccountPoolTests() {
   assert.ok(getEmailBusyTask(D, "c380@x.com"));
   const a2 = await acquireDualPoolAccount(D, "task_dual_2", { cockpitAccounts: cockpit, switchFn: async () => ({ success: true }) });
   assert.equal(a2.pool, "none", "a,b out of quota; 380 busy => queue");
+  assert.equal((a2 as any).kind, "busy");
   releaseSelection(D, a1, "task_dual_1");
   const a3 = await acquireDualPoolAccount(D, "task_dual_3", { cockpitAccounts: cockpit, switchFn: async () => ({ success: true }) });
   assert.equal(a3.pool, "custom");
@@ -312,6 +313,8 @@ async function runAccountPoolTests() {
   assert.ok(isEmailPaused(D, "c380@x.com"));
   sel = selectDualPoolAccount(D, { cockpitAccounts: cockpit });
   assert.equal(sel.pool, "none");
+  assert.equal((sel as any).kind, "no_quota", "all exhausted => structured no_quota");
+  assert.ok((sel as any).earliest_reset);
   const ov = queryAccountOverview(D, cockpit as any);
   const r380 = ov.find((r) => r.email === "c380@x.com")!;
   assert.deepEqual(r380.pools.sort(), ["custom", "default"]);
