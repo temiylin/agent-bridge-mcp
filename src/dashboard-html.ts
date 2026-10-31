@@ -1055,6 +1055,14 @@ export function renderDashboardHtml(): string {
       setTimeout(() => toast.classList.remove("show"), 2500);
     }
 
+    function switchTab(tabId, btn) {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+      if (btn) btn.classList.add("active");
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add("active");
+    }
+
     function openModal(id) {
       const m = document.getElementById(id);
       if (m) m.classList.add("open");
