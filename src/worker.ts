@@ -309,7 +309,8 @@ export function writeResultFile(
   stderr: string,
   model?: string,
   reasoningEffort?: string,
-  sessionId?: string
+  sessionId?: string,
+  accountUsed?: string
 ): string {
   const finalResultPath = path.join(resultsDir, `${taskId}.md`);
   const tmpResultPath = path.join(resultsDir, `${taskId}.md.tmp`);
@@ -318,6 +319,7 @@ export function writeResultFile(
   if (model) metaLines += `- **Model**: ${model}\n`;
   if (reasoningEffort) metaLines += `- **Reasoning Effort**: ${reasoningEffort}\n`;
   if (sessionId) metaLines += `- **Session ID**: ${sessionId}\n`;
+  if (accountUsed) metaLines += `- **Account**: ${accountUsed}\n`;
   metaLines += `- **Started At**: ${startedAt}\n- **Finished At**: ${finishedAt}\n- **Exit Code**: ${exitCode !== null ? exitCode : "(none)"}\n`;
 
   let content = `# Execution Result for ${taskId}
@@ -664,6 +666,7 @@ async function executeTaskFile(
         logger: logWorker,
       });
       if (accountSel.pool !== "none") break;
+      if (accountSel.kind === "no_quota") break; // tell the caller instead of hanging
       if (fs.existsSync(path.join(controlDir, `${taskId}.cancel`)) || Date.now() - waitStart > waitMaxMs) break;
       if (!loggedWait) {
         logWorker("WARN", `Task ${taskId} queued: no agy account available (${accountSel.reason}). Waiting...`);
@@ -671,6 +674,21 @@ async function executeTaskFile(
         loggedWait = true;
       }
       await new Promise((r) => setTimeout(r, waitPollMs));
+    }
+    if (accountSel.pool === "none" && accountSel.kind === "no_quota") {
+      const fin = new Date().toISOString();
+      const reasonTxt = `no_quota: ${accountSel.reason}. Task stashed; resume with resume_after_account_switch.`;
+      try {
+        stashQuotaTask(currentRoot, { taskId, session_id: sessionId, agent: agentName, model, reasoningEffort, prompt, errorSnippet: reasonTxt, pausedAt: fin });
+      } catch {}
+      writeResultFile(resultsDir, taskId, "no_quota", agentName, startedAt, fin, null,
+        `No agy account has quota left (agent was NOT switched).\n\n${accountSel.reason}${accountSel.earliest_reset ? `\n\nearliest_reset: ${accountSel.earliest_reset}` : ""}`,
+        "", model, reasoningEffort, sessionId);
+      writeStatus(currentRoot, taskId, { state: "paused_quota", agent: agentName, model, startedAt, finishedAt: fin, exitCode: null, reason: reasonTxt });
+      saveProcessedTask(processedMap, taskId, fin);
+      logWorker("WARN", `Task ${taskId}: ${reasonTxt}`);
+      try { onTaskFinished(currentRoot, taskId, "paused_quota", sessionId, reasonTxt); } catch {}
+      return true;
     }
     if (accountSel.pool === "none") {
       const reasonTxt = `no agy account available: ${accountSel.reason}`;
@@ -1169,7 +1187,9 @@ async function executeTaskFile(
     stderrData,
     model,
     reasoningEffort,
-    finalSessionId || sessionId
+    finalSessionId || sessionId,
+    poolProfile ? `${poolProfile.alias}${accountEmail ? ` <${accountEmail}>` : ""} (custom pool)`
+      : accountSel?.pool === "default" ? `${accountEmail || "default HOME"} (default pool)` : undefined
   );
 
   writeStatus(currentRoot, taskId, {
