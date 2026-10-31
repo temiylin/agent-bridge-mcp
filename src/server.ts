@@ -23,6 +23,7 @@ import { registerRequirementsTools } from "./requirements-tools.js";
 import { registerQueueTools } from "./queue-tools.js";
 import { registerRecentTasksTool } from "./recent-tasks.js";
 import { registerWebhookTools } from "./webhook-tools.js";
+import { registerAccountResumeTools } from "./account-resume-tools.js";
 import { setTaskWebhook, WebhookEvent } from "./webhook.js";
 import { resolveTaskAgent } from "./routing.js";
 
@@ -356,6 +357,7 @@ ${prompt}
   registerQueueTools(server, rootDir, logger);
   registerRecentTasksTool(server, rootDir, logger);
   registerWebhookTools(server, rootDir, logger);
+  registerAccountResumeTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 
-export type TaskState = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type TaskState = "queued" | "running" | "completed" | "failed" | "cancelled" | "paused_quota";
 
 export interface TaskStatusInfo {
   taskId?: string;

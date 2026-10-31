@@ -217,7 +217,7 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
 export function onTaskFinished(
   rootDir: string,
   taskId: string,
-  status: "completed" | "failed" | "cancelled",
+  status: "completed" | "failed" | "cancelled" | "paused_quota",
   sessionId?: string,
   reason?: string
 ): void {
@@ -250,6 +250,12 @@ export function onTaskFinished(
   if (status === "completed") {
     // Task succeeded: auto-dispatch next queued item for that session
     dispatchNextInQueue(rootDir, session);
+  } else if (status === "paused_quota") {
+    // Quota exhausted: pause queue temporarily with quota reason (do NOT permanently fail the queue)
+    const state = loadSessionQueue(rootDir, session);
+    state.paused = true;
+    state.pause_reason = `paused_quota: ${reason || "Account quota exhausted. Session history is preserved on machine; resume with resume_after_account_switch."}`;
+    saveSessionQueue(rootDir, state);
   } else {
     // Task failed or cancelled: pause that session's queue and record reason
     const state = loadSessionQueue(rootDir, session);

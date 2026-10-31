@@ -169,7 +169,7 @@ export async function deliverWebhookWithRetry(
 export async function triggerTaskWebhook(
   rootDir: string,
   taskId: string,
-  terminalStatus: "completed" | "failed" | "cancelled",
+  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota",
   sessionId?: string,
   elapsedMs?: number
 ): Promise<void> {

@@ -121,6 +121,8 @@ async function runTests() {
     "dashboard",
     "set_task_webhook",
     "clear_task_webhook",
+    "resume_after_account_switch",
+    "auto_resume_on_account_ready",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

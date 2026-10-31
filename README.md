@@ -253,6 +253,13 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `list_recent_tasks` / `dashboard` | Dashboard | Compact overview of recent tasks and queued items | Shows topic/session_id, taskId, status (`running`/`completed`/`failed`/`queued`/`paused`), elapsed or finished_at, PR URL, last log line (~120 chars) |
 | `set_task_webhook` | Completion Webhook | Attach an opt-in completion webhook to a specific task | Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete |
 | `clear_task_webhook` | Completion Webhook | Clear and remove any completion webhook from a task | Stops further webhook delivery for the task |
+| `resume_after_account_switch` | Account Switch | Resume a quota-paused task or session after account switch | Re-dispatches with continue_session=true using identical session_id (conversations stay on machine) |
+| `auto_resume_on_account_ready` | Account Switch | Check account readiness and resume paused quota tasks | Optional probe; if Cockpit status is not detectable, use resume_after_account_switch directly |
+
+### Resume Same Session After Quota / Account Switch
+When an agent (e.g. Antigravity / `agy`) encounters an API quota, rate limit, or account exhaustion error (detected via exit code or error output like `resource_exhausted`, `quota exceeded`, `429`), the task is marked as `paused_quota` and its prompt, session alias, and metadata are stashed under `stash/<taskId>.json`. The session queue is paused cleanly and is **never** permanently failed.
+
+Because conversational history in Antigravity lives locally on the machine rather than in the cloud account, switching accounts (e.g. in Cockpit Tools) automatically restores access to the local conversation history. Calling `resume_after_account_switch(taskId | session_id)` re-dispatches the task using `continue_session: true` with the identical `session_id`, continuing the existing session rather than starting a new conversation. Note that `auto_resume_on_account_ready` is optional and depends on local Cockpit daemon availability; callers can always rely directly on `resume_after_account_switch`.
 
 ### Opt-In Per-Task Completion Webhooks
 > **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` `["completed","failed","pr_opened"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
