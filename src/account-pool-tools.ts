@@ -8,6 +8,9 @@ import {
   pausePoolProfile,
   resumePoolProfile,
   bindProfileEmail,
+  syncProfileAuthFromCockpit,
+  detectProfileLoginStatus,
+  loadPoolConfig,
 } from "./account-pool.js";
 
 export function registerAccountPoolTools(
@@ -42,7 +45,7 @@ export function registerAccountPoolTools(
         // Format compact lines
         // e.g. alias | email | enabled | busy: <tid> | paused_until: <time> | tasks: <N> | quota: <rem>
         const lines = statuses.map((s) => {
-          return `${s.alias} [${s.email}] ${s.enabled ? "ACTIVE" : "PAUSED"} | busy: ${s.busy_task_id} | paused_until: ${s.paused_until} | today: ${s.tasks_today} | cockpit_remaining: ${s.cockpit_remaining}`;
+          return `${s.alias} [${s.email}] ${s.enabled ? "ACTIVE" : "PAUSED"} | login: ${s.login_label}${s.login_reason ? "(" + s.login_reason + ")" : ""} | busy: ${s.busy_task_id} | paused_until: ${s.paused_until} | today: ${s.tasks_today} | cockpit_remaining: ${s.cockpit_remaining}`;
         });
 
         return {
@@ -68,7 +71,7 @@ export function registerAccountPoolTools(
    */
   server.tool(
     "pool_init_profile",
-    "Initialize an isolated agy profile from a Cockpit account email (preferred) or an explicit alias. Alias/HOME are auto-derived from the email local-part when omitted. Rejects duplicate email bindings and alias/HOME collisions. Never copies cockpit tokens.",
+    "Initialize an isolated agy profile from a Cockpit account email (preferred) or an explicit alias. Alias/HOME are auto-derived from the email local-part when omitted. Rejects duplicate email bindings and alias/HOME collisions. Automatically syncs Cockpit login into the profile HOME so the profile is usable immediately; pool_sync_auth remains available to retry.",
     {
       email: z
         .string()
@@ -106,6 +109,34 @@ export function registerAccountPoolTools(
         }
 
         const createdAlias = res.profile?.alias || alias || "(unknown)";
+
+        let authSyncText = "";
+        try {
+          const syncRes = await syncProfileAuthFromCockpit(rootDir, createdAlias, {
+            logger,
+            accountId: cockpit_account_id || res.profile?.cockpit_account_id,
+          });
+          const refreshed =
+            loadPoolConfig(rootDir).find((p) => p.alias === createdAlias) || res.profile!;
+          const login = detectProfileLoginStatus(refreshed);
+          if (syncRes.success) {
+            authSyncText = `Login status: ${login.label} (Cockpit auth synced into profile HOME).`;
+          } else {
+            authSyncText = [
+              `Login status: ${login.label}${login.reason ? " — " + login.reason : ""}`,
+              `Cockpit auth sync failed: ${syncRes.error || "unknown error"}`,
+              "Retry with pool_sync_auth, or as a last resort run:",
+              `  ${res.loginCommand}`,
+            ].join("\n");
+          }
+        } catch (syncErr: any) {
+          authSyncText = [
+            `Cockpit auth sync threw: ${syncErr?.message || String(syncErr)}`,
+            "Retry with pool_sync_auth, or as a last resort run:",
+            `  ${res.loginCommand}`,
+          ].join("\n");
+        }
+
         return {
           content: [
             {
@@ -113,14 +144,9 @@ export function registerAccountPoolTools(
               text: [
                 `Profile "${createdAlias}" initialized successfully at "${res.profile?.home}".`,
                 res.profile?.email ? `Bound email: ${res.profile.email}` : "",
-                "",
-                "Login instructions:",
-                "Run this command in a terminal to authenticate this profile with agy:",
-                `  ${res.loginCommand}`,
-                "",
-                "Once logged in, tasks assigned to this profile will run concurrently with an independent session.",
+                authSyncText,
               ]
-                .filter((line) => line !== undefined)
+                .filter((line) => line !== undefined && line !== "")
                 .join("\n"),
             },
           ],
@@ -246,4 +272,45 @@ export function registerAccountPoolTools(
       }
     }
   );
+
+  server.tool(
+    "pool_sync_auth",
+    "Sync an already-logged-in Cockpit antigravity account into an agy pool profile HOME (via cockpit WS switch_account + copy of jetski/oauth files). Makes the profile usable without terminal login.",
+    {
+      alias: z.string().describe("Profile alias to sync auth into"),
+      cockpit_account_id: z
+        .string()
+        .optional()
+        .describe("Optional cockpit account id; defaults to the profile binding"),
+    },
+    async ({ alias, cockpit_account_id }) => {
+      audit(rootDir, { tool: "pool_sync_auth" });
+      try {
+        const res = await syncProfileAuthFromCockpit(rootDir, alias, {
+          logger,
+          accountId: cockpit_account_id,
+        });
+        if (!res.success) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: `Error: ${res.error}` }],
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Profile "${alias}" auth synced from Cockpit. Login status: ${res.login_label || "已登录"}.`,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error syncing auth: ${err?.message || String(err)}` }],
+        };
+      }
+    }
+  );
+
 }

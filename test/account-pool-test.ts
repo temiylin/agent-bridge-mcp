@@ -15,11 +15,37 @@ import {
   queryPoolStatus,
   sanitizeEmailLocalPart,
   deriveUniqueAlias,
+  detectProfileLoginStatus,
+  isProfileLoggedIn,
+  recordProfileLoginResult,
 } from "../src/account-pool.js";
 import { getSessionAccount, recordSessionAccount } from "../src/sessions.js";
 import { writeStatus } from "../src/status.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-account-pool-test";
+
+function plantLoggedInAuth(profileHome: string) {
+  const gemini = path.join(profileHome, ".gemini");
+  fs.mkdirSync(path.join(gemini, "antigravity-cli"), { recursive: true });
+  const token = {
+    access_token: "ya29.test-access",
+    token_type: "Bearer",
+    refresh_token: "1//test-refresh",
+    expiry: new Date(Date.now() + 3600_000).toISOString(),
+  };
+  const jetski = { token, auth_method: "consumer", id_token: "header.payload.sig" };
+  fs.writeFileSync(path.join(gemini, "jetski-standalone-oauth-token"), JSON.stringify(jetski), "utf8");
+  fs.writeFileSync(
+    path.join(gemini, "oauth_creds.json"),
+    JSON.stringify({
+      access_token: token.access_token,
+      token_type: "Bearer",
+      refresh_token: token.refresh_token,
+      expiry_date: Date.now() + 3600_000,
+    }),
+    "utf8"
+  );
+}
 
 async function runAccountPoolTests() {
   console.log("=================================================");
@@ -47,6 +73,9 @@ async function runAccountPoolTests() {
     initRes.loginCommand.includes(`HOME=${initRes.profile.home} agy`),
     "Login command must contain HOME=<dir> agy"
   );
+  assert.equal(detectProfileLoginStatus(initRes.profile!).status, "logged_out", "fresh profile is 未登录");
+  plantLoggedInAuth(initRes.profile!.home);
+  assert.equal(detectProfileLoginStatus(initRes.profile!).status, "logged_in", "planted auth => 已登录");
   console.log("✓ Assertion passed: initPoolProfile initialized dir and login command:", initRes.loginCommand);
 
   // Test 3: One-account-one-dir invariant: cannot bind same email to another profile dir
@@ -60,6 +89,7 @@ async function runAccountPoolTests() {
   console.log("[Test 4] Initializing second profile worker-beta with user2@example.com...");
   const initRes2 = initPoolProfile(TEST_ROOT, { alias: "worker-beta", email: "user2@example.com" });
   assert.equal(initRes2.success, true);
+  plantLoggedInAuth(initRes2.profile!.home);
   const profiles = loadPoolConfig(TEST_ROOT);
   assert.equal(profiles.length, 2, "Pool must now contain 2 profiles");
   console.log("✓ Assertion passed: 2 profiles loaded.");
@@ -132,6 +162,8 @@ async function runAccountPoolTests() {
   assert.equal(poolStatuses.length, 2);
   const alphaStat = poolStatuses.find((s) => s.alias === "worker-alpha");
   assert.equal(alphaStat?.enabled, false, "Paused profile must report enabled=false");
+  assert.ok(alphaStat?.login_status, "login_status must be present");
+  assert.ok(alphaStat?.login_label, "login_label must be present");
   console.log("✓ Assertion passed: queryPoolStatus returned valid status lines:", poolStatuses);
 
   // Test 11: sanitize + derive alias from email local-part
@@ -156,6 +188,7 @@ async function runAccountPoolTests() {
   assert.equal(emailOnly.profile?.email, "mmei49293@gmail.com");
   assert.ok(emailOnly.profile?.home.includes("mmei49293"), "HOME must include derived alias");
   assert.ok(emailOnly.loginCommand?.includes(`HOME=${emailOnly.profile?.home} agy`));
+  plantLoggedInAuth(emailOnly.profile!.home);
   console.log("✓ Assertion passed: email-only init created alias mmei49293:", emailOnly.loginCommand);
 
   // Test 13: duplicate email rejected; alias collision rejected
@@ -172,7 +205,38 @@ async function runAccountPoolTests() {
   const sameLocal = initPoolProfile(TEST_ROOT, { email: "mmei49293@example.com" });
   assert.equal(sameLocal.success, true);
   assert.equal(sameLocal.profile?.alias, "mmei49293-2", "colliding local-part must get -2 suffix");
+  plantLoggedInAuth(sameLocal.profile!.home);
   console.log("✓ Assertion passed: conflicts rejected; colliding local-part got suffix alias.");
+
+  // Test 14: dispatcher skips profiles that are not logged in
+  console.log("[Test 14] Testing selectPoolAccount skips 未登录 profiles...");
+  const loggedOutOnlyRoot = path.join(TEST_ROOT, "logged-out-only");
+  fs.rmSync(loggedOutOnlyRoot, { recursive: true, force: true });
+  fs.mkdirSync(loggedOutOnlyRoot, { recursive: true });
+  const bare = initPoolProfile(loggedOutOnlyRoot, { alias: "bare", email: "bare@example.com" });
+  assert.equal(bare.success, true);
+  assert.equal(isProfileLoggedIn(bare.profile!), false);
+  const noPick = selectPoolAccount(loggedOutOnlyRoot);
+  assert.equal(noPick, undefined, "未登录 profile must not be selected");
+  plantLoggedInAuth(bare.profile!.home);
+  const yesPick = selectPoolAccount(loggedOutOnlyRoot);
+  assert.equal(yesPick?.alias, "bare");
+  console.log("✓ Assertion passed: unlogged profiles are skipped by dispatcher.");
+
+  // Test 15: login_failed reason surfaces in queryPoolStatus
+  console.log("[Test 15] Testing login_failed status reason...");
+  recordProfileLoginResult(loggedOutOnlyRoot, "bare", { success: false, error: "cockpit switch failed" });
+  // still logged in because auth files remain; wipe auth to expose login_failed
+  fs.rmSync(path.join(bare.profile!.home, ".gemini", "jetski-standalone-oauth-token"), { force: true });
+  fs.rmSync(path.join(bare.profile!.home, ".gemini", "oauth_creds.json"), { force: true });
+  const failed = detectProfileLoginStatus(loadPoolConfig(loggedOutOnlyRoot)[0]);
+  assert.equal(failed.status, "login_failed");
+  assert.equal(failed.label, "登录失败");
+  assert.ok(failed.reason?.includes("cockpit switch failed"));
+  const statusLines = queryPoolStatus(loggedOutOnlyRoot);
+  assert.equal(statusLines[0].login_status, "login_failed");
+  assert.equal(statusLines[0].login_label, "登录失败");
+  console.log("✓ Assertion passed: login_failed reason reported.");
 
   console.log("=================================================");
   console.log("  All Account Pool Tests Passed! 🎉              ");
