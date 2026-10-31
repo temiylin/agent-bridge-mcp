@@ -54,6 +54,7 @@
     "test:queue": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-queue-test -- tsx test/queue-test.ts",
     "test:recent-tasks": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-recent-tasks-test -- tsx test/recent-tasks-test.ts",
     "test:webhook": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-webhook-test -- tsx test/webhook-test.ts",
+    "test:timeout-alerts": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-timeout-alerts-test AGENT_BRIDGE_NOTIFY=0 -- tsx test/timeout-alerts-test.ts",
     "test:resume-quota": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-resume-quota-test -- tsx test/resume-quota-test.ts",
     "test:account-pool": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-account-pool-test -- tsx test/account-pool-test.ts",
     "test:pool-concurrency": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-pool-concurrency-test -- tsx test/pool-concurrency-test.ts",

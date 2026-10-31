@@ -298,6 +298,7 @@ Trigger failure
 
 - **Task ID**: ${taskId5}
 - **Agent**: sleep-stubborn
+- **Hard Timeout Seconds**: 1
 - **Created At**: ${new Date().toISOString()}
 
 ---

@@ -41,6 +41,15 @@ import {
 const rootDir = resolveBridgeRoot();
 const pollIntervalMs = parseInt(process.env.AGENT_BRIDGE_POLL_MS || "3000", 10);
 const taskTimeoutMs = parseInt(process.env.AGENT_BRIDGE_TIMEOUT_MS || "1800000", 10);
+/** Minimum implicit hard-kill cap when send_task omits timeout_seconds (6 hours). */
+export const HARD_KILL_SAFETY_CAP_MS = 6 * 60 * 60 * 1000;
+
+export function resolveHardKillTimeoutMs(hardTimeoutSeconds: number | undefined, envTimeoutMs: number = taskTimeoutMs): number {
+  if (hardTimeoutSeconds && hardTimeoutSeconds > 0) {
+    return hardTimeoutSeconds * 1000;
+  }
+  return Math.max(envTimeoutMs, HARD_KILL_SAFETY_CAP_MS);
+}
 
 const { tasksDir, resultsDir, logsDir } = ensureBridgeDirectories(rootDir);
 const workerLogFile = path.join(logsDir, "worker.log");
@@ -157,7 +166,8 @@ export function parseTaskFile(content: string): {
   notifyChannel?: NotificationChannel;
   notifySound?: boolean | string;
   notifyOn?: Set<string>;
-  timeoutSeconds?: number;
+  hardTimeoutSeconds?: number;
+  notifyOverdueSeconds?: number;
   projectId?: string;
   projectName?: string;
   projectRepo?: string;
@@ -251,10 +261,22 @@ export function parseTaskFile(content: string): {
   const notifyOnMatch = content.match(/^-[ \t]*\*\*Notify On\*\*:[ \t]*([^\r\n]*)$/m);
   const notifyOn = notifyOnMatch
     ? new Set(notifyOnMatch[1].split(",").map((s) => s.trim().toLowerCase()))
-    : new Set(["completed", "failed", "timeout", "stuck"]);
+    : new Set(["completed", "failed", "timeout", "stuck", "overdue"]);
 
-  const timeoutMatch = content.match(/^-[ \t]*\*\*Timeout(?: Seconds)?\*\*:[ \t]*([^\r\n]*)$/m);
-  const timeoutSeconds = timeoutMatch && parseInt(timeoutMatch[1], 10) > 0 ? parseInt(timeoutMatch[1], 10) : undefined;
+  const hardTimeoutMatch = content.match(/^-[ \t]*\*\*Hard Timeout Seconds\*\*:[ \t]*([^\r\n]*)$/m);
+  const hardTimeoutSeconds =
+    hardTimeoutMatch && parseInt(hardTimeoutMatch[1], 10) > 0 ? parseInt(hardTimeoutMatch[1], 10) : undefined;
+
+  const notifyOverdueMatch = content.match(/^-[ \t]*\*\*Notify Overdue Seconds\*\*:[ \t]*([^\r\n]*)$/m);
+  let notifyOverdueSeconds =
+    notifyOverdueMatch && parseInt(notifyOverdueMatch[1], 10) > 0 ? parseInt(notifyOverdueMatch[1], 10) : undefined;
+
+  if (!notifyOverdueSeconds && !hardTimeoutSeconds) {
+    const legacyTimeoutMatch = content.match(/^-[ \t]*\*\*Timeout(?: Seconds)?\*\*:[ \t]*([^\r\n]*)$/m);
+    if (legacyTimeoutMatch && parseInt(legacyTimeoutMatch[1], 10) > 0) {
+      notifyOverdueSeconds = parseInt(legacyTimeoutMatch[1], 10);
+    }
+  }
 
   const promptHeaderIdx = content.indexOf("## Prompt");
   let prompt = "";
@@ -281,7 +303,8 @@ export function parseTaskFile(content: string): {
     notifyChannel,
     notifySound,
     notifyOn,
-    ...(timeoutSeconds ? { timeoutSeconds } : {}),
+    ...(hardTimeoutSeconds ? { hardTimeoutSeconds } : {}),
+    ...(notifyOverdueSeconds ? { notifyOverdueSeconds } : {}),
     ...(projectId ? { projectId } : {}),
     ...(projectName ? { projectName } : {}),
     ...(projectRepo ? { projectRepo } : {}),
@@ -458,8 +481,9 @@ async function executeTaskFile(
     notify: notifyOpt,
     notifyChannel,
     notifySound,
-    notifyOn = new Set(["completed", "failed", "timeout", "stuck"]),
-    timeoutSeconds,
+    notifyOn = new Set(["completed", "failed", "timeout", "stuck", "overdue"]),
+    hardTimeoutSeconds,
+    notifyOverdueSeconds,
     projectId,
     projectName,
     projectRepo,
@@ -474,7 +498,7 @@ async function executeTaskFile(
     account,
   } = parseTaskFile(fileContent);
 
-  const effectiveTimeoutMs = timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds * 1000 : timeoutMs;
+  const effectiveHardTimeoutMs = resolveHardKillTimeoutMs(hardTimeoutSeconds, timeoutMs);
   const isNotifyEnabled = notifyOpt !== false && notifyChannel !== "none";
 
   // Check cancellation before start
@@ -899,8 +923,50 @@ async function executeTaskFile(
   try {
     await new Promise<void>((resolve, reject) => {
       let timer: NodeJS.Timeout | null = null;
+      let overdueTimer: NodeJS.Timeout | null = null;
+      let overdueAlertFired = false;
       let killTimer: NodeJS.Timeout | null = null;
       let cancelCheckInterval: NodeJS.Timeout | null = null;
+
+      const clearOverdueTimer = () => {
+        if (overdueTimer) {
+          clearTimeout(overdueTimer);
+          overdueTimer = null;
+        }
+      };
+
+      const fireOverdueAlert = () => {
+        if (overdueAlertFired) return;
+        overdueAlertFired = true;
+        const elapsedMs = Date.now() - new Date(startedAt).getTime();
+        const elapsedSec = Math.max(0, Math.round(elapsedMs / 1000));
+        logWorker("WARN", `Task ${taskId} overdue after ${elapsedSec}s (process still running; alert only)`);
+        if (isNotifyEnabled && notifyOn.has("overdue")) {
+          notify("agent-bridge", `Task ${taskId} overdue after ${elapsedSec}s (still running) [${agentName}]`, {
+            subtitle: "任务超时告警（未终止）",
+            level: "warning",
+            channel: notifyChannel,
+            sound: notifySound,
+          });
+        }
+        if (callbackUrl) {
+          sendCompletionCallback({
+            url: callbackUrl,
+            headers: callbackHeaders,
+            taskId,
+            agent: agentName,
+            status: "overdue",
+            exitCode: null,
+            durationSeconds: elapsedSec,
+            resultPath: path.join(resultsDir, `${taskId}.md`),
+            logPath: taskOutFilePath,
+            outputLog: stdoutData + "\n" + stderrData,
+            project: projectName || projectId,
+            logger: logWorker,
+          }).catch(() => {});
+        }
+        triggerTaskWebhook(currentRoot, taskId, "overdue", sessionId, elapsedMs).catch(() => {});
+      };
 
       const isWin = process.platform === "win32";
       const killChild = (sig: "SIGTERM" | "SIGKILL") => {
@@ -980,16 +1046,20 @@ async function executeTaskFile(
         });
       } catch {}
 
-      if (effectiveTimeoutMs > 0) {
+      if (notifyOverdueSeconds && notifyOverdueSeconds > 0) {
+        overdueTimer = setTimeout(fireOverdueAlert, notifyOverdueSeconds * 1000);
+      }
+
+      if (effectiveHardTimeoutMs > 0) {
         timer = setTimeout(() => {
           isTimeout = true;
-          logWorker("WARN", `Task ${taskId} timed out after ${effectiveTimeoutMs}ms. Sending SIGTERM to process.`);
+          logWorker("WARN", `Task ${taskId} hard timed out after ${effectiveHardTimeoutMs}ms. Sending SIGTERM to process.`);
           killChild("SIGTERM");
           killTimer = setTimeout(() => {
             logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
             killChild("SIGKILL");
           }, 5000);
-        }, effectiveTimeoutMs);
+        }, effectiveHardTimeoutMs);
       }
 
       // Stuck detection: warn if process produces no new output for 3 minutes (180s)
@@ -1113,6 +1183,7 @@ async function executeTaskFile(
 
       child.on("error", (err) => {
         if (timer) clearTimeout(timer);
+        clearOverdueTimer();
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         if (stuckCheckInterval) clearInterval(stuckCheckInterval);
@@ -1122,6 +1193,7 @@ async function executeTaskFile(
 
       child.on("close", (code, signal) => {
         if (timer) clearTimeout(timer);
+        clearOverdueTimer();
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         if (stuckCheckInterval) clearInterval(stuckCheckInterval);
@@ -1256,7 +1328,7 @@ async function executeTaskFile(
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
   if (isNotifyEnabled) {
     if (isTimeout && notifyOn.has("timeout")) {
-      notify("agent-bridge", `Task ${taskId} timed out after ${Math.round(effectiveTimeoutMs / 1000)}s [${agentName}]`, {
+      notify("agent-bridge", `Task ${taskId} timed out after ${Math.round(effectiveHardTimeoutMs / 1000)}s [${agentName}]`, {
         subtitle: "执行超时警告",
         level: "warning",
         channel: notifyChannel,
@@ -1440,7 +1512,8 @@ async function executeTaskFile(
   // Trigger opt-in per-task completion webhook (NEVER blocks queue advance)
   try {
     const elapsedMs = startedAt && finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : undefined;
-    triggerTaskWebhook(currentRoot, taskId, state, finalSessionId || sessionId, elapsedMs).catch(() => {});
+    const webhookTerminal = isTimeout ? "timeout" : state;
+    triggerTaskWebhook(currentRoot, taskId, webhookTerminal, finalSessionId || sessionId, elapsedMs).catch(() => {});
   } catch (webhookErr: any) {
     logWorker("WARN", `Webhook trigger error on task ${taskId}: ${webhookErr?.message || String(webhookErr)}`);
   }

@@ -90,19 +90,24 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
                 .optional()
                 .describe("是否播放提示音 (true/false) 或指定声音名 (如 'Hero', 'Ping', 'Basso')"),
               on: z
-                .array(z.enum(["completed", "failed", "timeout", "stuck"]))
+                .array(z.enum(["completed", "failed", "timeout", "stuck", "overdue"]))
                 .optional()
-                .describe("何时通知，默认全部包含: ['completed', 'failed', 'timeout', 'stuck']"),
+                .describe("何时通知，默认全部包含: ['completed', 'failed', 'timeout', 'stuck', 'overdue']"),
               timeout_seconds: z
                 .number()
                 .optional()
-                .describe("规定时间内没有完成告警的超时秒数"),
+                .describe("Soft overdue alert: fire once after this many seconds if the task is still running (does not kill the process)"),
             })
             .describe("二级通知配置对象"),
         ])
         .optional()
         .describe("任务通知配置：传 true 开启默认电脑通知；或传二级参数对象精细控制方式与时机"),
-      timeout_seconds: z.number().optional().describe("规定时间内没有完成告警的超时秒数（简写参数，与 notify.timeout_seconds 作用一致）"),
+      timeout_seconds: z
+        .number()
+        .optional()
+        .describe(
+          "Hard kill timeout in seconds: terminate the agent process if still running after this duration. Omit to use a 6h safety cap only (no shorter implicit kill). Soft overdue alerts use notify.timeout_seconds instead."
+        ),
       project_id: z.string().optional().describe("所属项目标识，用于路由至对应的 Slack 项目频道及配置项目属性"),
       project_dir: z.string().optional().describe("项目工作目录路径：既作为 agent 的工作目录 (cwd)，也用于根据 projects.json 自动匹配项目归属。未传时使用匹配项目的 paths[0]"),
       callback_url: z.string().optional().describe("任务完成后的 HTTP Webhook 回调地址 (POST JSON)"),
@@ -139,7 +144,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
           headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
-          events: z.array(z.enum(["completed", "failed", "pr_opened", "stalled"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed', 'stalled'])"),
+          events: z
+            .array(z.enum(["completed", "failed", "pr_opened", "stalled", "timeout", "stuck", "overdue"]))
+            .optional()
+            .describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
           secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
         })
         .optional()
@@ -315,7 +323,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         let notifyChannel: string | undefined;
         let notifySound: boolean | string | undefined;
         let notifyOn: string[] | undefined;
-        let effectiveTimeoutSec = timeout_seconds && timeout_seconds > 0 ? timeout_seconds : undefined;
+        let hardTimeoutSec = timeout_seconds && timeout_seconds > 0 ? timeout_seconds : undefined;
+        let notifyOverdueSec: number | undefined;
 
         if (typeof notify === "boolean") {
           notifyEnabled = notify;
@@ -325,7 +334,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           notifySound = notify.sound;
           notifyOn = notify.on;
           if (notify.timeout_seconds && notify.timeout_seconds > 0) {
-            effectiveTimeoutSec = notify.timeout_seconds;
+            notifyOverdueSec = notify.timeout_seconds;
           }
         }
 
@@ -333,7 +342,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (notifyChannel) headerMeta += `- **Notify Channel**: ${notifyChannel}\n`;
         if (notifySound !== undefined) headerMeta += `- **Notify Sound**: ${notifySound}\n`;
         if (notifyOn && notifyOn.length > 0) headerMeta += `- **Notify On**: ${notifyOn.join(",")}\n`;
-        if (effectiveTimeoutSec) headerMeta += `- **Timeout Seconds**: ${effectiveTimeoutSec}\n`;
+        if (hardTimeoutSec) headerMeta += `- **Hard Timeout Seconds**: ${hardTimeoutSec}\n`;
+        if (notifyOverdueSec) headerMeta += `- **Notify Overdue Seconds**: ${notifyOverdueSec}\n`;
 
         headerMeta += `- **Created At**: ${createdAt}\n`;
 
@@ -396,7 +406,8 @@ ${prompt}
         if (worktree && worktree.name) metaDetails += `\nworktree: ${worktree.name}`;
         if (notifyEnabled !== undefined) metaDetails += `\nnotify: ${notifyEnabled}`;
         if (notifyChannel) metaDetails += `\nnotify_channel: ${notifyChannel}`;
-        if (effectiveTimeoutSec) metaDetails += `\ntimeout_seconds: ${effectiveTimeoutSec}`;
+        if (hardTimeoutSec) metaDetails += `\nhard_timeout_seconds: ${hardTimeoutSec}`;
+        if (notifyOverdueSec) metaDetails += `\nnotify_overdue_seconds: ${notifyOverdueSec}`;
 
         const [quota, early] = await Promise.all([
           withTimeout(

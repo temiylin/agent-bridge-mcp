@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { resolveBridgeRoot } from "./config.js";
 import { extractLastLines } from "./redaction.js";
 
-export type TaskTerminalStatus = "completed" | "failed" | "timeout" | "cancelled" | "stuck";
+export type TaskTerminalStatus = "completed" | "failed" | "timeout" | "cancelled" | "stuck" | "overdue";
 
 export interface TaskCallbackPayload {
   task_id: string;

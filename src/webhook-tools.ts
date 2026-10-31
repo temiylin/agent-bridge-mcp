@@ -29,7 +29,10 @@ export function registerWebhookTools(
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
           headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
-          events: z.array(z.enum(["completed", "failed", "pr_opened", "stalled"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed', 'stalled'])"),
+          events: z
+            .array(z.enum(["completed", "failed", "pr_opened", "stalled", "timeout", "stuck", "overdue"]))
+            .optional()
+            .describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
           secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
         })
         .describe("Opt-in webhook configuration for this specific task"),
@@ -62,7 +65,7 @@ export function registerWebhookTools(
                   taskId,
                   attached: true,
                   url: on_complete.url,
-                  events: on_complete.events || ["completed", "failed", "stalled"],
+                  events: on_complete.events || ["completed", "failed"],
                 },
                 null,
                 2

@@ -9,7 +9,7 @@ import { BridgeLogger } from "./logger.js";
 export interface LifecycleSlackNotificationOptions {
   rootDir?: string;
   taskId: string;
-  event: "started" | "completed" | "failed" | "timeout" | "cancelled" | "stuck" | "needs-decision";
+  event: "started" | "completed" | "failed" | "timeout" | "cancelled" | "stuck" | "overdue" | "needs-decision";
   projectId?: string;
   projectName?: string;
   agent?: string;
@@ -80,6 +80,7 @@ export async function dispatchLifecycleSlack(
     timeout: "⏰",
     cancelled: "🚫",
     stuck: "⚠️",
+    overdue: "🕐",
     "needs-decision": "❓",
   };
   const icon = iconMap[options.event] || "ℹ️";

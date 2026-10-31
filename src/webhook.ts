@@ -5,7 +5,9 @@ import { resolveBridgeRoot } from "./config.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 import { getLastLogLine, extractPrUrl } from "./recent-tasks.js";
 
-export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled";
+export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue";
+
+export type WebhookPayloadStatus = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue";
 
 export interface TaskWebhookConfig {
   url: string;
@@ -17,7 +19,7 @@ export interface TaskWebhookConfig {
 export interface WebhookPayload {
   taskId: string;
   session_id?: string;
-  status: "completed" | "failed" | "pr_opened" | "stalled";
+  status: WebhookPayloadStatus;
   pr_url?: string;
   elapsed_ms?: number;
   last_log_snippet?: string;
@@ -111,6 +113,43 @@ export function computeHmacSignature(payload: string, secret: string): string {
 }
 
 /**
+ * Maps worker terminal / alert states to webhook payload status with event-filter fallback.
+ */
+export function resolveWebhookDelivery(
+  terminalStatus: string,
+  allowedEvents: WebhookEvent[]
+): { deliver: boolean; payloadStatus: WebhookPayloadStatus } | null {
+  const normalized = terminalStatus.toLowerCase();
+
+  if (normalized === "completed") {
+    return allowedEvents.includes("completed") ? { deliver: true, payloadStatus: "completed" } : null;
+  }
+  if (normalized === "suspected_stalled" || normalized === "stalled") {
+    return allowedEvents.includes("stalled") ? { deliver: true, payloadStatus: "stalled" } : null;
+  }
+  if (normalized === "overdue") {
+    return allowedEvents.includes("overdue") ? { deliver: true, payloadStatus: "overdue" } : null;
+  }
+  if (normalized === "stuck") {
+    return allowedEvents.includes("stuck") ? { deliver: true, payloadStatus: "stuck" } : null;
+  }
+  if (normalized === "timeout") {
+    if (allowedEvents.includes("timeout")) {
+      return { deliver: true, payloadStatus: "timeout" };
+    }
+    if (allowedEvents.includes("failed")) {
+      return { deliver: true, payloadStatus: "failed" };
+    }
+    return null;
+  }
+  if (normalized === "cancelled" || normalized === "paused_quota") {
+    return allowedEvents.includes("failed") ? { deliver: true, payloadStatus: "failed" } : null;
+  }
+  // failed and other error states
+  return allowedEvents.includes("failed") ? { deliver: true, payloadStatus: "failed" } : null;
+}
+
+/**
  * Delivers webhook with retries. NEVER throws or blocks caller.
  */
 export async function deliverWebhookWithRetry(
@@ -169,7 +208,7 @@ export async function deliverWebhookWithRetry(
 export async function triggerTaskWebhook(
   rootDir: string,
   taskId: string,
-  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota" | "suspected_stalled" | string,
+  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota" | "suspected_stalled" | "timeout" | "overdue" | "stuck" | string,
   sessionId?: string,
   elapsedMs?: number
 ): Promise<void> {
@@ -180,10 +219,11 @@ export async function triggerTaskWebhook(
       return;
     }
 
-    // Determine matching event
-    const status = terminalStatus === "completed" ? "completed" : terminalStatus === "suspected_stalled" ? "stalled" : "failed";
-    // Stall alerts fire by default (unless the caller restricted events and left "stalled" out).
-    const allowedEvents = config.events || ["completed", "failed", "stalled"];
+    const allowedEvents = config.events || ["completed", "failed"];
+    const resolved = resolveWebhookDelivery(terminalStatus, allowedEvents);
+    if (!resolved) {
+      return;
+    }
 
     // Check if PR URL exists in outputs
     const outPath = path.join(rootDir, "logs", `${taskId}.out`);
@@ -201,10 +241,9 @@ export async function triggerTaskWebhook(
       } catch {}
     }
 
-    const isPrEvent = !!prUrl && allowedEvents.includes("pr_opened");
-    const isStatusEvent = allowedEvents.includes(status);
+    const isPrEvent = !!prUrl && allowedEvents.includes("pr_opened") && resolved.payloadStatus === "completed";
 
-    if (!isStatusEvent && !isPrEvent) {
+    if (!isPrEvent && !resolved.deliver) {
       return;
     }
 
@@ -217,7 +256,7 @@ export async function triggerTaskWebhook(
     const payload: WebhookPayload = {
       taskId,
       session_id: sessionId,
-      status: (isPrEvent && status === "completed" ? "pr_opened" : status) as any,
+      status: isPrEvent ? "pr_opened" : resolved.payloadStatus,
       pr_url: prUrl,
       elapsed_ms: elapsedMs,
       last_log_snippet: snippet ? snippet.slice(0, 200) : undefined,

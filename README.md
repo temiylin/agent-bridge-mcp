@@ -251,7 +251,7 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `create_directory` | Filesystem | Create directory or nested directory structure | Credential blacklist; recursive auto-creation; idempotency |
 | `get_file_info` | Filesystem | Query file/directory metadata, sizes, and permissions | Path traversal check; credential blacklist |
 | `list_models` | AI Models | Discover available models, active defaults, & reasoning levels | Queries local Codex cache and Antigravity models safely |
-| `send_task` | Agent Dispatch | Dispatch task with model, reasoning effort, and session continuity | Supports `continue_session` and `session_id` for multi-turn pair programming |
+| `send_task` | Agent Dispatch | Dispatch task with model, reasoning effort, and session continuity | Supports `continue_session` and `session_id` for multi-turn pair programming; see **Task timeouts** below |
 | `read_result` | Agent Dispatch | Read Markdown result file for a completed task | Path traversal check; non-blocking pending status |
 | `read_result_page` | Agent Dispatch | Chunked paging reader for oversized result documents | Offset & length limits to prevent context overflow |
 | `get_task_status` | Lifecycle | Check task lifecycle state (`queued`, `running`, `completed`) | Metadata only; suppresses prompt/result content |
@@ -493,8 +493,21 @@ When an agent (e.g. Antigravity / `agy`) encounters an API quota, rate limit, or
 
 Because conversational history in Antigravity lives locally on the machine rather than in the cloud account, switching accounts (e.g. in Cockpit Tools) automatically restores access to the local conversation history. Calling `resume_after_account_switch(taskId | session_id)` re-dispatches the task using `continue_session: true` with the identical `session_id`, continuing the existing session rather than starting a new conversation. Note that `auto_resume_on_account_ready` is optional and depends on local Cockpit daemon availability; callers can always rely directly on `resume_after_account_switch`.
 
+### Task timeouts (soft overdue vs hard kill)
+
+`send_task` exposes two different timeout mechanisms:
+
+| Parameter | Behavior |
+|-----------|----------|
+| `notify.timeout_seconds` (soft) | **Alert only.** After this many seconds without completion, the worker sends a single **overdue** alert (desktop notification when enabled, optional `callback_url` POST with `status: "overdue"`, and `on_complete` webhook when `events` includes `"overdue"`). The agent process **keeps running**; the caller decides whether to cancel or wait. |
+| `timeout_seconds` (hard) | **Kill.** After this many seconds, the worker sends SIGTERM/SIGKILL to the agent process and marks the task as a hard timeout. `callback_url` uses `status: "timeout"`. `on_complete` sends webhook `status: "timeout"` when subscribed to the `"timeout"` event, otherwise falls back to `"failed"` when subscribed to `"failed"`. |
+
+If `timeout_seconds` is **omitted**, there is **no shorter implicit hard kill**: the worker applies a **6 hour safety cap** (or `AGENT_BRIDGE_TIMEOUT_MS` when set higher). Soft overdue settings must **not** be treated as a hard kill (legacy task files that only had `**Timeout Seconds**` in the header are interpreted as soft overdue).
+
+`on_complete.events` supports `completed`, `failed`, `pr_opened`, `stalled`, `timeout`, `stuck`, and `overdue` (default: `["completed","failed"]`).
+
 ### Opt-In Per-Task Completion Webhooks
-> **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` `["completed","failed","pr_opened"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
+> **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` such as `["completed","failed","timeout","overdue"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
 
 ### Read-only queries in Gemini
 
