@@ -49,7 +49,12 @@
     "test:round2": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-round2-test -- tsx test/round2-test.ts",
     "test:agent-admin": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-admin-test -- tsx test/agent-admin-test.ts",
     "test:e2e-codex": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex.ts",
-    "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts"
+    "test:e2e-codex-write": "node scripts/run-env.mjs AGENT_BRIDGE_NOTIFY=0 -- tsx test/e2e-codex-write.ts",
+    "test:requirements": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-requirements-test -- tsx test/requirements-test.ts",
+    "test:queue": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-queue-test -- tsx test/queue-test.ts",
+    "test:recent-tasks": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-recent-tasks-test -- tsx test/recent-tasks-test.ts",
+    "test:webhook": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-webhook-test -- tsx test/webhook-test.ts",
+    "test:resume-quota": "node scripts/run-env.mjs AGENT_BRIDGE_ROOT=/tmp/agent-bridge-resume-quota-test -- tsx test/resume-quota-test.ts"
   },
   "keywords": [
     "mcp",

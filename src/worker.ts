@@ -10,6 +10,9 @@ import { loadAgents, AgentRegistry, AgentConfig, agentSupportsEffort } from "./a
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
+import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
+import { triggerTaskWebhook } from "./webhook.js";
+import { isQuotaExhaustedError, stashQuotaTask } from "./session-quota.js";
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
@@ -934,17 +937,14 @@ async function executeTaskFile(
 
   const finishedAt = new Date().toISOString();
   let status = "completed";
-  let state: "completed" | "failed" | "cancelled" = "completed";
+  let state: "completed" | "failed" | "cancelled" | "paused_quota" = "completed";
   let reason: string | undefined = undefined;
 
   // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
+  // Quota exhaustion takes precedence over agy early-exit fail-fast so sessions can be resumed after account switch.
   const isAgy = command.includes("agy") || agentName === "agy";
   const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
-  if (isAgy && exitCode !== 0 && runDurationMs <= 30000) {
-    status = "failed";
-    state = "failed";
-    reason = (stderrData || stdoutData || "agy exited with error within 30s").trim();
-  } else if (isCancelled) {
+  if (isCancelled) {
     status = "cancelled (cancelled by request)";
     state = "cancelled";
     reason = "cancelled by request";
@@ -952,6 +952,29 @@ async function executeTaskFile(
     status = "failed (timeout)";
     state = "failed";
     reason = "timeout";
+  } else if (exitCode !== 0 && isQuotaExhaustedError(exitCode, stdoutData, stderrData)) {
+    status = "paused_quota";
+    state = "paused_quota";
+    reason = "quota or rate limit exhausted";
+    try {
+      const extractedEarly = extractSessionIdFromOutput(stdoutData);
+      const earlySessionId = extractedEarly || targetSessionToResume;
+      stashQuotaTask(currentRoot, {
+        taskId,
+        session_id: earlySessionId || sessionId,
+        agent: agentName,
+        model,
+        reasoningEffort,
+        prompt,
+        errorSnippet: (stderrData || stdoutData).slice(-300),
+        pausedAt: finishedAt,
+      });
+      logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
+    } catch {}
+  } else if (isAgy && exitCode !== 0 && runDurationMs <= 30000) {
+    status = "failed";
+    state = "failed";
+    reason = (stderrData || stdoutData || "agy exited with error within 30s").trim();
   } else if (exitCode !== 0) {
     status = "failed";
     state = "failed";
@@ -1173,6 +1196,21 @@ async function executeTaskFile(
     }
   }
 
+  // Hook auto-queue dispatcher on task completion/failure
+  try {
+    onTaskFinished(currentRoot, taskId, state, finalSessionId || sessionId, reason);
+  } catch (queueErr: any) {
+    logWorker("WARN", `Queue dispatch hook error on task ${taskId}: ${queueErr?.message || String(queueErr)}`);
+  }
+
+  // Trigger opt-in per-task completion webhook (NEVER blocks queue advance)
+  try {
+    const elapsedMs = startedAt && finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : undefined;
+    triggerTaskWebhook(currentRoot, taskId, state, finalSessionId || sessionId, elapsedMs).catch(() => {});
+  } catch (webhookErr: any) {
+    logWorker("WARN", `Webhook trigger error on task ${taskId}: ${webhookErr?.message || String(webhookErr)}`);
+  }
+
   return true;
 }
 
@@ -1253,6 +1291,13 @@ export class WorkerService {
       if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
       fs.writeFileSync(pidPath, String(process.pid), "utf8");
     } catch {}
+
+    // Reconcile queues on worker startup (dispatch items whose triggers already finished)
+    try {
+      reconcileQueues(this.root);
+    } catch (reconcileErr: any) {
+      logWorker("WARN", `Queue reconcile error on startup: ${reconcileErr?.message || String(reconcileErr)}`);
+    }
 
     while (this.isRunning && !this.isShuttingDown) {
       await this.scanOnce();

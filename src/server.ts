@@ -22,6 +22,12 @@ import { registerGitHubPrTools } from "./github-pr.js";
 import { registerNotificationTools } from "./notification-tools.js";
 import { registerSelfCheckTool } from "./self-check-tool.js";
 import { registerBridgeRound2Tools } from "./round2-tools.js";
+import { registerRequirementsTools } from "./requirements-tools.js";
+import { registerQueueTools } from "./queue-tools.js";
+import { registerRecentTasksTool } from "./recent-tasks.js";
+import { registerWebhookTools } from "./webhook-tools.js";
+import { registerAccountResumeTools } from "./account-resume-tools.js";
+import { setTaskWebhook, WebhookEvent } from "./webhook.js";
 import { resolveTaskAgent } from "./routing.js";
 import { resolveProject } from "./project-router.js";
 
@@ -124,8 +130,17 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         ])
         .optional()
         .describe("任务成功后自动触发的后续任务链 (Task chains)"),
+      on_complete: z
+        .object({
+          url: z.string().describe("Destination webhook URL (must be http/https)"),
+          headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
+          events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
+          secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
+        })
+        .optional()
+        .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -321,6 +336,21 @@ ${prompt}
           });
         } catch {}
 
+        // If on_complete is provided, save opt-in task webhook
+        if (on_complete && on_complete.url) {
+          try {
+            setTaskWebhook(rootDir, taskId, {
+              url: on_complete.url,
+              headers: on_complete.headers,
+              events: on_complete.events as WebhookEvent[],
+              secret: on_complete.secret,
+            });
+            logger.info(`send_task: opt-in webhook configured for taskId=${taskId} to url=${on_complete.url}`);
+          } catch (whErr: any) {
+            logger.warn(`send_task: failed to set opt-in webhook: ${whErr?.message || String(whErr)}`);
+          }
+        }
+
         let metaDetails = "";
         if (projectResolution.project?.name) metaDetails += `\nproject: ${projectResolution.project.name}`;
         if (projectResolution.channelId) metaDetails += `\nslack_channel: ${projectResolution.channelId}`;
@@ -510,6 +540,11 @@ ${prompt}
   registerNotificationTools(server, rootDir, logger);
   registerSelfCheckTool(server, rootDir, logger);
   registerBridgeRound2Tools(server, rootDir, logger);
+  registerRequirementsTools(server, rootDir, logger);
+  registerQueueTools(server, rootDir, logger);
+  registerRecentTasksTool(server, rootDir, logger);
+  registerWebhookTools(server, rootDir, logger);
+  registerAccountResumeTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }
