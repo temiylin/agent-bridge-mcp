@@ -41,7 +41,9 @@ import {
   getRunningTasksPerProfile,
   syncProfileAuthFromCockpit,
   detectProfileLoginStatus,
+  removePoolProfile,
 } from "./account-pool.js";
+import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
 
 export interface HttpServerOptions {
@@ -540,6 +542,8 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
                 profiles,
                 cockpitAccounts,
                 runningTasks,
+                accounts: queryAccountOverview(defaultInstance.rootDir, cockpitAccounts),
+                custom_pool_enabled: isCustomPoolEnabled(defaultInstance.rootDir),
               })
             );
           } catch (err: any) {
@@ -620,8 +624,38 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
               return;
             }
 
+            if (action === "remove") {
+              const { alias, delete_home } = body;
+              if (!alias || typeof alias !== "string") {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "alias is required" }));
+                return;
+              }
+              const result = removePoolProfile(defaultInstance.rootDir, alias.trim(), { deleteHome: delete_home === true });
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "set_custom_enabled") {
+              const result = setCustomPoolEnabled(defaultInstance.rootDir, body?.enabled !== false);
+              res.statusCode = 200;
+              res.end(JSON.stringify(result));
+              return;
+            }
+
+            if (action === "resume_email") {
+              const { email } = body;
+              resumeEmail(defaultInstance.rootDir, String(email || ""));
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true }));
+              return;
+            }
+
             if (action === "resume") {
               const { alias } = body;
+              const prof = loadPoolConfig(defaultInstance.rootDir).find((p) => p.alias === alias);
+              if (prof?.email) resumeEmail(defaultInstance.rootDir, prof.email);
               const result = resumePoolProfile(defaultInstance.rootDir, alias);
               res.statusCode = result.success ? 200 : 400;
               res.end(JSON.stringify(result));

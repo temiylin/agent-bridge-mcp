@@ -852,6 +852,41 @@ export function renderDashboardHtml(): string {
 
     <!-- Tab: Account Pool & Cockpit -->
     <div id="tab-pool" class="tab-pane">
+      <!-- Section 0: Dual pool overview (one row per account/email) -->
+      <div class="section-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+          <div>
+            <div class="section-title">🧮 账号总览（按邮箱，两池共享额度/暂停/占用）</div>
+            <p class="section-desc" style="margin-bottom:0">
+              <b>默认池</b>：机器默认 HOME + Cockpit 当前账号，额度不足时经 Cockpit 自动切号。<b>自定义池</b>：你添加的独立 Profile。
+              派发顺序：自定义池有可用 Profile 先用；全部暂停/忙/无额度时回退默认池（不排队）；两池都不可用才排队。
+              同一邮箱同一时刻只跑一个任务；只配置未运行的 Profile 不会阻止默认池切到该账号。
+            </p>
+          </div>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="custom-pool-toggle" onchange="toggleCustomPool(this.checked)">
+            <span id="custom-pool-toggle-label">启用/停用自定义池</span>
+          </label>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>邮箱</th>
+                <th style="width:200px;">所在池</th>
+                <th style="width:110px;">共享额度</th>
+                <th style="width:200px;">暂停</th>
+                <th style="width:200px;">占用</th>
+                <th style="width:100px; text-align:right;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="pool-accounts-tbody">
+              <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Section 1: Cockpit Quota & Accounts -->
       <div class="section-card">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
@@ -889,7 +924,7 @@ export function renderDashboardHtml(): string {
           <div>
             <div class="section-title">👥 agy 多账号并发隔离 Profile 池 (agy-pool.json)</div>
             <p class="section-desc" style="margin-bottom:0">
-              每个 Profile 拥有独立的 <code>$HOME</code> 运行空间。初始化时从 Cockpit 已登录会话同步 agy 凭证；未登录的 Profile 不会被派发任务。
+              每个 Profile 拥有独立的 <code>$HOME</code> 运行空间。初始化时从 Cockpit 已登录会话同步 agy 凭证；未登录 / 需重新登录的 Profile 不会被派发任务。「⏸ 暂停」只停止向该 Profile 派发，不影响默认池使用同一账号；所有 Profile 都暂停或忙时任务回退默认池。
             </p>
           </div>
           <div style="display:flex; gap:10px;">
@@ -1596,6 +1631,34 @@ export function renderDashboardHtml(): string {
           }
         }
 
+        // 0. Account overview + custom pool toggle
+        const toggle = document.getElementById("custom-pool-toggle");
+        if (toggle) toggle.checked = data.custom_pool_enabled !== false;
+        const toggleLabel = document.getElementById("custom-pool-toggle-label");
+        if (toggleLabel) toggleLabel.textContent = data.custom_pool_enabled !== false ? "自定义池：已启用" : "自定义池：已停用（全部走默认池）";
+        const accTbody = document.getElementById("pool-accounts-tbody");
+        if (accTbody) {
+          const accs = data.accounts || [];
+          accTbody.innerHTML = accs.length === 0
+            ? '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">暂无账号</td></tr>'
+            : accs.map(function(a) {
+                const pools = (a.pools || []).map(function(pl) {
+                  return pl === "default" ? '<span class="badge badge-completed">默认池</span>' : '<span class="badge badge-running">自定义池' + (a.aliases && a.aliases.length ? ' (' + escapeHtml(a.aliases.join(",")) + ')' : '') + '</span>';
+                }).join(" ") + (a.cockpit_current ? ' <span style="font-size:11px; color:var(--green);">★当前</span>' : '');
+                const quota = a.quota_remaining === "unknown" ? "unknown" : Math.round(parseFloat(a.quota_remaining) * 100) + "%";
+                const paused = a.paused_until && a.paused_until !== "none"
+                  ? '<span class="badge badge-paused">至 ' + new Date(a.paused_until).toLocaleString() + '</span>' + (a.pause_reason ? '<div style="font-size:11px; color:var(--text-muted);">' + escapeHtml(a.pause_reason) + '</div>' : '')
+                  : '<span style="color:var(--text-muted); font-size:12px;">无</span>';
+                const busy = a.busy_task_id && a.busy_task_id !== "idle"
+                  ? '<span class="badge badge-running">● ' + escapeHtml(a.busy_task_id) + '</span>'
+                  : '<span style="color:var(--text-muted); font-size:12px;">空闲</span>';
+                const act = a.paused_until && a.paused_until !== "none"
+                  ? '<button class="btn-sm" style="color:var(--green);" onclick="resumeAccountEmail(\\'' + escapeHtml(a.email) + '\\')">▶ 解除暂停</button>'
+                  : '';
+                return '<tr><td><strong>' + escapeHtml(a.email) + '</strong></td><td>' + pools + '</td><td>' + quota + '</td><td>' + paused + '</td><td>' + busy + '</td><td style="text-align:right;">' + act + '</td></tr>';
+              }).join("");
+        }
+
         // 2. Render Profiles
         const profiles = data.profiles || [];
         const poolStatus = data.pool || [];
@@ -1619,7 +1682,7 @@ export function renderDashboardHtml(): string {
               const loginReason = stat && stat.login_reason ? String(stat.login_reason) : "";
               let loginBadge = '<span class="badge badge-paused">' + escapeHtml(loginLabel) + '</span>';
               if (loginStatus === "logged_in") loginBadge = '<span class="badge badge-completed">' + escapeHtml(loginLabel) + '</span>';
-              else if (loginStatus === "login_failed") loginBadge = '<span class="badge" style="background:rgba(239,68,68,0.15); color:var(--red);">' + escapeHtml(loginLabel) + '</span>';
+              else if (loginStatus === "login_failed" || loginStatus === "needs_relogin") loginBadge = '<span class="badge" style="background:rgba(239,68,68,0.15); color:var(--red);">' + escapeHtml(loginLabel) + '</span>';
               else if (loginStatus === "awaiting_code") loginBadge = '<span class="badge badge-running">' + escapeHtml(loginLabel) + '</span>';
               if (loginReason) {
                 loginBadge += '<div style="font-size:11px; color:var(--text-muted); margin-top:4px; max-width:160px; white-space:normal;">' + escapeHtml(loginReason) + '</div>';
@@ -1633,6 +1696,7 @@ export function renderDashboardHtml(): string {
                   '<button class="btn-sm" onclick="bindEmailProfile(\\'' + p.alias + '\\')">🔗 绑定邮箱</button>' +
                   '<button class="btn-sm" style="color:var(--accent);" onclick="syncProfileAuth(\\'' + p.alias + '\\')">⟳ 同步登录</button>' +
                   '<button class="btn-sm" onclick="showLoginCmd(\\'' + p.home + '\\', \\'' + p.alias + '\\')">🔑 登录</button>' +
+                  '<button class="btn-sm" style="color:var(--red);" onclick="removeProfile(\\'' + p.alias + '\\')">🗑 删除</button>' +
                 '</div>';
 
               return '<tr>' +
@@ -1653,6 +1717,30 @@ export function renderDashboardHtml(): string {
         if (cockpitTbody) cockpitTbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
         if (profilesTbody) profilesTbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
       }
+    }
+
+    async function toggleCustomPool(enabled) {
+      try {
+        await fetch("/api/pool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "set_custom_enabled", enabled: !!enabled }) });
+      } catch (e) { alert("切换失败: " + e.message); }
+      loadPool();
+    }
+
+    async function resumeAccountEmail(email) {
+      try {
+        await fetch("/api/pool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "resume_email", email: email }) });
+      } catch (e) { alert("操作失败: " + e.message); }
+      loadPool();
+    }
+
+    async function removeProfile(alias) {
+      if (!confirm("确认删除 Profile「" + alias + "」？（同时删除其独立 HOME 目录）")) return;
+      try {
+        const res = await fetch("/api/pool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove", alias: alias, delete_home: true }) });
+        const data = await res.json();
+        if (!data.success) alert("删除失败: " + (data.error || "未知错误"));
+      } catch (e) { alert("删除失败: " + e.message); }
+      loadPool();
     }
 
     async function initNewProfileModal() {

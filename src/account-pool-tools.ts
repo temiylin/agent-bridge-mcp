@@ -11,7 +11,9 @@ import {
   syncProfileAuthFromCockpit,
   detectProfileLoginStatus,
   loadPoolConfig,
+  removePoolProfile,
 } from "./account-pool.js";
+import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
 
 export function registerAccountPoolTools(
   server: McpServer,
@@ -31,12 +33,16 @@ export function registerAccountPoolTools(
       audit(rootDir, { tool: "pool_status" });
       try {
         const statuses = queryPoolStatus(rootDir);
+        const overview = queryAccountOverview(rootDir);
+        const header = `custom_pool_enabled: ${isCustomPoolEnabled(rootDir)}`;
+        const accountLines = overview.map((a) => `${a.email} pools=${a.pools.join("+")}${a.aliases.length ? "(" + a.aliases.join(",") + ")" : ""}${a.cockpit_current ? " ★current" : ""} | quota: ${a.quota_remaining} | paused_until: ${a.paused_until}${a.pause_reason ? "(" + a.pause_reason + ")" : ""} | busy: ${a.busy_task_id}`);
+        const accountsText = `${header}\n[accounts — shared across pools]\n${accountLines.join("\n") || "(none)"}`;
         if (statuses.length === 0) {
           return {
             content: [
               {
                 type: "text",
-                text: "No account profiles in pool. Operating in default single-account mode.",
+                text: `No custom profiles. Default pool only (default HOME + Cockpit rotation).\n${accountsText}`,
               },
             ],
           };
@@ -52,7 +58,7 @@ export function registerAccountPoolTools(
           content: [
             {
               type: "text",
-              text: lines.join("\n"),
+              text: `${accountsText}\n[custom profiles]\n${lines.join("\n")}`,
             },
           ],
         };
@@ -212,6 +218,8 @@ export function registerAccountPoolTools(
       audit(rootDir, { tool: "pool_resume" });
       try {
         const res = resumePoolProfile(rootDir, alias);
+        const prof = loadPoolConfig(rootDir).find((p) => p.alias === alias);
+        if (res.success && prof?.email) resumeEmail(rootDir, prof.email);
         if (!res.success) {
           return {
             isError: true,
@@ -313,4 +321,32 @@ export function registerAccountPoolTools(
     }
   );
 
+
+  server.tool(
+    "pool_remove_profile",
+    "Remove a custom-pool agy Profile by alias. Refuses while the profile is running a task. delete_home also deletes its HOME dir under agy-profiles/.",
+    {
+      alias: z.string().describe("Profile alias to remove"),
+      delete_home: z.boolean().optional().describe("Also delete the profile HOME directory (default false)"),
+    },
+    { readOnlyHint: false, destructiveHint: true },
+    async ({ alias, delete_home }) => {
+      audit(rootDir, { tool: "pool_remove_profile" });
+      const res = removePoolProfile(rootDir, alias, { deleteHome: !!delete_home });
+      if (!res.success) return { isError: true, content: [{ type: "text", text: `Error: ${res.error}` }] };
+      return { content: [{ type: "text", text: `Profile "${alias}" removed${res.homeDeleted ? " (HOME deleted)" : ""}.` }] };
+    }
+  );
+
+  server.tool(
+    "pool_set_custom_enabled",
+    "Enable or disable the custom pool (isolated Profiles) as a whole. When disabled, all agy tasks use the default pool (default HOME + Cockpit rotation).",
+    { enabled: z.boolean().describe("true = use custom Profiles first; false = default pool only") },
+    { readOnlyHint: false, destructiveHint: false },
+    async ({ enabled }) => {
+      audit(rootDir, { tool: "pool_set_custom_enabled" });
+      const res = setCustomPoolEnabled(rootDir, enabled);
+      return { content: [{ type: "text", text: `custom_pool_enabled = ${res.custom_pool_enabled}` }] };
+    }
+  );
 }

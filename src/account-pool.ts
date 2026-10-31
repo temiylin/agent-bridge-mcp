@@ -7,7 +7,10 @@ import { listAccountsFromCockpitStorage, syncCockpitAuthIntoProfileHome } from "
 import type { BridgeLogger } from "./logger.js";
 import { getSessionAccount, recordSessionAccount } from "./sessions.js";
 
-export type ProfileLoginStatus = "logged_out" | "awaiting_code" | "logged_in" | "login_failed";
+export type ProfileLoginStatus = "logged_out" | "awaiting_code" | "logged_in" | "login_failed" | "needs_relogin";
+
+/** Prefix stored in login_error when agy reported an invalid/expired login during a task. */
+export const NEEDS_RELOGIN_PREFIX = "needs_relogin:";
 
 export interface AgyPoolProfile {
   alias: string;
@@ -155,6 +158,7 @@ const LOGIN_LABELS: Record<ProfileLoginStatus, string> = {
   awaiting_code: "等待授权码",
   logged_in: "已登录",
   login_failed: "登录失败",
+  needs_relogin: "需重新登录",
 };
 
 function hasUsableAuthFiles(profileHome: string): boolean {
@@ -189,6 +193,13 @@ export function detectProfileLoginStatus(
 ): { status: ProfileLoginStatus; label: string; reason?: string } {
   const home = typeof profile === "string" ? profile : profile.home;
   const loginError = typeof profile === "string" ? undefined : profile.login_error;
+  if (loginError && String(loginError).startsWith(NEEDS_RELOGIN_PREFIX)) {
+    return {
+      status: "needs_relogin",
+      label: LOGIN_LABELS.needs_relogin,
+      reason: String(loginError).slice(NEEDS_RELOGIN_PREFIX.length).trim() || undefined,
+    };
+  }
   if (hasUsableAuthFiles(home)) {
     return { status: "logged_in", label: LOGIN_LABELS.logged_in };
   }
@@ -500,6 +511,12 @@ export function selectPoolAccount(
     session_id?: string;
     requestedAccount?: string;
     now?: number;
+    /** Shared per-email quota (from Cockpit); avoids re-reading storage. */
+    cockpitQuota?: Map<string, number>;
+    /** Shared cross-pool check: email paused / busy / out of quota. */
+    isEmailBlocked?: (email: string) => boolean;
+    /** Shared cross-pool check: email has a running task (any pool). */
+    isEmailBusy?: (email: string) => boolean;
   }
 ): { alias: string; home: string; profile: AgyPoolProfile } | undefined {
   const profiles = loadPoolConfig(rootDir);
@@ -510,15 +527,22 @@ export function selectPoolAccount(
 
   const now = options?.now ?? Date.now();
   const runningMap = getRunningTasksPerProfile(rootDir);
+  const blocked = (p: AgyPoolProfile) => !!(p.email && options?.isEmailBlocked?.(p.email));
+  const busyElsewhere = (p: AgyPoolProfile) => !!(p.email && options?.isEmailBusy?.(p.email));
+  const stickyOk = (p: AgyPoolProfile) =>
+    p.enabled && !isProfilePaused(p, now) && isProfileLoggedIn(p) && !blocked(p);
+  const usable = (p: AgyPoolProfile) =>
+    stickyOk(p) && !busyElsewhere(p) &&
+    (runningMap.get(p.alias) || []).length < (p.max_concurrent || 1);
 
   // 1. Explicit requested account
   const req = options?.requestedAccount?.trim();
   if (req && req !== "auto") {
     const matched = profiles.find((p) => p.alias === req);
-    if (matched && isProfileLoggedIn(matched)) {
+    if (matched && isProfileLoggedIn(matched) && !blocked(matched)) {
       return { alias: matched.alias, home: matched.home, profile: matched };
     }
-    if (matched && !isProfileLoggedIn(matched)) {
+    if (matched) {
       return undefined;
     }
   }
@@ -528,7 +552,9 @@ export function selectPoolAccount(
     const boundAlias = getSessionAccount(rootDir, options.session_id);
     if (boundAlias) {
       const boundProfile = profiles.find((p) => p.alias === boundAlias);
-      if (boundProfile && isProfileLoggedIn(boundProfile)) {
+      // Sticky sessions keep their profile even if busy (conversation lives in that HOME);
+      // the per-email lock makes the follow-up wait instead of running concurrently.
+      if (boundProfile && stickyOk(boundProfile)) {
         return { alias: boundProfile.alias, home: boundProfile.home, profile: boundProfile };
       }
     }
@@ -536,14 +562,7 @@ export function selectPoolAccount(
 
   // 3. Auto selection
   // Filter eligible profiles
-  const eligible = profiles.filter((p) => {
-    if (!p.enabled) return false;
-    if (isProfilePaused(p, now)) return false;
-    if (!isProfileLoggedIn(p)) return false;
-    const runningCount = (runningMap.get(p.alias) || []).length;
-    if (runningCount >= (p.max_concurrent || 1)) return false;
-    return true;
-  });
+  const eligible = profiles.filter(usable);
 
   if (eligible.length === 0) {
     // All busy or paused; return undefined or first enabled for queueing
@@ -570,15 +589,17 @@ export function selectPoolAccount(
   const poolCandidates = conflictFree.length > 0 ? conflictFree : eligible;
 
   // Retrieve Cockpit quotas for sorting by remaining quota
-  let cockpitMap = new Map<string, number>();
-  try {
-    const cockpitAccounts = listAccountsFromCockpitStorage("antigravity");
-    for (const ca of cockpitAccounts) {
-      if (ca.email) {
-        cockpitMap.set(ca.email.toLowerCase(), ca.remainingFractionSummary ?? 1.0);
+  let cockpitMap = options?.cockpitQuota ?? new Map<string, number>();
+  if (!options?.cockpitQuota) {
+    try {
+      const cockpitAccounts = listAccountsFromCockpitStorage("antigravity");
+      for (const ca of cockpitAccounts) {
+        if (ca.email) {
+          cockpitMap.set(ca.email.toLowerCase(), ca.remainingFractionSummary ?? 1.0);
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   // Sort candidates:
   // 1. Cockpit quota remaining (higher is better)
@@ -629,6 +650,44 @@ export function recordTaskStartUnderProfile(
     recordSessionAccount(rootDir, sessionId, alias);
   }
   recordSessionAccount(rootDir, taskId, alias);
+}
+
+/** Marks a profile as needing re-login (agy reported invalid/expired credentials). Not a quota pause. */
+export function markProfileNeedsRelogin(rootDir: string, alias: string, detail?: string): void {
+  recordProfileLoginResult(rootDir, alias, {
+    success: false,
+    error: `${NEEDS_RELOGIN_PREFIX} ${detail || "agy login invalid"}`.slice(0, 300),
+  });
+}
+
+/**
+ * Removes a Profile from the custom pool. Refuses while it has a running task.
+ * Optionally deletes its HOME dir (only if it lives under agy-profiles/).
+ */
+export function removePoolProfile(
+  rootDir: string,
+  alias: string,
+  options?: { deleteHome?: boolean }
+): { success: boolean; removed?: AgyPoolProfile; homeDeleted?: boolean; error?: string } {
+  const profiles = loadPoolConfig(rootDir);
+  const idx = profiles.findIndex((p) => p.alias === alias);
+  if (idx === -1) return { success: false, error: `Profile "${alias}" not found in account pool.` };
+  const running = getRunningTasksPerProfile(rootDir).get(alias) || [];
+  if (running.length > 0) {
+    return { success: false, error: `Profile "${alias}" is running task(s) ${running.join(",")}; cancel or wait before removing.` };
+  }
+  const [removed] = profiles.splice(idx, 1);
+  savePoolConfig(rootDir, profiles);
+  let homeDeleted = false;
+  if (options?.deleteHome) {
+    const base = path.resolve(getProfilesBaseDir(rootDir));
+    const home = path.resolve(removed.home);
+    if (home.startsWith(base + path.sep) && fs.existsSync(home)) {
+      fs.rmSync(home, { recursive: true, force: true });
+      homeDeleted = true;
+    }
+  }
+  return { success: true, removed, homeDeleted };
 }
 
 /**
