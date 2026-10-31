@@ -235,6 +235,21 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `worker_alive_summary`| Diagnostics | Probe if the local background worker process is running | Harmless POSIX signal 0 probe; no process termination |
 | `list_tasks_summary` | Diagnostics | Summary list of recent task executions and outcomes | Metadata whitelist; strictly bounds output count |
 | `agent_registry_summary`| Diagnostics | List available agents configured in `agents.json` | Whitelist only; suppresses command paths & args |
+| `save_requirement` | Requirements Backlog | Stash a requirement draft for later triage and dispatch | Generic caller-supplied project & topic/session_id; atomic persistence |
+| `list_requirements` | Requirements Backlog | Compact list of stored requirements (omits raw text) | Filter by project, topic, status (`draft`, `dispatched`, `merged`, `archived`) |
+| `get_requirement` | Requirements Backlog | Retrieve the full record of a specific requirement by ID | Full specification text, tags, metadata, and linked task ID |
+| `update_requirement` | Requirements Backlog | Update fields of an existing requirement draft | Edit title, raw_text, tags, topic, or status |
+| `merge_requirements` | Requirements Backlog | Merge multiple requirements into a new consolidated record | Source requirements marked `merged` with bidirectional pointers |
+| `archive_requirement` | Requirements Backlog | Mark requirement status as `archived` | Soft archive preservation |
+| `delete_requirement` | Requirements Backlog | Permanently delete a requirement record file | Strict ID whitelist & directory traversal protection |
+| `dispatch_requirement` | Requirements Backlog | Convert requirement into an agent task, reusing session_id | Optional `queue_if_busy: true` to enqueue if session is in-flight |
+| `enqueue_task` | Auto Task Queue | Sequence next task behind another task or within a session | Mode `auto` (runs on turn) or `notify` (marks ready); 1 task per session |
+| `list_queue` | Auto Task Queue | Compact list of queued items with prompt preview (<=80 chars) | Filter by session_id; shows position, status, and mode |
+| `reorder_queue` | Auto Task Queue | Reorder queue items by list of IDs or move item to position | Preserves 1-indexed contiguous positions |
+| `update_queue_item` | Auto Task Queue | Surgically update prompt, mode, or execution options of queued item | Safe in-place modification before execution |
+| `cancel_queue_item` | Auto Task Queue | Remove and cancel a queued task item | Immediate queue removal and position re-indexing |
+| `pause_queue` | Auto Task Queue | Pause automatic dispatching for a session's task queue | Manually hold dispatching; persists across restarts |
+| `resume_queue` | Auto Task Queue | Resume automatic dispatching for a session's task queue | Immediately enables next ready dispatch |
 
 ### Read-only queries in Gemini
 

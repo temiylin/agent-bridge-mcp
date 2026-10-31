@@ -10,6 +10,7 @@ import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
 import { writeStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
+import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -671,6 +672,14 @@ async function executeTaskFile(
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
   notify("agent-bridge", `Task ${taskId} ${status} [${agentName}]`);
+
+  // Hook auto-queue dispatcher on task completion/failure
+  try {
+    onTaskFinished(currentRoot, taskId, state, finalSessionId || sessionId, reason);
+  } catch (queueErr: any) {
+    logWorker("WARN", `Queue dispatch hook error on task ${taskId}: ${queueErr?.message || String(queueErr)}`);
+  }
+
   return true;
 }
 
@@ -751,6 +760,13 @@ export class WorkerService {
       if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
       fs.writeFileSync(pidPath, String(process.pid), "utf8");
     } catch {}
+
+    // Reconcile queues on worker startup (dispatch items whose triggers already finished)
+    try {
+      reconcileQueues(this.root);
+    } catch (reconcileErr: any) {
+      logWorker("WARN", `Queue reconcile error on startup: ${reconcileErr?.message || String(reconcileErr)}`);
+    }
 
     while (this.isRunning && !this.isShuttingDown) {
       await this.scanOnce();

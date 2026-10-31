@@ -102,6 +102,21 @@ async function runTests() {
     "pr_create",
     "pr_review",
     "pr_merge",
+    "save_requirement",
+    "list_requirements",
+    "get_requirement",
+    "update_requirement",
+    "merge_requirements",
+    "archive_requirement",
+    "delete_requirement",
+    "dispatch_requirement",
+    "enqueue_task",
+    "list_queue",
+    "reorder_queue",
+    "update_queue_item",
+    "cancel_queue_item",
+    "pause_queue",
+    "resume_queue",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
