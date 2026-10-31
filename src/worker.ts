@@ -13,12 +13,18 @@ import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
 import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
 import { triggerTaskWebhook } from "./webhook.js";
-import { isQuotaExhaustedError, stashQuotaTask } from "./session-quota.js";
+import { classifyAgentFailure, parseQuotaResetTime, stashQuotaTask } from "./session-quota.js";
 import {
-  selectPoolAccount,
   recordTaskStartUnderProfile,
   handlePoolQuotaPaused,
+  markProfileNeedsRelogin,
 } from "./account-pool.js";
+import {
+  acquireDualPoolAccount,
+  releaseSelection,
+  pauseEmail,
+  type AccountSelection,
+} from "./dual-pool.js";
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
@@ -412,6 +418,12 @@ export async function processTaskFile(
   }
 }
 
+function agentConfigCommandIsAgy(registry: AgentRegistry | null, agentName: string): boolean {
+  if (agentName === "agy") return true;
+  const cmd = registry?.[agentName]?.command || "";
+  return cmd.includes("agy");
+}
+
 async function executeTaskFile(
   taskFileName: string,
   taskId: string,
@@ -636,14 +648,50 @@ async function executeTaskFile(
   const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
   const activeSessionId = targetSessionToResume || sessionId;
 
-  // Resolve account pool profile (if pool configured)
-  const poolProfile = selectPoolAccount(currentRoot, {
-    session_id: activeSessionId,
-    requestedAccount: account,
-  });
+  // Resolve account across the dual pool (agy only): custom Profiles first, then the
+  // default pool (default HOME + Cockpit rotation). If nothing is available, wait (queued).
+  const isAgyTask = agentConfigCommandIsAgy(registry, agentName);
+  let accountSel: AccountSelection | undefined;
+  if (isAgyTask) {
+    const waitMaxMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_WAIT_MS || String(6 * 3600 * 1000), 10);
+    const waitPollMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_POLL_MS || "30000", 10);
+    const waitStart = Date.now();
+    let loggedWait = false;
+    for (;;) {
+      accountSel = await acquireDualPoolAccount(currentRoot, taskId, {
+        session_id: activeSessionId,
+        requestedAccount: account,
+        logger: logWorker,
+      });
+      if (accountSel.pool !== "none") break;
+      if (fs.existsSync(path.join(controlDir, `${taskId}.cancel`)) || Date.now() - waitStart > waitMaxMs) break;
+      if (!loggedWait) {
+        logWorker("WARN", `Task ${taskId} queued: no agy account available (${accountSel.reason}). Waiting...`);
+        writeStatus(currentRoot, taskId, { state: "queued", agent: agentName, model, startedAt, reason: `waiting for account: ${accountSel.reason}`, workerPid: process.pid });
+        loggedWait = true;
+      }
+      await new Promise((r) => setTimeout(r, waitPollMs));
+    }
+    if (accountSel.pool === "none") {
+      const reasonTxt = `no agy account available: ${accountSel.reason}`;
+      writeStatus(currentRoot, taskId, { state: "failed", agent: agentName, model, startedAt, finishedAt: new Date().toISOString(), exitCode: null, reason: reasonTxt });
+      saveProcessedTask(processedMap, taskId, new Date().toISOString());
+      logWorker("ERROR", `Task ${taskId}: ${reasonTxt}`);
+      return true;
+    }
+  }
+  const poolProfile = accountSel && accountSel.pool === "custom" ? accountSel : undefined;
+  const accountEmail = accountSel && accountSel.pool !== "none" ? accountSel.email : undefined;
+  const releaseAccount = () => releaseSelection(currentRoot, accountSel, taskId);
+  process.once("exit", releaseAccount);
 
   const effectiveHome = poolProfile?.home || process.env.HOME || os.homedir();
-  const effectiveAccountAlias = poolProfile?.alias || (account && account !== "auto" ? account : undefined);
+  const effectiveAccountAlias = poolProfile?.alias
+    || (accountSel?.pool === "default" && accountEmail ? `default:${accountEmail}` : undefined)
+    || (account && account !== "auto" ? account : undefined);
+  if (accountSel?.pool === "default") {
+    logWorker("INFO", `Task ${taskId} assigned to default pool (HOME ${effectiveHome}${accountEmail ? `, Cockpit account ${accountEmail}` : ", legacy"})`);
+  }
 
   if (poolProfile) {
     recordTaskStartUnderProfile(currentRoot, poolProfile.alias, taskId, activeSessionId);
@@ -1036,6 +1084,9 @@ async function executeTaskFile(
   // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
   // Quota exhaustion takes precedence over agy early-exit fail-fast so sessions can be resumed after account switch.
   const isAgy = command.includes("agy") || agentName === "agy";
+  const failureKind = exitCode !== 0 && !isCancelled && !isTimeout
+    ? classifyAgentFailure(exitCode, stdoutData, stderrData)
+    : "other";
   const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
   if (isCancelled) {
     status = "cancelled (cancelled by request)";
@@ -1045,7 +1096,16 @@ async function executeTaskFile(
     status = "failed (timeout)";
     state = "failed";
     reason = "timeout";
-  } else if (exitCode !== 0 && isQuotaExhaustedError(exitCode, stdoutData, stderrData)) {
+  } else if (exitCode !== 0 && failureKind === "login") {
+    status = "failed";
+    state = "failed";
+    reason = `agy login invalid (needs re-login); retryable after re-login`;
+    const detail = (stderrData || stdoutData).trim().split(/\r?\n/).filter(l => l.trim()).slice(-1).join(" ").slice(0, 200);
+    if (poolProfile) {
+      try { markProfileNeedsRelogin(currentRoot, poolProfile.alias, detail); } catch {}
+      logWorker("WARN", `Pool profile "${poolProfile.alias}" marked needs_relogin (not a quota pause).`);
+    }
+  } else if (exitCode !== 0 && failureKind === "quota") {
     status = "paused_quota";
     state = "paused_quota";
     reason = "quota or rate limit exhausted";
@@ -1063,9 +1123,14 @@ async function executeTaskFile(
         pausedAt: finishedAt,
       });
       logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
+      const resetAt = parseQuotaResetTime(stderrData + "\n" + stdoutData) || new Date(Date.now() + 5 * 3600 * 1000).toISOString();
       if (poolProfile) {
-        handlePoolQuotaPaused(currentRoot, poolProfile.alias);
-        logWorker("INFO", `Pool profile "${poolProfile.alias}" paused due to quota exhaustion.`);
+        handlePoolQuotaPaused(currentRoot, poolProfile.alias, resetAt);
+        logWorker("INFO", `Pool profile "${poolProfile.alias}" paused until ${resetAt} due to explicit quota evidence.`);
+      }
+      if (accountEmail) {
+        pauseEmail(currentRoot, accountEmail, resetAt, "quota");
+        logWorker("INFO", `Account ${accountEmail} paused (shared across pools) until ${resetAt}.`);
       }
     } catch {}
   } else if (exitCode !== 0 && runDurationMs <= 30000) {
@@ -1075,7 +1140,7 @@ async function executeTaskFile(
     const errText = (stderrData || stdoutData).trim();
     reason = errText
       ? `exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-8).join("\n").slice(-800)}`
-      : `${isAgy ? "agy" : agentName} exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s with no output`;
+      : `${isAgy ? "agy" : agentName} exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s with no output (not treated as quota; retryable)`;
   } else if (exitCode !== 0) {
     status = "failed";
     state = "failed";
@@ -1123,6 +1188,8 @@ async function executeTaskFile(
     ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
   });
 
+  releaseAccount();
+  process.removeListener("exit", releaseAccount);
   saveProcessedTask(processedMap, taskId, finishedAt);
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);

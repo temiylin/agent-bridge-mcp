@@ -21,6 +21,12 @@ import {
 } from "../src/account-pool.js";
 import { getSessionAccount, recordSessionAccount } from "../src/sessions.js";
 import { writeStatus } from "../src/status.js";
+import { removePoolProfile, markProfileNeedsRelogin } from "../src/account-pool.js";
+import {
+  selectDualPoolAccount, acquireDualPoolAccount, releaseSelection, pauseEmail, isEmailPaused,
+  queryAccountOverview, setCustomPoolEnabled, isCustomPoolEnabled, getEmailBusyTask,
+} from "../src/dual-pool.js";
+import { isQuotaExhaustedError, classifyAgentFailure, parseQuotaResetTime } from "../src/session-quota.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-account-pool-test";
 
@@ -237,6 +243,90 @@ async function runAccountPoolTests() {
   assert.equal(statusLines[0].login_status, "login_failed");
   assert.equal(statusLines[0].login_label, "登录失败");
   console.log("✓ Assertion passed: login_failed reason reported.");
+
+  // ===== Dual pool / quota-detection tests =====
+  console.log("[Test 16] exit 3 with empty log is NOT quota...");
+  assert.equal(isQuotaExhaustedError(3, "", ""), false);
+  assert.equal(isQuotaExhaustedError(129, "", ""), false);
+  assert.equal(classifyAgentFailure(3, "", ""), "other");
+  assert.equal(classifyAgentFailure(3, "", 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429}'), "quota");
+  assert.equal(classifyAgentFailure(1, "", "Error: UNAUTHENTICATED: invalid_grant"), "login");
+  const reset = parseQuotaResetTime("Resets in 68h38m30s.", 0);
+  assert.equal(reset, new Date((68 * 3600 + 38 * 60 + 30) * 1000).toISOString());
+  assert.equal(parseQuotaResetTime("no hint"), undefined);
+  console.log("✓ quota/login classification");
+
+  const D = path.join(TEST_ROOT, "dual");
+  fs.rmSync(D, { recursive: true, force: true });
+  fs.mkdirSync(D, { recursive: true });
+  const ck = (email: string, frac: number, current = false) => ({
+    accountId: "antigravity_" + email.split("@")[0], email, current, disabled: false, provider: "antigravity",
+    quotas: {}, remainingFractionSummary: frac,
+  });
+
+  console.log("[Test 17] no profiles => default pool (current Cockpit account, no switch)...");
+  const cockpit = [ck("a@x.com", 0, true), ck("b@x.com", 0), ck("c380@x.com", 1)];
+  let sel = selectDualPoolAccount(D, { cockpitAccounts: [ck("a@x.com", 0.5, true)], defaultHome: "/home/def" });
+  assert.equal(sel.pool, "default");
+  assert.equal((sel as any).needsSwitch, false);
+  console.log("[Test 18] default pool switches to idle 380 even though 380 is configured as a custom profile...");
+  const p380 = initPoolProfile(D, { alias: "c380", email: "c380@x.com" });
+  assert.equal(p380.success, true);
+  // profile not logged in => custom unusable, default should still pick 380 (idle, full quota)
+  sel = selectDualPoolAccount(D, { cockpitAccounts: cockpit, defaultHome: "/home/def" });
+  assert.equal(sel.pool, "default");
+  assert.equal((sel as any).email, "c380@x.com");
+  assert.equal((sel as any).needsSwitch, true);
+  console.log("[Test 19] custom profile preferred when available...");
+  plantLoggedInAuth(p380.profile!.home);
+  sel = selectDualPoolAccount(D, { cockpitAccounts: cockpit });
+  assert.equal(sel.pool, "custom");
+  console.log("[Test 20] busy email across pools: 380 running in custom => default skips it => queue...");
+  let switched = "";
+  const a1 = await acquireDualPoolAccount(D, "task_dual_1", { cockpitAccounts: cockpit, switchFn: async (o: any) => { switched = o.targetEmailOrAccount; return { success: true }; } });
+  assert.equal(a1.pool, "custom");
+  assert.ok(getEmailBusyTask(D, "c380@x.com"));
+  const a2 = await acquireDualPoolAccount(D, "task_dual_2", { cockpitAccounts: cockpit, switchFn: async () => ({ success: true }) });
+  assert.equal(a2.pool, "none", "a,b out of quota; 380 busy => queue");
+  releaseSelection(D, a1, "task_dual_1");
+  const a3 = await acquireDualPoolAccount(D, "task_dual_3", { cockpitAccounts: cockpit, switchFn: async () => ({ success: true }) });
+  assert.equal(a3.pool, "custom");
+  releaseSelection(D, a3, "task_dual_3");
+  console.log("[Test 21] custom pool toggle off => default pool used...");
+  setCustomPoolEnabled(D, false);
+  assert.equal(isCustomPoolEnabled(D), false);
+  const a4 = await acquireDualPoolAccount(D, "task_dual_4", { cockpitAccounts: cockpit, switchFn: async (o: any) => { switched = o.targetEmailOrAccount; return { success: true }; } });
+  assert.equal(a4.pool, "default");
+  assert.equal(switched, "antigravity_c380");
+  const a5 = await acquireDualPoolAccount(D, "task_dual_5", { cockpitAccounts: cockpit });
+  assert.equal(a5.pool, "none", "default HOME single-account: second default task waits");
+  releaseSelection(D, a4, "task_dual_4");
+  setCustomPoolEnabled(D, true);
+  console.log("[Test 22] paused custom profile => fallback to default (not queue)...");
+  pausePoolProfile(D, "c380", 3600);
+  sel = selectDualPoolAccount(D, { cockpitAccounts: cockpit });
+  assert.equal(sel.pool, "default");
+  resumePoolProfile(D, "c380");
+  console.log("[Test 23] shared email pause blocks both pools...");
+  pauseEmail(D, "c380@x.com", new Date(Date.now() + 3600_000).toISOString(), "quota");
+  assert.ok(isEmailPaused(D, "c380@x.com"));
+  sel = selectDualPoolAccount(D, { cockpitAccounts: cockpit });
+  assert.equal(sel.pool, "none");
+  const ov = queryAccountOverview(D, cockpit as any);
+  const r380 = ov.find((r) => r.email === "c380@x.com")!;
+  assert.deepEqual(r380.pools.sort(), ["custom", "default"]);
+  assert.notEqual(r380.paused_until, "none");
+  assert.equal(ov.length, 3, "one row per email");
+  console.log("[Test 24] needs_relogin is not quota and excludes profile...");
+  markProfileNeedsRelogin(D, "c380", "invalid_grant");
+  assert.equal(detectProfileLoginStatus(loadPoolConfig(D)[0]).status, "needs_relogin");
+  console.log("[Test 25] remove profile...");
+  const rm = removePoolProfile(D, "c380", { deleteHome: true });
+  assert.equal(rm.success, true);
+  assert.equal(rm.homeDeleted, true);
+  assert.equal(loadPoolConfig(D).length, 0);
+  assert.equal(removePoolProfile(D, "c380").success, false);
+  console.log("✓ dual pool tests passed");
 
   console.log("=================================================");
   console.log("  All Account Pool Tests Passed! 🎉              ");

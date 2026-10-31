@@ -138,6 +138,8 @@ async function runTests() {
     "pool_pause",
     "pool_resume",
     "pool_bind_email",
+    "pool_remove_profile",
+    "pool_set_custom_enabled",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
