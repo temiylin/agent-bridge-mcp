@@ -13,6 +13,11 @@ import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./s
 import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
 import { triggerTaskWebhook } from "./webhook.js";
 import { isQuotaExhaustedError, stashQuotaTask } from "./session-quota.js";
+import {
+  selectPoolAccount,
+  recordTaskStartUnderProfile,
+  handlePoolQuotaPaused,
+} from "./account-pool.js";
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
@@ -140,6 +145,7 @@ export function parseTaskFile(content: string): {
   reasoningEffort?: string;
   continueSession?: boolean;
   sessionId?: string;
+  account?: string;
   notify?: boolean;
   notifyChannel?: NotificationChannel;
   notifySound?: boolean | string;
@@ -217,6 +223,9 @@ export function parseTaskFile(content: string): {
   const sessionMatch = content.match(/^-[ \t]*\*\*Session ID\*\*:[ \t]*([^\r\n]*)$/m);
   const sessionId = sessionMatch ? sessionMatch[1].trim() : "";
 
+  const accountMatch = content.match(/^-[ \t]*\*\*Account\*\*:[ \t]*([^\r\n]*)$/m);
+  const account = accountMatch ? accountMatch[1].trim() : undefined;
+
   const notifyMatch = content.match(/^-[ \t]*\*\*Notify\*\*:[ \t]*([^\r\n]*)$/m);
   const notify = notifyMatch ? notifyMatch[1].trim().toLowerCase() !== "false" : true;
 
@@ -260,6 +269,7 @@ export function parseTaskFile(content: string): {
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(continueSession ? { continueSession: true } : {}),
     ...(sessionId ? { sessionId } : {}),
+    account,
     notify,
     notifyChannel,
     notifySound,
@@ -446,6 +456,7 @@ async function executeTaskFile(
     worktreeName,
     worktreeBaseBranch,
     onSuccess,
+    account,
   } = parseTaskFile(fileContent);
 
   const effectiveTimeoutMs = timeoutSeconds && timeoutSeconds > 0 ? timeoutSeconds * 1000 : timeoutMs;
@@ -620,12 +631,31 @@ async function executeTaskFile(
     }
   }
 
+  // Dynamically handle session resumption / continuation
+  const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
+  const activeSessionId = targetSessionToResume || sessionId;
+
+  // Resolve account pool profile (if pool configured)
+  const poolProfile = selectPoolAccount(currentRoot, {
+    session_id: activeSessionId,
+    requestedAccount: account,
+  });
+
+  const effectiveHome = poolProfile?.home || process.env.HOME || os.homedir();
+  const effectiveAccountAlias = poolProfile?.alias || (account && account !== "auto" ? account : undefined);
+
+  if (poolProfile) {
+    recordTaskStartUnderProfile(currentRoot, poolProfile.alias, taskId, activeSessionId);
+    logWorker("INFO", `Task ${taskId} assigned to account pool profile "${poolProfile.alias}" (home: ${poolProfile.home})`);
+  }
+
   // Write running status and audit as execution begins
   writeStatus(currentRoot, taskId, {
     state: "running",
     agent: agentName,
     model,
     reasoningEffort,
+    account: effectiveAccountAlias,
     startedAt,
     ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
   });
@@ -635,9 +665,6 @@ async function executeTaskFile(
   const agentConfig: AgentConfig = registry[agentName];
   const command = agentConfig.command;
   const args = [...agentConfig.args];
-
-  // Dynamically handle session resumption / continuation
-  const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
 
   if (targetSessionToResume || continueSession) {
     if (command.includes("codex") || agentName === "codex") {
@@ -820,7 +847,7 @@ async function executeTaskFile(
           env: {
             ...process.env,
             [pathKey]: combinedPath,
-            HOME: process.env.HOME || os.homedir(),
+            HOME: effectiveHome,
           },
         });
       } catch (spawnErr: any) {
@@ -970,6 +997,10 @@ async function executeTaskFile(
         pausedAt: finishedAt,
       });
       logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
+      if (poolProfile) {
+        handlePoolQuotaPaused(currentRoot, poolProfile.alias);
+        logWorker("INFO", `Pool profile "${poolProfile.alias}" paused due to quota exhaustion.`);
+      }
     } catch {}
   } else if (isAgy && exitCode !== 0 && runDurationMs <= 30000) {
     status = "failed";
@@ -983,9 +1014,9 @@ async function executeTaskFile(
   const extractedSessionId = extractSessionIdFromOutput(stdoutData);
   const finalSessionId = extractedSessionId || targetSessionToResume;
   if (finalSessionId) {
-    recordSession(currentRoot, taskId, finalSessionId);
+    recordSession(currentRoot, taskId, finalSessionId, effectiveAccountAlias);
     if (sessionId) {
-      recordSession(currentRoot, sessionId, finalSessionId);
+      recordSession(currentRoot, sessionId, finalSessionId, effectiveAccountAlias);
     }
   }
 
@@ -1009,6 +1040,7 @@ async function executeTaskFile(
     agent: agentName,
     model,
     reasoningEffort,
+    account: effectiveAccountAlias,
     startedAt,
     finishedAt,
     exitCode,

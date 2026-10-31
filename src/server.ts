@@ -27,6 +27,7 @@ import { registerQueueTools } from "./queue-tools.js";
 import { registerRecentTasksTool } from "./recent-tasks.js";
 import { registerWebhookTools } from "./webhook-tools.js";
 import { registerAccountResumeTools } from "./account-resume-tools.js";
+import { registerAccountPoolTools } from "./account-pool-tools.js";
 import { setTaskWebhook, WebhookEvent } from "./webhook.js";
 import { resolveTaskAgent } from "./routing.js";
 import { resolveProject } from "./project-router.js";
@@ -70,6 +71,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
       continue_session: z.boolean().optional().describe("If true, resumes and continues the previous agent conversation session (e.g., codex exec resume --last or agy --continue)"),
       session_id: z.string().optional().describe("Optional specific session or thread ID to resume"),
+      account: z.string().optional().describe("Optional agy account profile alias or 'auto' (default: auto)"),
       notify: z
         .union([
           z.boolean().describe("简单布尔值：传 true 开启默认本地电脑通知（完成/超时/卡住/失败时弹窗+声音），传 false 关闭"),
@@ -140,7 +142,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .optional()
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -278,6 +280,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (effortParam) headerMeta += `- **Reasoning Effort**: ${effortParam}\n`;
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
+        if (account && account.trim()) headerMeta += `- **Account**: ${account.trim()}\n`;
 
         // Parse notification settings (boolean or nested object)
         let notifyEnabled: boolean | undefined;
@@ -332,6 +335,7 @@ ${prompt}
             agent: agentName,
             model: modelParam || undefined,
             reasoningEffort: effortParam || undefined,
+            account: account && account.trim() ? account.trim() : undefined,
             startedAt: createdAt,
           });
         } catch {}
@@ -545,6 +549,7 @@ ${prompt}
   registerRecentTasksTool(server, rootDir, logger);
   registerWebhookTools(server, rootDir, logger);
   registerAccountResumeTools(server, rootDir, logger);
+  registerAccountPoolTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

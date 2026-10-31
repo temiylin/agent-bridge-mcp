@@ -226,6 +226,11 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `clear_task_webhook` | Completion Webhook | Clear and remove any completion webhook from a task | Stops further webhook delivery for the task |
 | `resume_after_account_switch` | Account Switch | Resume a quota-paused task or session after account switch | Re-dispatches with continue_session=true using identical session_id |
 | `auto_resume_on_account_ready` | Account Switch | Check account readiness and resume paused quota tasks | Optional probe; fall back to resume_after_account_switch |
+| `pool_status` | Account Pool | Summary of agy account profiles, in-flight tasks, and remaining Cockpit quota | Compact status lines per profile |
+| `pool_init_profile` | Account Pool | Initialize isolated profile dir with safe symlinks and output login command | Enforces one-account-one-dir invariant |
+| `pool_pause` | Account Pool | Pause an account profile with optional duration or until timestamp | Excludes profile from auto task selection |
+| `pool_resume` | Account Pool | Resume a paused account profile | Restores profile to eligible pool |
+| `pool_bind_email` | Account Pool | Bind Cockpit email to profile for quota tracking & duplicate collision prevention | Safe email mapping without storing secrets |
 
 | `repo_status` | Git | Branch name, uncommitted status, and recent commits | Strictly bound to `AGENT_BRIDGE_REPO`; no destructive side-effects |
 | `git_diff` | Git | Compare working tree, staged changes, or branch diffs (`--stat`) | Safe 48KB clamp; stat flag distinguishes backend vs frontend changes |
@@ -316,8 +321,64 @@ npm run dashboard   # or npm run ui
 2. **Local Agent Management (`agents.json`)**:
    - Visual inspection and configuration for local agents (e.g. `codex`, `agy`, custom Python scripts).
    - One-click **Connectivity Probe** testing whether agent executables are properly installed in the system `PATH`.
-3. **Instant Hot Apply**:
+3. **Recent Tasks Monitor (最近任务)**:
+   - Real-time tabular tracking of recent tasks, status badges (`running`, `completed`, `failed`, `paused_quota`), elapsed duration, GitHub PR links, and log tails (`logs/<task_id>.out`).
+4. **Requirements Backlog (需求暂存)**:
+   - Stash requirements for later review without immediate execution (`save_requirement`).
+   - In-place editing, merging multiple specifications, archiving, and one-click dispatching to agents.
+5. **Auto Queue Sequencer (自动排队)**:
+   - Sequential task dispatching grouped by session, with position reordering, pause/resume, and notify-only toggles.
+6. **Account Pool & Cockpit (账号池)**:
+   - Visual inspection of Cockpit Tools account quotas, 5-hour rolling windows, and active accounts.
+   - Management of isolated agy profiles with one-click terminal login commands and pause/resume controls.
+7. **Instant Hot Apply**:
    - Saving settings immediately updates `routing.json` and `agents.json` on disk, taking effect without service restarts.
+
+---
+
+## agy Multi-Account Pool & Cockpit Tools Integration
+
+### Profile Isolation Architecture
+- **Auth Location**: The `agy` CLI auth tokens live strictly in `$HOME/.gemini` (`jetski-standalone-oauth-token` / `oauth_creds.json`). Cockpit "应用多开" (`instances.json`) belongs to the Antigravity IDE and cannot drive the `agy` CLI.
+- **Concurrent Multi-Account**: Realized by dedicating an independent profile directory under `~/agent-bridge/agy-profiles/<alias>/` per account, each authenticated once with the `agy` CLI.
+- **Safe Symlinks & Non-Secret Copies**:
+  - Safe user configs (`~/.gitconfig`, `~/.ssh`, `~/.config/gh`, `~/.npmrc`) are symlinked into each profile directory so Git pushes and package managers operate seamlessly.
+  - Configuration files (`.gemini/settings.json`, MCP configs) are copied.
+  - **Security Rule**: Credentials, OAuth tokens, and Cockpit ciphertext files are **NEVER** copied into profile directories, committed to git, or exposed through MCP.
+- **One-Account-One-Dir Invariant**: A single account/email must never be bound to more than one profile directory simultaneously.
+
+### Initializing Profiles & Login Commands
+To initialize a profile:
+1. Via MCP tool:
+   ```json
+   { "tool": "pool_init_profile", "arguments": { "alias": "worker-1", "email": "user1@example.com" } }
+   ```
+2. Or via Dashboard UI: Go to **账号池** tab -> Click **+ 初始化新 Profile**.
+
+The tool sets up directory symlinks and outputs the exact authentication command:
+```bash
+HOME=~/agent-bridge/agy-profiles/worker-1 agy
+```
+Run this command in your local terminal once. Complete interactive OAuth login. From then on, any task routed to `worker-1` executes with that account in full isolation.
+
+### Cockpit Tools (v1.3.76) Matrix: WebSocket vs Fallback
+| Operation | Mechanism | Reason |
+|-----------|-----------|--------|
+| **Switch Active Account** | **WebSocket (`ws://127.0.0.1:19528`)** | `request.switch_account` is fully supported on Cockpit v1.3.76 and responds with `event.account_switched`. |
+| **List Accounts & Emails** | **Fallback (`~/.antigravity_cockpit/accounts.json`)** | Probing on v1.3.76 confirmed `request.get_accounts` does not respond; fallback reads the plaintext account metadata directly (`id`, `email`, `name`, `last_used`). |
+| **Quota & 5h Window** | **Fallback (`~/.antigravity_cockpit/cache/quota_api_v1_desktop/authorized/*.json`)** | WebSocket does not expose a quota query on v1.3.76; fallback parses desktop quota cache per email (`payload.models.*.quotaInfo.remainingFraction` and `resetTime`) without touching encrypted account secrets. |
+
+> [!WARNING]
+> **Cockpit Port 19528 Security Note**: Cockpit Tools v1.3.76 binds its local WebSocket server on `0.0.0.0:19528` (all network interfaces). Agent Bridge connects strictly via `127.0.0.1` and never alters Cockpit settings or logs its authentication token. Ensure your machine firewall or LAN environment is suitably secured.
+
+### Worker Routing & Selection Strategy
+- **Worker Environment**: The worker process sets `env.HOME = profile.home` for each task assigned to a pool profile.
+- **Auto Selection**: When `account: "auto"` or omitted:
+  1. Respects session stickiness: Tasks with the same `session_id` reuse the previously bound profile.
+  2. Filters enabled, non-paused profiles whose in-flight tasks do not exceed `max_concurrent`.
+  3. Skips profiles whose bound email is currently busy on another directory.
+  4. Prefers profiles with the highest remaining Cockpit quota (`remainingFraction`), then least running tasks, then fewest tasks today.
+- **Quota Pause**: On quota exhaustion (`429` / rate limit), the profile is marked `paused_until` (derived from Cockpit `resetTime` or 5h window), allowing subsequent tasks to automatically route to other profiles. Running tasks stash session state for resumption via `resume_after_account_switch`.
 
 ---
 
