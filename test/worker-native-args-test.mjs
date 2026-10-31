@@ -31,6 +31,7 @@ const registry = {
   nativeStdin: { command: process.execPath, args: [captureScript, ...staticArgs], input: 'stdin' },
   failure: { command: process.execPath, args: [failureScript], input: 'stdin' },
   codex: { command: process.execPath, args: [captureScript, 'exec', '--sandbox', 'read-only'], input: 'stdin' },
+  agy: { command: process.execPath, args: [captureScript, '--dangerously-skip-permissions'], input: 'stdin' },
   batch: { command: path.join(agentDirectory, 'unsafe.cmd'), args: [], input: 'arg' },
 };
 const processed = {};
@@ -67,6 +68,12 @@ try {
   const resumed = await runTask('native_resume', 'codex', `- **Session ID**: ${sessionId}\n- **Model**: model-v1\n- **Reasoning Effort**: high`);
   assert.equal(resumed.status.state, 'completed');
   assert.deepEqual(capture(resumed.result).args, ['exec', 'resume', sessionId, '--sandbox', 'read-only', '-m', 'model-v1', '-c', 'model_reasoning_effort="high"']);
+  const agyTask = await runTask('native_agy', 'agy', `- **Session ID**: ${sessionId}\n- **Model**: gemini-2.5-flash`);
+  assert.equal(agyTask.status.state, 'completed');
+  assert.deepEqual(capture(agyTask.result).args, ['--dangerously-skip-permissions', '--conversation', sessionId, `--print=${prompt}`, '--model', 'gemini-2.5-flash']);
+  const agyContinue = await runTask('native_agy_continue', 'agy', `- **Continue Session**: true`);
+  assert.equal(agyContinue.status.state, 'completed');
+  assert.deepEqual(capture(agyContinue.result).args, ['--dangerously-skip-permissions', '--continue', `--print=${prompt}`]);
   if (process.platform === 'win32') {
     const marker = path.join(fixture, 'batch-must-not-run');
     fs.writeFileSync(registry.batch.command, `@echo off\r\necho unsafe>"${marker}"\r\n`);

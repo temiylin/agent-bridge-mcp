@@ -662,9 +662,14 @@ async function executeTaskFile(
   }
 
   // agy agent requirement: use --print mode for non-interactive runs
+  // Prompt is attached directly to the flag (--print=<prompt>) or passed as a flag argument
+  // to prevent consuming subsequent options like --dangerously-skip-permissions, --model, etc.
   if (command.includes("agy") || agentName === "agy") {
-    if (!args.includes("--print") && !args.includes("-p")) {
-      args.unshift("--print");
+    const hasPrintFlag = args.some(
+      (a) => a === "--print" || a === "-p" || a.startsWith("--print=") || a.startsWith("-p=")
+    );
+    if (!hasPrintFlag) {
+      args.push(`--print=${prompt}`);
     }
   }
 
@@ -699,7 +704,7 @@ async function executeTaskFile(
     }
   }
 
-  if (agentConfig.input === "arg") {
+  if (agentConfig.input === "arg" && !command.includes("agy") && agentName !== "agy") {
     args.push(prompt);
   }
 
