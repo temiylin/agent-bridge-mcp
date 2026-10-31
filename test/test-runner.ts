@@ -119,6 +119,8 @@ async function runTests() {
     "resume_queue",
     "list_recent_tasks",
     "dashboard",
+    "set_task_webhook",
+    "clear_task_webhook",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

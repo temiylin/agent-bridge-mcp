@@ -12,6 +12,7 @@ import {
   QueueItem,
 } from "./queue.js";
 import { writeRequirement, getRequirement } from "./requirements.js";
+import { setTaskWebhook, TaskWebhookConfig } from "./webhook.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -21,6 +22,7 @@ export interface TaskDispatchParams {
   reasoning_effort?: string;
   continue_session?: boolean;
   session_id?: string;
+  on_complete?: TaskWebhookConfig;
 }
 
 export interface TaskDispatchResult {
@@ -89,6 +91,13 @@ export function dispatchTaskDirect(
       startedAt: createdAt,
     });
   } catch {}
+
+  // If on_complete webhook is opted in for this task, attach it now
+  if (params.on_complete && params.on_complete.url) {
+    try {
+      setTaskWebhook(rootDir, taskId, params.on_complete);
+    } catch {}
+  }
 
   return {
     taskId,
@@ -174,6 +183,7 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     reasoning_effort: item.options?.reasoning_effort,
     continue_session: true, // Auto queue continues same session
     session_id: sessionId,
+    on_complete: item.options?.on_complete,
   });
 
   // Remove or mark dispatched. The spec says:

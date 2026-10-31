@@ -450,9 +450,18 @@ export function registerRequirementsTools(
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
           queue_if_busy: z.boolean().optional(),
+          on_complete: z
+            .object({
+              url: z.string().describe("Destination webhook URL (must be http/https)"),
+              headers: z.record(z.string(), z.string()).optional(),
+              events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional(),
+              secret: z.string().optional(),
+            })
+            .optional()
+            .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
         })
         .optional()
-        .describe("Optional execution settings and queuing options"),
+        .describe("Optional execution settings, queuing options, and opt-in webhook"),
     },
     async ({ id, agent, options }) => {
       try {
@@ -485,6 +494,7 @@ export function registerRequirementsTools(
               model: options?.model,
               reasoning_effort: options?.reasoning_effort,
               requirement_id: record.id,
+              on_complete: options?.on_complete,
             },
             mode: "auto",
           });
@@ -520,6 +530,7 @@ export function registerRequirementsTools(
           reasoning_effort: options?.reasoning_effort,
           continue_session: !!effectiveSessionId,
           session_id: effectiveSessionId,
+          on_complete: options?.on_complete,
         });
 
         const now = new Date().toISOString();

@@ -251,6 +251,11 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `pause_queue` | Auto Task Queue | Pause automatic dispatching for a session's task queue | Manually hold dispatching; persists across restarts |
 | `resume_queue` | Auto Task Queue | Resume automatic dispatching for a session's task queue | Immediately enables next ready dispatch |
 | `list_recent_tasks` / `dashboard` | Dashboard | Compact overview of recent tasks and queued items | Shows topic/session_id, taskId, status (`running`/`completed`/`failed`/`queued`/`paused`), elapsed or finished_at, PR URL, last log line (~120 chars) |
+| `set_task_webhook` | Completion Webhook | Attach an opt-in completion webhook to a specific task | Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete |
+| `clear_task_webhook` | Completion Webhook | Clear and remove any completion webhook from a task | Stops further webhook delivery for the task |
+
+### Opt-In Per-Task Completion Webhooks
+> **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` `["completed","failed","pr_opened"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
 
 ### Read-only queries in Gemini
 

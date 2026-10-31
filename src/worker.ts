@@ -11,6 +11,7 @@ import { writeStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
 import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
+import { triggerTaskWebhook } from "./webhook.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -678,6 +679,14 @@ async function executeTaskFile(
     onTaskFinished(currentRoot, taskId, state, finalSessionId || sessionId, reason);
   } catch (queueErr: any) {
     logWorker("WARN", `Queue dispatch hook error on task ${taskId}: ${queueErr?.message || String(queueErr)}`);
+  }
+
+  // Trigger opt-in per-task completion webhook (NEVER blocks queue advance)
+  try {
+    const elapsedMs = startedAt && finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : undefined;
+    triggerTaskWebhook(currentRoot, taskId, state, finalSessionId || sessionId, elapsedMs).catch(() => {});
+  } catch (webhookErr: any) {
+    logWorker("WARN", `Webhook trigger error on task ${taskId}: ${webhookErr?.message || String(webhookErr)}`);
   }
 
   return true;

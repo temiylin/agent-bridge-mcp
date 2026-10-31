@@ -40,9 +40,18 @@ export function registerQueueTools(
         })
         .optional()
         .describe("Optional agent/model options"),
+      on_complete: z
+        .object({
+          url: z.string().describe("Destination webhook URL (must be http/https)"),
+          headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
+          events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
+          secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
+        })
+        .optional()
+        .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
       mode: z.enum(["auto", "notify"]).default("auto").describe("'auto' dispatches automatically when turn comes; 'notify' marks ready for manual triggering"),
     },
-    async ({ session_id, after_task_id, prompt, options, mode }) => {
+    async ({ session_id, after_task_id, prompt, options, on_complete, mode }) => {
       try {
         if (!prompt || prompt.trim().length === 0) {
           return {
@@ -71,11 +80,16 @@ export function registerQueueTools(
           };
         }
 
+        const mergedOptions = {
+          ...(options || {}),
+          ...(on_complete ? { on_complete } : {}),
+        };
+
         const res = enqueueTask(rootDir, {
           session_id: effectiveSessionId,
           after_task_id: after_task_id?.trim(),
           prompt: prompt.trim(),
-          options,
+          options: mergedOptions,
           mode: mode as QueueMode,
         });
 
