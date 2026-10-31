@@ -6,7 +6,9 @@
  * - CUSTOM pool: user-added isolated Profiles (agy-pool.json), one account per HOME.
  *
  * Accounts are shared by email across both pools: one quota/pause state per email
- * (account-state.json) and at most one running task per email (account-locks/).
+ * (account-state.json). Task claims are tracked per task in account-locks/ (reference
+ * counts, not a single global mutex per email). Custom profiles honor max_concurrent;
+ * the default pool is unlimited unless AGENT_BRIDGE_DEFAULT_POOL_MAX_CONCURRENT is set.
  * A Profile that is merely configured (idle) never blocks the default pool.
  */
 import fs from "node:fs";
@@ -19,6 +21,7 @@ import {
   isProfilePaused,
   detectProfileLoginStatus,
   getRunningTasksPerProfile,
+  isProfileLoggedIn,
   type AgyPoolProfile,
 } from "./account-pool.js";
 import {
@@ -59,9 +62,71 @@ function locksDir(rootDir: string): string {
   return path.join(rootDir, "account-locks");
 }
 
-function lockPath(rootDir: string, email: string): string {
-  const safe = normEmail(email).replace(/[^a-z0-9@._-]+/g, "_");
-  return path.join(locksDir(rootDir), `${safe}.json`);
+function lockEmailToken(email: string): string {
+  const key = normEmail(email);
+  return key ? key.replace(/[^a-z0-9@._-]+/g, "_") : "__default_home__";
+}
+
+/** Legacy single-lock path (pre-concurrency); still cleaned up on release. */
+function legacyLockPath(rootDir: string, email: string): string {
+  return path.join(locksDir(rootDir), `${lockEmailToken(email)}.json`);
+}
+
+function lockPathForTask(rootDir: string, email: string, taskId: string): string {
+  const safeTask = String(taskId).replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return path.join(locksDir(rootDir), `${lockEmailToken(email)}__${safeTask}.json`);
+}
+
+/** Max concurrent default-pool tasks; 0 = unlimited (unset or non-positive env). */
+export function getDefaultPoolMaxConcurrent(): number {
+  const raw = process.env.AGENT_BRIDGE_DEFAULT_POOL_MAX_CONCURRENT;
+  if (raw === undefined || raw.trim() === "") return 0;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
+
+export function listLiveAccountLocks(rootDir: string): AccountLock[] {
+  const dir = locksDir(rootDir);
+  if (!fs.existsSync(dir)) return [];
+  const out: AccountLock[] = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const full = path.join(dir, f);
+      const lock = JSON.parse(fs.readFileSync(full, "utf8")) as AccountLock;
+      if (!pidAlive(lock.pid)) {
+        fs.rmSync(full, { force: true });
+        continue;
+      }
+      out.push(lock);
+    } catch {}
+  }
+  return out;
+}
+
+export function countDefaultPoolRunning(rootDir: string, email?: string): number {
+  const target = email ? normEmail(email) : "";
+  return listLiveAccountLocks(rootDir).filter((l) => {
+    if (l.pool !== "default") return false;
+    if (!target) return true;
+    return normEmail(l.email) === target || (!l.email && target === normEmail("__default_home__"));
+  }).length;
+}
+
+export function getEmailRunningTaskCount(rootDir: string, email: string, profiles?: AgyPoolProfile[]): number {
+  const key = normEmail(email);
+  if (!key) return 0;
+  const fromLocks = listLiveAccountLocks(rootDir).filter((l) => normEmail(l.email) === key).length;
+  const list = profiles || loadPoolConfig(rootDir);
+  const running = getRunningTasksPerProfile(rootDir);
+  let fromProfiles = 0;
+  for (const p of list) {
+    if (normEmail(p.email) === key) {
+      fromProfiles += (running.get(p.alias) || []).length;
+    }
+  }
+  return Math.max(fromLocks, fromProfiles);
 }
 
 function settingsFile(rootDir: string): string {
@@ -142,24 +207,17 @@ function pidAlive(pid: number): boolean {
 }
 
 export function readAccountLock(rootDir: string, email: string): AccountLock | undefined {
-  const p = lockPath(rootDir, email);
-  try {
-    const lock = JSON.parse(fs.readFileSync(p, "utf8")) as AccountLock;
-    if (!pidAlive(lock.pid)) {
-      fs.rmSync(p, { force: true });
-      return undefined;
-    }
-    return lock;
-  } catch {
-    return undefined;
-  }
+  const key = normEmail(email);
+  if (!key) return undefined;
+  const locks = listLiveAccountLocks(rootDir).filter((l) => normEmail(l.email) === key);
+  return locks[0];
 }
 
-/** Busy = held by a live lock, or a running task status on a profile bound to this email. */
+/** First in-flight task id for an email, if any (for compact busy display). */
 export function getEmailBusyTask(rootDir: string, email: string, profiles?: AgyPoolProfile[]): string | undefined {
   const key = normEmail(email);
   if (!key) return undefined;
-  const lock = readAccountLock(rootDir, key);
+  const lock = listLiveAccountLocks(rootDir).find((l) => normEmail(l.email) === key);
   if (lock) return lock.taskId;
   const list = profiles || loadPoolConfig(rootDir);
   const running = getRunningTasksPerProfile(rootDir);
@@ -172,44 +230,47 @@ export function getEmailBusyTask(rootDir: string, email: string, profiles?: AgyP
   return undefined;
 }
 
-/** Atomically claim an email for a task. Returns false if someone else holds it. */
+/** Atomically claim a task slot (per-task lock file). */
 export function acquireAccountLock(rootDir: string, lock: Omit<AccountLock, "since">): boolean {
-  const key = normEmail(lock.email);
+  const key = normEmail(lock.email) || (lock.pool === "default" ? "__default_home__" : "");
   if (!key) return true;
   fs.mkdirSync(locksDir(rootDir), { recursive: true });
-  const p = lockPath(rootDir, key);
-  readAccountLock(rootDir, key); // clears stale lock
+  listLiveAccountLocks(rootDir); // prune stale
+  const p = lockPathForTask(rootDir, key, lock.taskId);
   try {
-    fs.writeFileSync(p, JSON.stringify({ ...lock, email: key, since: new Date().toISOString() }), { flag: "wx" });
+    fs.writeFileSync(
+      p,
+      JSON.stringify({ ...lock, email: normEmail(lock.email) || key, since: new Date().toISOString() }),
+      { flag: "wx" }
+    );
     return true;
   } catch {
-    const cur = readAccountLock(rootDir, key);
-    return !!cur && cur.taskId === lock.taskId;
+    try {
+      const cur = JSON.parse(fs.readFileSync(p, "utf8")) as AccountLock;
+      return cur.taskId === lock.taskId && pidAlive(cur.pid);
+    } catch {
+      return false;
+    }
   }
 }
 
 export function releaseAccountLock(rootDir: string, email: string | undefined, taskId: string): void {
-  const key = normEmail(email);
-  if (!key) return;
-  const p = lockPath(rootDir, key);
+  const token = normEmail(email) || "__default_home__";
+  const p = lockPathForTask(rootDir, token, taskId);
   try {
-    const cur = JSON.parse(fs.readFileSync(p, "utf8"));
-    if (cur.taskId === taskId) fs.rmSync(p, { force: true });
+    fs.rmSync(p, { force: true });
+  } catch {}
+  try {
+    const legacy = legacyLockPath(rootDir, token);
+    const cur = JSON.parse(fs.readFileSync(legacy, "utf8"));
+    if (cur.taskId === taskId) fs.rmSync(legacy, { force: true });
   } catch {}
 }
 
-/** True if any default-pool task currently holds a lock (default HOME is single-account). */
+/** @deprecated Use countDefaultPoolRunning; kept for callers expecting a single busy task id. */
 export function getDefaultPoolBusyTask(rootDir: string): string | undefined {
-  const dir = locksDir(rootDir);
-  if (!fs.existsSync(dir)) return undefined;
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const lock = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as AccountLock;
-      if (lock.pool === "default" && pidAlive(lock.pid)) return lock.taskId;
-    } catch {}
-  }
-  return undefined;
+  const lock = listLiveAccountLocks(rootDir).find((l) => l.pool === "default");
+  return lock?.taskId;
 }
 
 function safeCockpitAccounts(): AgentAccountSummary[] {
@@ -251,18 +312,46 @@ export function selectDualPoolAccount(rootDir: string, opts: SelectOptions = {})
       requestedAccount: opts.requestedAccount,
       now,
       cockpitQuota: quotaByEmail,
-      isEmailBusy: (email) => !!getEmailBusyTask(rootDir, email, profiles),
       isEmailBlocked: (email) =>
         !!isEmailPaused(rootDir, email, now) ||
         (quotaByEmail.has(normEmail(email)) && (quotaByEmail.get(normEmail(email)) ?? 1) < MIN_QUOTA_FRACTION),
     });
-    if (pick) return { pool: "custom", alias: pick.alias, home: pick.home, email: pick.profile.email, profile: pick.profile };
+    if (pick) {
+      const running = (getRunningTasksPerProfile(rootDir).get(pick.alias) || []).length;
+      const maxC = pick.profile.max_concurrent || 1;
+      if (running >= maxC) {
+        return { pool: "none", kind: "busy", reason: `profile ${pick.alias} at max concurrent (${maxC})` };
+      }
+      return { pool: "custom", alias: pick.alias, home: pick.home, email: pick.profile.email, profile: pick.profile };
+    }
+    const runningMap = getRunningTasksPerProfile(rootDir);
+    const customCandidates = profiles.filter(
+      (p) =>
+        p.enabled &&
+        !isProfilePaused(p, now) &&
+        isProfileLoggedIn(p) &&
+        !(
+          (p.email && isEmailPaused(rootDir, p.email, now)) ||
+          (p.email &&
+            quotaByEmail.has(normEmail(p.email)) &&
+            (quotaByEmail.get(normEmail(p.email)) ?? 1) < MIN_QUOTA_FRACTION)
+        )
+    );
+    if (
+      customCandidates.length > 0 &&
+      customCandidates.every((p) => (runningMap.get(p.alias) || []).length >= (p.max_concurrent || 1))
+    ) {
+      return { pool: "none", kind: "busy", reason: "all custom profiles at max concurrent" };
+    }
   }
 
-  // 2. Default pool (single default HOME — only one default task at a time since a switch would affect it)
+  // 2. Default pool (shared default HOME + Cockpit rotation; concurrent unless capped by env)
   const defaultHome = opts.defaultHome || process.env.HOME || os.homedir();
-  const defBusy = getDefaultPoolBusyTask(rootDir);
-  if (defBusy) return { pool: "none", kind: "busy", reason: `default pool busy with ${defBusy}; no custom profile available` };
+  const defMax = getDefaultPoolMaxConcurrent();
+  const defRunning = countDefaultPoolRunning(rootDir);
+  if (defMax > 0 && defRunning >= defMax) {
+    return { pool: "none", kind: "busy", reason: `default pool at max concurrent (${defMax})` };
+  }
 
   const usable = cockpit.filter((c) => !c.disabled && c.email);
   if (usable.length === 0) {
@@ -271,22 +360,62 @@ export function selectDualPoolAccount(rootDir: string, opts: SelectOptions = {})
   }
   const ok = (c: AgentAccountSummary) =>
     !isEmailPaused(rootDir, c.email, now) &&
-    !getEmailBusyTask(rootDir, c.email, profiles) &&
     (c.remainingFractionSummary ?? 1) >= MIN_QUOTA_FRACTION;
 
-  const current = usable.find((c) => c.current);
-  if (current && ok(current)) {
-    return { pool: "default", home: defaultHome, email: current.email, cockpitAccountId: current.accountId, needsSwitch: false, legacy: false };
+  // Reuse a Cockpit account that already has default-pool runners (no switch; same HOME).
+  const activeDefaultEmails = new Set(
+    listLiveAccountLocks(rootDir)
+      .filter((l) => l.pool === "default" && l.email)
+      .map((l) => normEmail(l.email))
+  );
+  for (const activeEmail of activeDefaultEmails) {
+    const match = usable.find((c) => normEmail(c.email) === activeEmail && ok(c));
+    if (match) {
+      return {
+        pool: "default",
+        home: defaultHome,
+        email: match.email,
+        cockpitAccountId: match.accountId,
+        needsSwitch: false,
+        legacy: false,
+      };
+    }
   }
+
+  const current = usable.find((c) => c.current);
+  const runningOnCurrent = current?.email ? countDefaultPoolRunning(rootDir, current.email) : 0;
+
+  if (current && ok(current)) {
+    return {
+      pool: "default",
+      home: defaultHome,
+      email: current.email,
+      cockpitAccountId: current.accountId,
+      needsSwitch: false,
+      legacy: false,
+    };
+  }
+
+  if (runningOnCurrent > 0) {
+    return {
+      pool: "none",
+      kind: "busy",
+      reason: `Cockpit current account ${current?.email || "(unknown)"} has ${runningOnCurrent} running default-pool task(s); cannot rotate`,
+    };
+  }
+
   const others = usable.filter((c) => c !== current && ok(c)).sort((a, b) => (b.remainingFractionSummary ?? 1) - (a.remainingFractionSummary ?? 1));
   if (others.length > 0) {
     const c = others[0];
     return { pool: "default", home: defaultHome, email: c.email, cockpitAccountId: c.accountId, needsSwitch: true, legacy: false };
   }
-  // Distinguish "someone is busy" (wait) from "every account is exhausted" (tell the caller).
-  const anyBusy = usable.some((c) => !!getEmailBusyTask(rootDir, c.email, profiles)) ||
-    profiles.some((p) => p.email && !!getEmailBusyTask(rootDir, p.email, profiles));
-  if (anyBusy) return { pool: "none", kind: "busy", reason: "all usable accounts are busy" };
+  const anyProfileBusy = profiles.some((p) => {
+    const running = (getRunningTasksPerProfile(rootDir).get(p.alias) || []).length;
+    return running >= (p.max_concurrent || 1);
+  });
+  if (anyProfileBusy && defMax > 0 && defRunning >= defMax) {
+    return { pool: "none", kind: "busy", reason: "all usable accounts are busy" };
+  }
   const resets: number[] = [];
   for (const c of usable) {
     const pu = isEmailPaused(rootDir, c.email, now);
@@ -326,6 +455,16 @@ export async function acquireDualPoolAccount(
   if (!locked) return { pool: "none", kind: "busy", reason: `account ${email} was just claimed by another task` };
 
   if (sel.pool === "default" && sel.needsSwitch && sel.cockpitAccountId) {
+    const cockpit = opts.cockpitAccounts ?? safeCockpitAccounts();
+    const current = cockpit.find((c) => c.current);
+    if (current?.email && countDefaultPoolRunning(rootDir, current.email) > 0) {
+      releaseAccountLock(rootDir, email, taskId);
+      return {
+        pool: "none",
+        kind: "busy",
+        reason: `Cockpit current account ${current.email} has running default-pool tasks; cannot rotate`,
+      };
+    }
     const sw = await (opts.switchFn || switchAgentAccount)({
       provider: "antigravity",
       targetEmailOrAccount: sel.cockpitAccountId,
@@ -354,7 +493,8 @@ export interface AccountOverviewRow {
   reset_time?: string | number;
   paused_until: string; // ISO | "none"
   pause_reason?: string;
-  busy_task_id: string; // taskId | "idle"
+  busy_task_id: string; // taskId | "idle" (first task, compact)
+  running_task_count: number;
   login_status?: string;
 }
 
@@ -371,7 +511,16 @@ export function queryAccountOverview(
     const key = normEmail(email);
     let r = rows.get(key);
     if (!r) {
-      r = { email: key, pools: [], aliases: [], cockpit_current: false, quota_remaining: "unknown", paused_until: "none", busy_task_id: "idle" };
+      r = {
+        email: key,
+        pools: [],
+        aliases: [],
+        cockpit_current: false,
+        quota_remaining: "unknown",
+        paused_until: "none",
+        busy_task_id: "idle",
+        running_task_count: 0,
+      };
       rows.set(key, r);
     }
     return r;
@@ -402,7 +551,9 @@ export function queryAccountOverview(
       r.paused_until = until;
       r.pause_reason = state[r.email]?.reason || "quota";
     }
-    r.busy_task_id = getEmailBusyTask(rootDir, r.email, profiles) || "idle";
+    const count = getEmailRunningTaskCount(rootDir, r.email, profiles);
+    r.running_task_count = count;
+    r.busy_task_id = count > 0 ? getEmailBusyTask(rootDir, r.email, profiles) || "idle" : "idle";
   }
   return [...rows.values()];
 }

@@ -1649,8 +1649,11 @@ export function renderDashboardHtml(): string {
                 const paused = a.paused_until && a.paused_until !== "none"
                   ? '<span class="badge badge-paused">至 ' + new Date(a.paused_until).toLocaleString() + '</span>' + (a.pause_reason ? '<div style="font-size:11px; color:var(--text-muted);">' + escapeHtml(a.pause_reason) + '</div>' : '')
                   : '<span style="color:var(--text-muted); font-size:12px;">无</span>';
-                const busy = a.busy_task_id && a.busy_task_id !== "idle"
-                  ? '<span class="badge badge-running">● ' + escapeHtml(a.busy_task_id) + '</span>'
+                const busy = a.running_task_count > 0
+                  ? '<span class="badge badge-running">● ' + a.running_task_count + ' running</span>' +
+                    (a.busy_task_id && a.busy_task_id !== "idle"
+                      ? '<div style="font-size:11px; color:var(--text-muted); font-family:monospace;">' + escapeHtml(a.busy_task_id) + '</div>'
+                      : "")
                   : '<span style="color:var(--text-muted); font-size:12px;">空闲</span>';
                 const act = a.paused_until && a.paused_until !== "none"
                   ? '<button class="btn-sm" style="color:var(--green);" onclick="resumeAccountEmail(\\'' + escapeHtml(a.email) + '\\')">▶ 解除暂停</button>'
@@ -1671,6 +1674,7 @@ export function renderDashboardHtml(): string {
             profilesTbody.innerHTML = profiles.map(p => {
               const stat = poolStatus.find(s => s.alias === p.alias);
               const isRunning = runningTasks[p.alias] && runningTasks[p.alias].length > 0;
+              const runningCount = runningTasks[p.alias] ? runningTasks[p.alias].length : 0;
               const runningTaskIds = runningTasks[p.alias] ? runningTasks[p.alias].join(", ") : "闲置 (idle)";
 
               const statusBadge = p.enabled && (!p.paused_until || new Date(p.paused_until).getTime() <= Date.now())
@@ -1705,7 +1709,7 @@ export function renderDashboardHtml(): string {
                 '<td>' + (p.email ? escapeHtml(p.email) : '<span style="color:var(--yellow); font-size:12px;">(未对齐邮箱)</span>') + '</td>' +
                 '<td>' + statusBadge + '</td>' +
                 '<td>' + loginBadge + '</td>' +
-                '<td>' + (isRunning ? '<span class="badge badge-running">● ' + runningTaskIds + '</span>' : '<span style="color:var(--text-muted); font-size:12px;">闲置</span>') + '</td>' +
+                '<td>' + (isRunning ? '<span class="badge badge-running">● ' + runningCount + ' running</span><div style="font-size:11px; font-family:monospace; color:var(--text-muted);">' + escapeHtml(runningTaskIds) + '</div>' : '<span style="color:var(--text-muted); font-size:12px;">闲置</span>') + '</td>' +
                 '<td>' + (p.tasks_today || 0) + '</td>' +
                 '<td>' + quotaFrac + '</td>' +
                 '<td>' + actions + '</td>' +

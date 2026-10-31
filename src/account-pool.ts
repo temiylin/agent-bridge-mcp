@@ -32,7 +32,8 @@ export interface PoolStatusLine {
   alias: string;
   email: string;
   enabled: boolean;
-  busy_task_id: string; // taskId or "idle"
+  busy_task_id: string; // taskId or "idle" (comma-separated when multiple)
+  running_task_count: number;
   paused_until: string; // ISO string or "none"
   tasks_today: number;
   cockpit_remaining: string; // e.g. "0.98" or "1.00" or "unknown"
@@ -513,10 +514,8 @@ export function selectPoolAccount(
     now?: number;
     /** Shared per-email quota (from Cockpit); avoids re-reading storage. */
     cockpitQuota?: Map<string, number>;
-    /** Shared cross-pool check: email paused / busy / out of quota. */
+    /** Shared cross-pool check: email paused / out of quota. */
     isEmailBlocked?: (email: string) => boolean;
-    /** Shared cross-pool check: email has a running task (any pool). */
-    isEmailBusy?: (email: string) => boolean;
   }
 ): { alias: string; home: string; profile: AgyPoolProfile } | undefined {
   const profiles = loadPoolConfig(rootDir);
@@ -528,12 +527,10 @@ export function selectPoolAccount(
   const now = options?.now ?? Date.now();
   const runningMap = getRunningTasksPerProfile(rootDir);
   const blocked = (p: AgyPoolProfile) => !!(p.email && options?.isEmailBlocked?.(p.email));
-  const busyElsewhere = (p: AgyPoolProfile) => !!(p.email && options?.isEmailBusy?.(p.email));
   const stickyOk = (p: AgyPoolProfile) =>
     p.enabled && !isProfilePaused(p, now) && isProfileLoggedIn(p) && !blocked(p);
   const usable = (p: AgyPoolProfile) =>
-    stickyOk(p) && !busyElsewhere(p) &&
-    (runningMap.get(p.alias) || []).length < (p.max_concurrent || 1);
+    stickyOk(p) && (runningMap.get(p.alias) || []).length < (p.max_concurrent || 1);
 
   // 1. Explicit requested account
   const req = options?.requestedAccount?.trim();
@@ -552,8 +549,7 @@ export function selectPoolAccount(
     const boundAlias = getSessionAccount(rootDir, options.session_id);
     if (boundAlias) {
       const boundProfile = profiles.find((p) => p.alias === boundAlias);
-      // Sticky sessions keep their profile even if busy (conversation lives in that HOME);
-      // the per-email lock makes the follow-up wait instead of running concurrently.
+      // Sticky sessions keep their profile even at max_concurrent (worker waits for a slot).
       if (boundProfile && stickyOk(boundProfile)) {
         return { alias: boundProfile.alias, home: boundProfile.home, profile: boundProfile };
       }
@@ -565,28 +561,10 @@ export function selectPoolAccount(
   const eligible = profiles.filter(usable);
 
   if (eligible.length === 0) {
-    // All busy or paused; return undefined or first enabled for queueing
     return undefined;
   }
 
-  // Invariant check: skip accounts whose email is currently running on another profile
-  const busyEmails = new Set<string>();
-  for (const [busyAlias, taskIds] of runningMap.entries()) {
-    if (taskIds.length > 0) {
-      const bp = profiles.find((p) => p.alias === busyAlias);
-      if (bp?.email) busyEmails.add(bp.email.toLowerCase());
-    }
-  }
-
-  const conflictFree = eligible.filter((p) => {
-    if (p.email && busyEmails.has(p.email.toLowerCase())) {
-      const myRunning = (runningMap.get(p.alias) || []).length;
-      return myRunning === 0; // only skip if conflict with another profile
-    }
-    return true;
-  });
-
-  const poolCandidates = conflictFree.length > 0 ? conflictFree : eligible;
+  const poolCandidates = eligible;
 
   // Retrieve Cockpit quotas for sorting by remaining quota
   let cockpitMap = options?.cockpitQuota ?? new Map<string, number>();
@@ -755,6 +733,7 @@ export function queryPoolStatus(rootDir: string = resolveBridgeRoot()): PoolStat
       email: p.email || "(unbound)",
       enabled: p.enabled && !isPaused,
       busy_task_id: busyTask,
+      running_task_count: running.length,
       paused_until: p.paused_until && isPaused ? p.paused_until : "none",
       tasks_today: tasksToday,
       cockpit_remaining: remFrac,

@@ -372,13 +372,15 @@ Run this command in your local terminal once. Complete interactive OAuth login. 
 > **Cockpit Port 19528 Security Note**: Cockpit Tools v1.3.76 binds its local WebSocket server on `0.0.0.0:19528` (all network interfaces). Agent Bridge connects strictly via `127.0.0.1` and never alters Cockpit settings or logs its authentication token. Ensure your machine firewall or LAN environment is suitably secured.
 
 ### Worker Routing & Selection Strategy
-- **Worker Environment**: The worker process sets `env.HOME = profile.home` for each task assigned to a pool profile.
+- **Worker Environment**: The worker process sets `env.HOME = profile.home` for each task assigned to a pool profile. The worker loop launches **multiple tasks concurrently** (each task file is claimed independently); conversation lanes (`session_id` / `continue_session` + `project_dir`) and account-pool limits still serialize when required.
+- **Default pool concurrency**: By default there is **no** cap on concurrent default-pool (machine `HOME` + Cockpit) tasks. Set `AGENT_BRIDGE_DEFAULT_POOL_MAX_CONCURRENT` to a positive integer to limit them; unset or `0` means unlimited.
 - **Auto Selection**: When `account: "auto"` or omitted:
-  1. Respects session stickiness: Tasks with the same `session_id` reuse the previously bound profile.
-  2. Filters enabled, non-paused profiles whose in-flight tasks do not exceed `max_concurrent`.
-  3. Skips profiles whose bound email is currently busy on another directory.
-  4. Prefers profiles with the highest remaining Cockpit quota (`remainingFraction`), then least running tasks, then fewest tasks today.
+  1. Respects session stickiness: Tasks with the same `session_id` reuse the previously bound profile (waits if that profile is at `max_concurrent`).
+  2. Filters enabled, non-paused profiles whose in-flight tasks do not exceed `max_concurrent` (per profile; values &gt; 1 allow parallel tasks on the same account HOME).
+  3. Prefers profiles with the highest remaining Cockpit quota (`remainingFraction`), then least running tasks, then fewest tasks today.
+- **Cockpit rotation**: The worker does **not** switch Cockpit’s current account while other default-pool tasks are still running on that account.
 - **Quota Pause**: On quota exhaustion (`429` / rate limit), the profile is marked `paused_until` (derived from Cockpit `resetTime` or 5h window), allowing subsequent tasks to automatically route to other profiles. Running tasks stash session state for resumption via `resume_after_account_switch`.
+- **Dashboard / API**: `/api/pool` and `pool_status` expose `running_task_count` per account and per profile (plus compact `busy_task_id` samples).
 
 ---
 

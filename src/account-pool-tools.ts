@@ -35,7 +35,7 @@ export function registerAccountPoolTools(
         const statuses = queryPoolStatus(rootDir);
         const overview = queryAccountOverview(rootDir);
         const header = `custom_pool_enabled: ${isCustomPoolEnabled(rootDir)}`;
-        const accountLines = overview.map((a) => `${a.email} pools=${a.pools.join("+")}${a.aliases.length ? "(" + a.aliases.join(",") + ")" : ""}${a.cockpit_current ? " ★current" : ""} | quota: ${a.quota_remaining} | paused_until: ${a.paused_until}${a.pause_reason ? "(" + a.pause_reason + ")" : ""} | busy: ${a.busy_task_id}`);
+        const accountLines = overview.map((a) => `${a.email} pools=${a.pools.join("+")}${a.aliases.length ? "(" + a.aliases.join(",") + ")" : ""}${a.cockpit_current ? " ★current" : ""} | quota: ${a.quota_remaining} | paused_until: ${a.paused_until}${a.pause_reason ? "(" + a.pause_reason + ")" : ""} | running: ${a.running_task_count}${a.busy_task_id !== "idle" ? ` (e.g. ${a.busy_task_id})` : ""}`);
         const accountsText = `${header}\n[accounts — shared across pools]\n${accountLines.join("\n") || "(none)"}`;
         if (statuses.length === 0) {
           return {
@@ -51,7 +51,7 @@ export function registerAccountPoolTools(
         // Format compact lines
         // e.g. alias | email | enabled | busy: <tid> | paused_until: <time> | tasks: <N> | quota: <rem>
         const lines = statuses.map((s) => {
-          return `${s.alias} [${s.email}] ${s.enabled ? "ACTIVE" : "PAUSED"} | login: ${s.login_label}${s.login_reason ? "(" + s.login_reason + ")" : ""} | busy: ${s.busy_task_id} | paused_until: ${s.paused_until} | today: ${s.tasks_today} | cockpit_remaining: ${s.cockpit_remaining}`;
+          return `${s.alias} [${s.email}] ${s.enabled ? "ACTIVE" : "PAUSED"} | login: ${s.login_label}${s.login_reason ? "(" + s.login_reason + ")" : ""} | running: ${s.running_task_count}${s.busy_task_id !== "idle" ? ` (${s.busy_task_id})` : ""} | paused_until: ${s.paused_until} | today: ${s.tasks_today} | cockpit_remaining: ${s.cockpit_remaining}`;
         });
 
         return {

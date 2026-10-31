@@ -11,7 +11,7 @@ import { reconcileAllTasks, newestMtime, getStallThresholdMs } from "./task-reco
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
-import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
+import { onTaskFinished, reconcileQueues, isConversationLaneBusy, conversationLaneKey } from "./queue-dispatcher.js";
 import { triggerTaskWebhook } from "./webhook.js";
 import { classifyAgentFailure, parseQuotaResetTime, stashQuotaTask } from "./session-quota.js";
 import {
@@ -650,14 +650,55 @@ async function executeTaskFile(
   const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
   const activeSessionId = targetSessionToResume || sessionId;
 
+  const waitMaxMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_WAIT_MS || String(6 * 3600 * 1000), 10);
+  const waitPollMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_POLL_MS || "30000", 10);
+  const waitStart = Date.now();
+
+  // Same session + project_dir (or continue_session) must not run concurrently.
+  if (conversationLaneKey(activeSessionId, projectDir, continueSession)) {
+    let loggedLaneWait = false;
+    for (;;) {
+      if (
+        !isConversationLaneBusy(currentRoot, activeSessionId, projectDir, continueSession, taskId)
+      ) {
+        break;
+      }
+      if (fs.existsSync(path.join(controlDir, `${taskId}.cancel`)) || Date.now() - waitStart > waitMaxMs) {
+        const reasonTxt = "conversation lane busy (same session/project); timed out or cancelled";
+        writeStatus(currentRoot, taskId, {
+          state: "failed",
+          agent: agentName,
+          model,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          exitCode: null,
+          reason: reasonTxt,
+        });
+        saveProcessedTask(processedMap, taskId, new Date().toISOString());
+        logWorker("ERROR", `Task ${taskId}: ${reasonTxt}`);
+        return true;
+      }
+      if (!loggedLaneWait) {
+        logWorker("WARN", `Task ${taskId} queued: waiting for conversation lane (session/project serial execution)...`);
+        writeStatus(currentRoot, taskId, {
+          state: "queued",
+          agent: agentName,
+          model,
+          startedAt,
+          reason: "waiting for conversation lane (same session/project)",
+          workerPid: process.pid,
+        });
+        loggedLaneWait = true;
+      }
+      await new Promise((r) => setTimeout(r, waitPollMs));
+    }
+  }
+
   // Resolve account across the dual pool (agy only): custom Profiles first, then the
   // default pool (default HOME + Cockpit rotation). If nothing is available, wait (queued).
   const isAgyTask = agentConfigCommandIsAgy(registry, agentName);
   let accountSel: AccountSelection | undefined;
   if (isAgyTask) {
-    const waitMaxMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_WAIT_MS || String(6 * 3600 * 1000), 10);
-    const waitPollMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_POLL_MS || "30000", 10);
-    const waitStart = Date.now();
     let loggedWait = false;
     for (;;) {
       accountSel = await acquireDualPoolAccount(currentRoot, taskId, {
@@ -1414,6 +1455,7 @@ export class WorkerService {
   private processedMap: Record<string, string>;
   private sleepResolve: (() => void) | null = null;
   private sleepTimer: NodeJS.Timeout | null = null;
+  private inFlight = new Set<Promise<boolean>>();
 
   constructor(
     private root: string = rootDir,
@@ -1455,26 +1497,31 @@ export class WorkerService {
       reconcileAllTasks(this.root);
     } catch {}
 
-    let processedCount = 0;
+    const starters: Promise<boolean>[] = [];
     for (const file of files) {
       if (this.isShuttingDown) break;
-      try {
-        const handled = await processTaskFile(
-          file,
-          tasksDir,
-          resultsDir,
-          this.processedMap,
-          registry,
-          this.timeout,
-          this.root
-        );
-        if (handled) processedCount++;
-      } catch (err: any) {
-        logWorker("ERROR", `Unexpected error handling task file "${file}": ${err?.message || String(err)}`);
-      }
+      let job!: Promise<boolean>;
+      job = processTaskFile(
+        file,
+        tasksDir,
+        resultsDir,
+        this.processedMap,
+        registry,
+        this.timeout,
+        this.root
+      )
+        .catch((err: any) => {
+          logWorker("ERROR", `Unexpected error handling task file "${file}": ${err?.message || String(err)}`);
+          return false;
+        })
+        .finally(() => {
+          this.inFlight.delete(job);
+        });
+      this.inFlight.add(job);
+      starters.push(job);
     }
 
-    return processedCount;
+    return starters.length;
   }
 
   public async start(): Promise<void> {
@@ -1506,6 +1553,11 @@ export class WorkerService {
       await this.scanOnce();
       if (!this.isRunning || this.isShuttingDown) break;
       await this.interruptibleSleep(this.pollInterval);
+    }
+
+    if (this.inFlight.size > 0) {
+      logWorker("INFO", `Waiting for ${this.inFlight.size} in-flight task(s) to finish...`);
+      await Promise.allSettled([...this.inFlight]);
     }
 
     logWorker("INFO", "Worker loop exited cleanly.");

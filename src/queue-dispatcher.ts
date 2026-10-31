@@ -112,10 +112,57 @@ export function dispatchTaskDirect(
 }
 
 /**
- * Checks whether a given session has an active in-flight task (queued or running).
+ * Conversation lane key: tasks with the same session (or continue_session) in the same project_dir
+ * must not run concurrently (avoids corrupting local agy/codex conversation state).
  */
-export function isSessionBusy(rootDir: string, sessionId: string): boolean {
-  if (!sessionId) return false;
+export function conversationLaneKey(
+  sessionId?: string,
+  projectDir?: string,
+  continueSession?: boolean
+): string | undefined {
+  const sid = sessionId?.trim();
+  if (!sid && !continueSession) return undefined;
+  let dir = "";
+  if (projectDir && projectDir.trim()) {
+    try {
+      dir = path.resolve(projectDir.trim());
+    } catch {
+      dir = projectDir.trim();
+    }
+  }
+  const sessionPart = sid || "__continue__";
+  return `${dir}\0${sessionPart}`;
+}
+
+function taskFileConversationLane(rootDir: string, taskId: string): string | undefined {
+  const taskPath = path.join(rootDir, "tasks", `${taskId}.md`);
+  if (!fs.existsSync(taskPath)) return undefined;
+  try {
+    const content = fs.readFileSync(taskPath, "utf8");
+    const sessionMatch = content.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
+    const sessionId = sessionMatch ? sessionMatch[1].trim() : undefined;
+    const contMatch = content.match(/- \*\*Continue Session\*\*:\s*([^\r\n]+)/i);
+    const continueSession = contMatch ? /^true$/i.test(contMatch[1].trim()) : false;
+    const dirMatch = content.match(/- \*\*Project Dir\*\*:\s*([^\r\n]+)/i);
+    const projectDir = dirMatch ? dirMatch[1].trim() : undefined;
+    return conversationLaneKey(sessionId, projectDir, continueSession);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when another in-flight task occupies the same conversation lane.
+ */
+export function isConversationLaneBusy(
+  rootDir: string,
+  sessionId?: string,
+  projectDir?: string,
+  continueSession?: boolean,
+  excludeTaskId?: string
+): boolean {
+  const lane = conversationLaneKey(sessionId, projectDir, continueSession);
+  if (!lane) return false;
   const statusDir = path.join(rootDir, "status");
   if (!fs.existsSync(statusDir)) return false;
 
@@ -126,29 +173,27 @@ export function isSessionBusy(rootDir: string, sessionId: string): boolean {
     return false;
   }
 
-  const cleanSession = sessionId.trim();
-
   for (const file of files) {
     if (!file.endsWith(".json") || file.endsWith(".tmp")) continue;
+    const taskId = file.replace(/\.json$/, "");
+    if (excludeTaskId && taskId === excludeTaskId) continue;
     try {
       const raw = fs.readFileSync(path.join(statusDir, file), "utf8");
       const info = JSON.parse(raw);
-      if (info && (info.state === "queued" || info.state === "running")) {
-        // Also check task file to verify session_id if status does not explicitly have it
-        const taskId = info.taskId || file.replace(/\.json$/, "");
-        const taskPath = path.join(rootDir, "tasks", `${taskId}.md`);
-        if (fs.existsSync(taskPath)) {
-          const taskContent = fs.readFileSync(taskPath, "utf8");
-          const sessionMatch = taskContent.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
-          if (sessionMatch && sessionMatch[1].trim() === cleanSession) {
-            return true;
-          }
-        }
-      }
+      if (!info || (info.state !== "queued" && info.state !== "running")) continue;
+      const otherLane = taskFileConversationLane(rootDir, taskId);
+      if (otherLane === lane) return true;
     } catch {}
   }
-
   return false;
+}
+
+/**
+ * Checks whether a given session has an active in-flight task (queued or running).
+ */
+export function isSessionBusy(rootDir: string, sessionId: string): boolean {
+  if (!sessionId) return false;
+  return isConversationLaneBusy(rootDir, sessionId, undefined, false);
 }
 
 /**
