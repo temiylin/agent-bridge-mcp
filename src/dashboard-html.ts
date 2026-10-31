@@ -1110,7 +1110,7 @@ export function renderDashboardHtml(): string {
             ? '<a href="' + t.pr_url + '" target="_blank" style="color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; gap:4px;">🔗 查看 PR</a>'
             : '<span style="color:var(--text-muted);">-</span>';
 
-          const tidDisplay = '<span style="font-family:monospace; color:var(--accent); cursor:pointer;" title="点击复制" onclick="navigator.clipboard.writeText(\'' + t.taskId + '\'); showToast(\'已复制: ' + t.taskId + '\');">' + t.taskId + '</span>';
+          const tidDisplay = '<span style="font-family:monospace; color:var(--accent); cursor:pointer;" title="点击复制" onclick="navigator.clipboard.writeText(\\'' + t.taskId + '\\'); showToast(\\'已复制: ' + t.taskId + '\\');">' + t.taskId + '</span>';
 
           const sessionDisplay = t.session_id ? '<span style="font-family:monospace; font-size:12px;">' + t.session_id + '</span>' : (t.project ? '<span>' + t.project + '</span>' : '<span style="color:var(--text-muted);">-</span>');
           const elapsedDisplay = t.elapsed || (t.finished_at ? new Date(t.finished_at).toLocaleTimeString() : "-");
@@ -1165,9 +1165,9 @@ export function renderDashboardHtml(): string {
 
           const actions = 
             '<div style="display:flex; justify-content:flex-end; gap:6px;">' +
-              (r.status !== "dispatched" ? '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4);" onclick="openDispatchModal(\'' + r.id + '\')">🚀 派发</button>' : '<span style="font-size:11px; color:var(--text-muted); align-self:center;">已派发</span>') +
-              (r.status !== "archived" ? '<button class="btn-sm" onclick="archiveRequirement(\'' + r.id + '\')">📦 归档</button>' : '') +
-              '<button class="btn-sm btn-sm-danger" onclick="deleteRequirement(\'' + r.id + '\')">🗑️</button>' +
+              (r.status !== "dispatched" ? '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4);" onclick="openDispatchModal(\\'' + r.id + '\\')">🚀 派发</button>' : '<span style="font-size:11px; color:var(--text-muted); align-self:center;">已派发</span>') +
+              (r.status !== "archived" ? '<button class="btn-sm" onclick="archiveRequirement(\\'' + r.id + '\\')">📦 归档</button>' : '') +
+              '<button class="btn-sm btn-sm-danger" onclick="deleteRequirement(\\'' + r.id + '\\')">🗑️</button>' +
             '</div>';
 
           return '<tr>' +
@@ -1336,14 +1336,14 @@ export function renderDashboardHtml(): string {
             : '<span class="badge badge-completed">▶ 自动调度中</span>';
 
           const pauseBtn = q.paused
-            ? '<button class="btn-sm" style="color:var(--green); border-color:rgba(16,185,129,0.4);" onclick="resumeSessionQueue(\'' + q.session_id + '\')">▶ 恢复调度</button>'
-            : '<button class="btn-sm" style="color:var(--yellow); border-color:rgba(245,158,11,0.4);" onclick="pauseSessionQueue(\'' + q.session_id + '\')">⏸ 暂停队列</button>';
+            ? '<button class="btn-sm" style="color:var(--green); border-color:rgba(16,185,129,0.4);" onclick="resumeSessionQueue(\\'' + q.session_id + '\\')">▶ 恢复调度</button>'
+            : '<button class="btn-sm" style="color:var(--yellow); border-color:rgba(245,158,11,0.4);" onclick="pauseSessionQueue(\\'' + q.session_id + '\\')">⏸ 暂停队列</button>';
 
           const rows = q.items.map((it, idx) => {
-            const modeToggleBtn = '<button class="btn-sm" onclick="toggleQueueItemMode(\'' + it.id + '\', \'' + it.mode + '\')">' + (it.mode === "auto" ? "⚡ 自动派发" : "🔔 仅提醒") + '</button>';
-            const cancelBtn = '<button class="btn-sm btn-sm-danger" onclick="cancelQueueItem(\'' + it.id + '\')">✕ 取消</button>';
-            const moveUpBtn = idx > 0 ? '<button class="btn-sm" onclick="moveQueueItem(\'' + q.session_id + '\', \'' + it.id + '\', ' + (it.position - 1) + ')">▲</button>' : '';
-            const moveDownBtn = idx < q.items.length - 1 ? '<button class="btn-sm" onclick="moveQueueItem(\'' + q.session_id + '\', \'' + it.id + '\', ' + (it.position + 1) + ')">▼</button>' : '';
+            const modeToggleBtn = '<button class="btn-sm" onclick="toggleQueueItemMode(\\'' + it.id + '\\', \\'' + it.mode + '\\')">' + (it.mode === "auto" ? "⚡ 自动派发" : "🔔 仅提醒") + '</button>';
+            const cancelBtn = '<button class="btn-sm btn-sm-danger" onclick="cancelQueueItem(\\'' + it.id + '\\')">✕ 取消</button>';
+            const moveUpBtn = idx > 0 ? '<button class="btn-sm" onclick="moveQueueItem(\\'' + q.session_id + '\\', \\'' + it.id + '\\', ' + (it.position - 1) + ')">▲</button>' : '';
+            const moveDownBtn = idx < q.items.length - 1 ? '<button class="btn-sm" onclick="moveQueueItem(\\'' + q.session_id + '\\', \\'' + it.id + '\\', ' + (it.position + 1) + ')">▼</button>' : '';
 
             return '<tr>' +
               '<td style="width:50px; font-weight:bold; color:var(--accent);">#' + it.position + '</td>' +
@@ -1490,7 +1490,7 @@ export function renderDashboardHtml(): string {
                 : '<span style="color:var(--text-muted); font-size:12px;">备选</span>';
 
               const switchBtn = !ca.current
-                ? '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4);" onclick="switchCockpitAccount(\'' + ca.accountId + '\')">切换主账号</button>'
+                ? '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4);" onclick="switchCockpitAccount(\\'' + ca.accountId + '\\')">切换主账号</button>'
                 : '<span style="color:var(--green); font-size:12px;">活动中</span>';
 
               const resetDisplay = ca.resetTime ? new Date(ca.resetTime).toLocaleTimeString() : "-";
@@ -1529,9 +1529,9 @@ export function renderDashboardHtml(): string {
 
               const actions = 
                 '<div style="display:flex; justify-content:flex-end; gap:6px;">' +
-                  (p.enabled ? '<button class="btn-sm" onclick="pauseProfile(\'' + p.alias + '\')">⏸ 暂停</button>' : '<button class="btn-sm" style="color:var(--green);" onclick="resumeProfile(\'' + p.alias + '\')">▶ 恢复</button>') +
-                  '<button class="btn-sm" onclick="bindEmailProfile(\'' + p.alias + '\')">🔗 绑定邮箱</button>' +
-                  '<button class="btn-sm" onclick="showLoginCmd(\'' + p.home + '\', \'' + p.alias + '\')">🔑 登录命令</button>' +
+                  (p.enabled ? '<button class="btn-sm" onclick="pauseProfile(\\'' + p.alias + '\\')">⏸ 暂停</button>' : '<button class="btn-sm" style="color:var(--green);" onclick="resumeProfile(\\'' + p.alias + '\\')">▶ 恢复</button>') +
+                  '<button class="btn-sm" onclick="bindEmailProfile(\\'' + p.alias + '\\')">🔗 绑定邮箱</button>' +
+                  '<button class="btn-sm" onclick="showLoginCmd(\\'' + p.home + '\\', \\'' + p.alias + '\\')">🔑 登录命令</button>' +
                 '</div>';
 
               return '<tr>' +
