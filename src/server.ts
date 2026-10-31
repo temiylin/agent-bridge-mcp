@@ -19,6 +19,12 @@ import { registerTerminalTools } from "./terminal.js";
 import { registerProjectInspectionTool } from "./project-inspection.js";
 import { registerGitTools } from "./git-tools.js";
 import { registerGitHubPrTools } from "./github-pr.js";
+import { registerRequirementsTools } from "./requirements-tools.js";
+import { registerQueueTools } from "./queue-tools.js";
+import { registerRecentTasksTool } from "./recent-tasks.js";
+import { registerWebhookTools } from "./webhook-tools.js";
+import { registerAccountResumeTools } from "./account-resume-tools.js";
+import { setTaskWebhook, WebhookEvent } from "./webhook.js";
 import { resolveTaskAgent } from "./routing.js";
 
 export interface BridgeMcpServerInstance {
@@ -60,8 +66,17 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
       continue_session: z.boolean().optional().describe("If true, resumes and continues the previous agent conversation session (e.g., codex exec resume --last or agy --continue)"),
       session_id: z.string().optional().describe("Optional specific session or thread ID to resume"),
+      on_complete: z
+        .object({
+          url: z.string().describe("Destination webhook URL (must be http/https)"),
+          headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
+          events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
+          secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
+        })
+        .optional()
+        .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, on_complete }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -194,6 +209,21 @@ ${prompt}
           });
         } catch {}
 
+        // If on_complete is provided, save opt-in task webhook
+        if (on_complete && on_complete.url) {
+          try {
+            setTaskWebhook(rootDir, taskId, {
+              url: on_complete.url,
+              headers: on_complete.headers,
+              events: on_complete.events as WebhookEvent[],
+              secret: on_complete.secret,
+            });
+            logger.info(`send_task: opt-in webhook configured for taskId=${taskId} to url=${on_complete.url}`);
+          } catch (whErr: any) {
+            logger.warn(`send_task: failed to set opt-in webhook: ${whErr?.message || String(whErr)}`);
+          }
+        }
+
         let metaDetails = "";
         if (agentName) metaDetails += `\nagent: ${agentName}`;
         if (modelParam) metaDetails += `\nmodel: ${modelParam}`;
@@ -323,6 +353,11 @@ ${prompt}
   registerProjectInspectionTool(server, rootDir, logger);
   registerGitTools(server, rootDir, logger);
   registerGitHubPrTools(server, rootDir, logger);
+  registerRequirementsTools(server, rootDir, logger);
+  registerQueueTools(server, rootDir, logger);
+  registerRecentTasksTool(server, rootDir, logger);
+  registerWebhookTools(server, rootDir, logger);
+  registerAccountResumeTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

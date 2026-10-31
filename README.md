@@ -235,6 +235,34 @@ The server exposes **39 dedicated tools** partitioned into functional categories
 | `worker_alive_summary`| Diagnostics | Probe if the local background worker process is running | Harmless POSIX signal 0 probe; no process termination |
 | `list_tasks_summary` | Diagnostics | Summary list of recent task executions and outcomes | Metadata whitelist; strictly bounds output count |
 | `agent_registry_summary`| Diagnostics | List available agents configured in `agents.json` | Whitelist only; suppresses command paths & args |
+| `save_requirement` | Requirements Backlog | Stash a requirement draft for later triage and dispatch | Generic caller-supplied project & topic/session_id; atomic persistence |
+| `list_requirements` | Requirements Backlog | Compact list of stored requirements (omits raw text) | Filter by project, topic, status (`draft`, `dispatched`, `merged`, `archived`) |
+| `get_requirement` | Requirements Backlog | Retrieve the full record of a specific requirement by ID | Full specification text, tags, metadata, and linked task ID |
+| `update_requirement` | Requirements Backlog | Update fields of an existing requirement draft | Edit title, raw_text, tags, topic, or status |
+| `merge_requirements` | Requirements Backlog | Merge multiple requirements into a new consolidated record | Source requirements marked `merged` with bidirectional pointers |
+| `archive_requirement` | Requirements Backlog | Mark requirement status as `archived` | Soft archive preservation |
+| `delete_requirement` | Requirements Backlog | Permanently delete a requirement record file | Strict ID whitelist & directory traversal protection |
+| `dispatch_requirement` | Requirements Backlog | Convert requirement into an agent task, reusing session_id | Optional `queue_if_busy: true` to enqueue if session is in-flight |
+| `enqueue_task` | Auto Task Queue | Sequence next task behind another task or within a session | Mode `auto` (runs on turn) or `notify` (marks ready); 1 task per session |
+| `list_queue` | Auto Task Queue | Compact list of queued items with prompt preview (<=80 chars) | Filter by session_id; shows position, status, and mode |
+| `reorder_queue` | Auto Task Queue | Reorder queue items by list of IDs or move item to position | Preserves 1-indexed contiguous positions |
+| `update_queue_item` | Auto Task Queue | Surgically update prompt, mode, or execution options of queued item | Safe in-place modification before execution |
+| `cancel_queue_item` | Auto Task Queue | Remove and cancel a queued task item | Immediate queue removal and position re-indexing |
+| `pause_queue` | Auto Task Queue | Pause automatic dispatching for a session's task queue | Manually hold dispatching; persists across restarts |
+| `resume_queue` | Auto Task Queue | Resume automatic dispatching for a session's task queue | Immediately enables next ready dispatch |
+| `list_recent_tasks` / `dashboard` | Dashboard | Compact overview of recent tasks and queued items | Shows topic/session_id, taskId, status (`running`/`completed`/`failed`/`queued`/`paused`), elapsed or finished_at, PR URL, last log line (~120 chars) |
+| `set_task_webhook` | Completion Webhook | Attach an opt-in completion webhook to a specific task | Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete |
+| `clear_task_webhook` | Completion Webhook | Clear and remove any completion webhook from a task | Stops further webhook delivery for the task |
+| `resume_after_account_switch` | Account Switch | Resume a quota-paused task or session after account switch | Re-dispatches with continue_session=true using identical session_id (conversations stay on machine) |
+| `auto_resume_on_account_ready` | Account Switch | Check account readiness and resume paused quota tasks | Optional probe; if Cockpit status is not detectable, use resume_after_account_switch directly |
+
+### Resume Same Session After Quota / Account Switch
+When an agent (e.g. Antigravity / `agy`) encounters an API quota, rate limit, or account exhaustion error (detected via exit code or error output like `resource_exhausted`, `quota exceeded`, `429`), the task is marked as `paused_quota` and its prompt, session alias, and metadata are stashed under `stash/<taskId>.json`. The session queue is paused cleanly and is **never** permanently failed.
+
+Because conversational history in Antigravity lives locally on the machine rather than in the cloud account, switching accounts (e.g. in Cockpit Tools) automatically restores access to the local conversation history. Calling `resume_after_account_switch(taskId | session_id)` re-dispatches the task using `continue_session: true` with the identical `session_id`, continuing the existing session rather than starting a new conversation. Note that `auto_resume_on_account_ready` is optional and depends on local Cockpit daemon availability; callers can always rely directly on `resume_after_account_switch`.
+
+### Opt-In Per-Task Completion Webhooks
+> **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` `["completed","failed","pr_opened"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
 
 ### Read-only queries in Gemini
 

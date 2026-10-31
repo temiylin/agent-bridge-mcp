@@ -10,6 +10,9 @@ import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
 import { writeStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
+import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
+import { triggerTaskWebhook } from "./webhook.js";
+import { isQuotaExhaustedError, stashQuotaTask } from "./session-quota.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
@@ -613,9 +616,18 @@ async function executeTaskFile(
     if (exitCode === null) exitCode = 1;
   }
 
+  const extractedSessionId = extractSessionIdFromOutput(stdoutData);
+  const finalSessionId = extractedSessionId || targetSessionToResume;
+  if (finalSessionId) {
+    recordSession(currentRoot, taskId, finalSessionId);
+    if (sessionId) {
+      recordSession(currentRoot, sessionId, finalSessionId);
+    }
+  }
+
   const finishedAt = new Date().toISOString();
   let status = "completed";
-  let state: "completed" | "failed" | "cancelled" = "completed";
+  let state: "completed" | "failed" | "cancelled" | "paused_quota" = "completed";
   let reason: string | undefined = undefined;
 
   if (isCancelled) {
@@ -627,16 +639,27 @@ async function executeTaskFile(
     state = "failed";
     reason = "timeout";
   } else if (exitCode !== 0) {
-    status = "failed";
-    state = "failed";
-  }
-
-  const extractedSessionId = extractSessionIdFromOutput(stdoutData);
-  const finalSessionId = extractedSessionId || targetSessionToResume;
-  if (finalSessionId) {
-    recordSession(currentRoot, taskId, finalSessionId);
-    if (sessionId) {
-      recordSession(currentRoot, sessionId, finalSessionId);
+    if (isQuotaExhaustedError(exitCode, stdoutData, stderrData)) {
+      status = "paused_quota";
+      state = "paused_quota";
+      reason = "quota or rate limit exhausted";
+      // Stash last prompt, session, and metadata for seamless resumption
+      try {
+        stashQuotaTask(currentRoot, {
+          taskId,
+          session_id: finalSessionId || sessionId,
+          agent: agentName,
+          model,
+          reasoningEffort,
+          prompt,
+          errorSnippet: (stderrData || stdoutData).slice(-300),
+          pausedAt: finishedAt,
+        });
+        logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
+      } catch {}
+    } else {
+      status = "failed";
+      state = "failed";
     }
   }
 
@@ -671,6 +694,22 @@ async function executeTaskFile(
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
   notify("agent-bridge", `Task ${taskId} ${status} [${agentName}]`);
+
+  // Hook auto-queue dispatcher on task completion/failure
+  try {
+    onTaskFinished(currentRoot, taskId, state, finalSessionId || sessionId, reason);
+  } catch (queueErr: any) {
+    logWorker("WARN", `Queue dispatch hook error on task ${taskId}: ${queueErr?.message || String(queueErr)}`);
+  }
+
+  // Trigger opt-in per-task completion webhook (NEVER blocks queue advance)
+  try {
+    const elapsedMs = startedAt && finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : undefined;
+    triggerTaskWebhook(currentRoot, taskId, state, finalSessionId || sessionId, elapsedMs).catch(() => {});
+  } catch (webhookErr: any) {
+    logWorker("WARN", `Webhook trigger error on task ${taskId}: ${webhookErr?.message || String(webhookErr)}`);
+  }
+
   return true;
 }
 
@@ -751,6 +790,13 @@ export class WorkerService {
       if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
       fs.writeFileSync(pidPath, String(process.pid), "utf8");
     } catch {}
+
+    // Reconcile queues on worker startup (dispatch items whose triggers already finished)
+    try {
+      reconcileQueues(this.root);
+    } catch (reconcileErr: any) {
+      logWorker("WARN", `Queue reconcile error on startup: ${reconcileErr?.message || String(reconcileErr)}`);
+    }
 
     while (this.isRunning && !this.isShuttingDown) {
       await this.scanOnce();
