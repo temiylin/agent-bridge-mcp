@@ -14,7 +14,8 @@ import { registerListTasksTool } from "./list-tasks.js";
 import { registerAgentRegistryTool } from "./agent-registry.js";
 import { registerDeviceInfoTool } from "./device-info.js";
 import { registerLocalFsTools } from "./local-fs.js";
-import { registerModelsTool } from "./models.js";
+import { registerModelsTool, getConfiguredDefaultModel, getValidModelIds } from "./models.js";
+import { getAgentAccountQuota, formatQuotaLine } from "./account-quota.js";
 import { registerTerminalTools } from "./terminal.js";
 import { registerProjectInspectionTool } from "./project-inspection.js";
 import { registerGitTools } from "./git-tools.js";
@@ -67,7 +68,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       prompt: z.string().describe("Task prompt content for the local agent (plain text)"),
       title: z.string().optional().describe("Optional task title"),
       agent: z.string().optional().describe("Optional agent name (must be registered in agents.json)"),
-      model: z.string().optional().describe("Optional model identifier for the execution agent (e.g., 'gpt-6.1', 'o3', 'gpt-6-luna')"),
+      model: z.string().optional().describe("Optional model id; must be one listed by list_models for the agent (invalid ids are rejected with the valid list). Omit to use the agent default (agy: gemini-3.8-flash-low, configurable via agents.json default_model)."),
       reasoning_effort: z.string().optional().describe("Optional reasoning effort for the model (e.g., 'low', 'medium', 'high', 'xhigh')"),
       continue_session: z.boolean().optional().describe("If true, resumes and continues the previous agent conversation session (e.g., codex exec resume --last or agy --continue)"),
       session_id: z.string().optional().describe("Optional specific session or thread ID to resume"),
@@ -101,7 +102,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .describe("任务通知配置：传 true 开启默认电脑通知；或传二级参数对象精细控制方式与时机"),
       timeout_seconds: z.number().optional().describe("规定时间内没有完成告警的超时秒数（简写参数，与 notify.timeout_seconds 作用一致）"),
       project_id: z.string().optional().describe("所属项目标识，用于路由至对应的 Slack 项目频道及配置项目属性"),
-      project_dir: z.string().optional().describe("项目工作目录路径，用于根据 projects.json 自动匹配项目归属"),
+      project_dir: z.string().optional().describe("项目工作目录路径：既作为 agent 的工作目录 (cwd)，也用于根据 projects.json 自动匹配项目归属。未传时使用匹配项目的 paths[0]"),
       callback_url: z.string().optional().describe("任务完成后的 HTTP Webhook 回调地址 (POST JSON)"),
       callback_headers: z.record(z.string(), z.string()).optional().describe("回调请求自定义 Headers 字典 (键值对，环境变量名格式如 $API_KEY 或 API_KEY)"),
       worktree: z
@@ -213,6 +214,31 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
             };
           }
           modelParam = model.trim();
+        }
+
+        // Reject models the agent does not offer (same catalog as list_models).
+        let modelSource = modelParam ? "explicit" : "";
+        if (modelParam && process.env.AGENT_BRIDGE_SKIP_MODEL_VALIDATION !== "1") {
+          const validIds = await withTimeout(getValidModelIds(rootDir, agentName).catch(() => null), 12000, null);
+          if (validIds && validIds.length > 0 && !validIds.includes(modelParam)) {
+            const def = getConfiguredDefaultModel(rootDir, agentName);
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: model "${modelParam}" is not available for agent "${agentName}". Valid models: [${validIds.join(", ")}]${def ? `\ndefault_model: ${def} (used when model is omitted)` : ""}`,
+                },
+              ],
+            };
+          }
+        }
+        if (!modelParam) {
+          const def = getConfiguredDefaultModel(rootDir, agentName);
+          if (def) {
+            modelParam = def;
+            modelSource = "default";
+          }
         }
 
         // Validate reasoning_effort if provided
@@ -360,7 +386,7 @@ ${prompt}
         if (projectResolution.channelId) metaDetails += `\nslack_channel: ${projectResolution.channelId}`;
         if (projectResolution.conflict) metaDetails += `\nrouting_conflict: true`;
         if (agentName) metaDetails += `\nagent: ${agentName}`;
-        if (modelParam) metaDetails += `\nmodel: ${modelParam}`;
+        if (modelParam) metaDetails += `\nmodel: ${modelParam}${modelSource === "default" ? " (default)" : ""}`;
         if (effortParam) metaDetails += `\nreasoning_effort: ${effortParam}`;
         if (continue_session) metaDetails += `\ncontinue_session: true`;
         if (session_id && session_id.trim()) metaDetails += `\nsession_id: ${session_id.trim()}`;
@@ -369,6 +395,16 @@ ${prompt}
         if (notifyEnabled !== undefined) metaDetails += `\nnotify: ${notifyEnabled}`;
         if (notifyChannel) metaDetails += `\nnotify_channel: ${notifyChannel}`;
         if (effectiveTimeoutSec) metaDetails += `\ntimeout_seconds: ${effectiveTimeoutSec}`;
+
+        const quota = await withTimeout(
+          getAgentAccountQuota(agentName, { model: modelParam || undefined, command: registry[agentName]?.command }).catch(() => null),
+          5000,
+          null
+        );
+        if (quota) {
+          metaDetails += `\naccount: ${formatQuotaLine(quota)}`;
+          metaDetails += `\naccount_quota: ${JSON.stringify(quota)}`;
+        }
 
         return {
           content: [
@@ -552,4 +588,12 @@ ${prompt}
   registerAccountPoolTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
+}
+
+
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise(resolve => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
+  });
 }
