@@ -56,7 +56,9 @@ async function runRecentTasksTests() {
   writeStatus(TEST_ROOT, runTaskId, {
     state: "running",
     startedAt: new Date(Date.now() - 45000).toISOString(), // 45s ago
-  });
+    pid: process.pid, // live pid so reconciliation keeps it running
+    workerPid: process.pid,
+  } as any);
   fs.writeFileSync(
     path.join(tasksDir, `${runTaskId}.md`),
     "# Running Task\n\n- **Task ID**: task_running_001\n- **Project**: billing-api\n- **Session ID**: sess_billing\n\nPrompt content\n"

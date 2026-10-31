@@ -1,3 +1,4 @@
+import { reconcileTaskStatus } from "./task-reconcile.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -15,6 +16,9 @@ export interface RecentTaskItem {
   finished_at?: string;
   pr_url?: string;
   last_log_line?: string;
+  /** Raw task state when it differs from status (e.g. suspected_stalled, cancelled). */
+  state?: string;
+  reason?: string;
 }
 
 /**
@@ -102,13 +106,16 @@ export function queryRecentTasks(
       const statusFilePath = path.join(statusDir, file);
       try {
         const raw = fs.readFileSync(statusFilePath, "utf8");
-        const statusObj = JSON.parse(raw);
+        let statusObj = JSON.parse(raw);
         if (!statusObj) continue;
+        if (statusObj.state === "running" || statusObj.state === "suspected_stalled") {
+          statusObj = reconcileTaskStatus(rootDir, { taskId: file.replace(/\.json$/, ""), ...statusObj });
+        }
 
         const taskId = statusObj.taskId || file.replace(/\.json$/, "");
         let stateStr = statusObj.state as string;
         let mappedStatus: RecentTaskItem["status"] = "queued";
-        if (stateStr === "running") mappedStatus = "running";
+        if (stateStr === "running" || stateStr === "suspected_stalled") mappedStatus = "running";
         else if (stateStr === "completed") mappedStatus = "completed";
         else if (stateStr === "failed" || stateStr === "cancelled") mappedStatus = "failed";
         else mappedStatus = "queued";
@@ -189,6 +196,8 @@ export function queryRecentTasks(
           finished_at,
           pr_url: prUrl,
           last_log_line: lastLogLine,
+          ...(stateStr !== mappedStatus ? { state: stateStr } : {}),
+          ...(statusObj.reason && mappedStatus !== "completed" ? { reason: String(statusObj.reason).slice(0, 300) } : {}),
         });
       } catch {}
     }

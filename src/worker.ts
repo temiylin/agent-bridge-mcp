@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
 import { loadAgents, AgentRegistry, AgentConfig, agentSupportsEffort } from "./agents.js";
+import { reconcileAllTasks, newestMtime, getStallThresholdMs } from "./task-reconcile.js";
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
@@ -657,6 +658,7 @@ async function executeTaskFile(
     reasoningEffort,
     account: effectiveAccountAlias,
     startedAt,
+    workerPid: process.pid,
     ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
   });
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "running" });
@@ -854,6 +856,23 @@ async function executeTaskFile(
         return reject(spawnErr);
       }
 
+      // Record child/worker pid, log path and work dir so status readers can detect ghosts.
+      try {
+        writeStatus(currentRoot, taskId, {
+          state: "running",
+          agent: agentName,
+          model,
+          reasoningEffort,
+          account: effectiveAccountAlias,
+          startedAt,
+          ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+          pid: child.pid,
+          workerPid: process.pid,
+          logPath: taskOutFilePath,
+          workDir: effectiveWorkingDir,
+        });
+      } catch {}
+
       if (effectiveTimeoutMs > 0) {
         timer = setTimeout(() => {
           isTimeout = true;
@@ -903,6 +922,45 @@ async function executeTaskFile(
         }, 10000);
       }
 
+      // Stall detection: no log output AND no work-dir change for AGENT_BRIDGE_STALL_MINUTES.
+      const stallMs = getStallThresholdMs();
+      let stallFlagged = false;
+      const stallCheckInterval: NodeJS.Timeout | null = stallMs > 0 ? setInterval(() => {
+        if (stallFlagged) return;
+        const now = Date.now();
+        if (now - lastOutputTime < stallMs) return;
+        const dirMtime = newestMtime(effectiveWorkingDir);
+        if (dirMtime && now - dirMtime < stallMs) return;
+        stallFlagged = true;
+        const mins = Math.round(stallMs / 60000);
+        const reason = `suspected stall: no log output and no change in ${effectiveWorkingDir || "work dir"} for ${mins} min (process ${child?.pid} still alive)`;
+        logWorker("WARN", `Task ${taskId} ${reason}`);
+        try {
+          writeStatus(currentRoot, taskId, {
+            state: "suspected_stalled",
+            agent: agentName, model, reasoningEffort, account: effectiveAccountAlias, startedAt,
+            ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+            pid: child?.pid, workerPid: process.pid, logPath: taskOutFilePath, workDir: effectiveWorkingDir,
+            lastActivityAt: new Date(Math.max(lastOutputTime, dirMtime || 0)).toISOString(),
+            reason,
+            logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined,
+          });
+        } catch {}
+        triggerTaskWebhook(currentRoot, taskId, "suspected_stalled", sessionId, now - new Date(startedAt).getTime()).catch(() => {});
+      }, Math.min(30000, Math.max(1000, Math.floor(stallMs / 4)))) : null;
+      const clearStall = () => {
+        if (!stallFlagged) return;
+        stallFlagged = false;
+        try {
+          writeStatus(currentRoot, taskId, {
+            state: "running", agent: agentName, model, reasoningEffort, account: effectiveAccountAlias, startedAt,
+            ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+            pid: child?.pid, workerPid: process.pid, logPath: taskOutFilePath, workDir: effectiveWorkingDir,
+            lastActivityAt: new Date().toISOString(),
+          });
+        } catch {}
+      };
+
       // Check for control/<taskId>.cancel every 1 second
       cancelCheckInterval = setInterval(() => {
         if (fs.existsSync(cancelFilePath)) {
@@ -927,6 +985,7 @@ async function executeTaskFile(
       child.stdout?.on("data", (chunk) => {
         lastOutputTime = Date.now();
         stuckWarned = false;
+        clearStall();
         const text = chunk.toString("utf8");
         stdoutData += text;
         try {
@@ -937,7 +996,12 @@ async function executeTaskFile(
       child.stderr?.on("data", (chunk) => {
         lastOutputTime = Date.now();
         stuckWarned = false;
-        stderrData += chunk.toString("utf8");
+        clearStall();
+        const errText = chunk.toString("utf8");
+        stderrData += errText;
+        try {
+          fs.appendFileSync(taskOutFilePath.replace(/\.out$/, ".err"), errText, "utf8");
+        } catch {}
       });
 
       child.on("error", (err) => {
@@ -945,6 +1009,7 @@ async function executeTaskFile(
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         if (stuckCheckInterval) clearInterval(stuckCheckInterval);
+        if (stallCheckInterval) clearInterval(stallCheckInterval);
         reject(err);
       });
 
@@ -953,6 +1018,7 @@ async function executeTaskFile(
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         if (stuckCheckInterval) clearInterval(stuckCheckInterval);
+        if (stallCheckInterval) clearInterval(stallCheckInterval);
         exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
@@ -1002,13 +1068,19 @@ async function executeTaskFile(
         logWorker("INFO", `Pool profile "${poolProfile.alias}" paused due to quota exhaustion.`);
       }
     } catch {}
-  } else if (isAgy && exitCode !== 0 && runDurationMs <= 30000) {
+  } else if (exitCode !== 0 && runDurationMs <= 30000) {
+    // Fast failure (any agent): surface the error text as the reason.
     status = "failed";
     state = "failed";
-    reason = (stderrData || stdoutData || "agy exited with error within 30s").trim();
+    const errText = (stderrData || stdoutData).trim();
+    reason = errText
+      ? `exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-8).join("\n").slice(-800)}`
+      : `${isAgy ? "agy" : agentName} exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s with no output`;
   } else if (exitCode !== 0) {
     status = "failed";
     state = "failed";
+    const errText = (stderrData || stdoutData).trim();
+    reason = `exited with code ${exitCode}${errText ? `: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-5).join("\n").slice(-500)}` : ""}`;
   }
 
   const extractedSessionId = extractSessionIdFromOutput(stdoutData);
@@ -1047,6 +1119,8 @@ async function executeTaskFile(
     ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
     ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
+    logPath: taskOutFilePath,
+    ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
   });
 
   saveProcessedTask(processedMap, taskId, finishedAt);
@@ -1290,6 +1364,10 @@ export class WorkerService {
       return 0;
     }
 
+    try {
+      reconcileAllTasks(this.root);
+    } catch {}
+
     let processedCount = 0;
     for (const file of files) {
       if (this.isShuttingDown) break;
@@ -1322,6 +1400,12 @@ export class WorkerService {
       const logsDir = path.dirname(pidPath);
       if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
       fs.writeFileSync(pidPath, String(process.pid), "utf8");
+    } catch {}
+
+    // Mark ghost tasks (running status but owning worker/agent process gone) as failed
+    try {
+      const fixed = reconcileAllTasks(this.root, { graceMs: 0 });
+      if (fixed.length) logWorker("WARN", `Reconciled ${fixed.length} ghost task(s) on startup: ${fixed.join(", ")}`);
     } catch {}
 
     // Reconcile queues on worker startup (dispatch items whose triggers already finished)

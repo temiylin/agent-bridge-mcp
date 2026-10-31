@@ -3,7 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
-import { readStatus } from "./status.js";
+import { readStatus, ACTIVE_STATES } from "./status.js";
+import { readReconciledStatus, reconcileTaskStatus } from "./task-reconcile.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 
@@ -48,8 +49,8 @@ export function registerOpsTools(
         };
       }
 
-      // Check status file first
-      const status = readStatus(rootDir, task_id);
+      // Check status file first (reconciled against the real worker/agent processes)
+      const status = readReconciledStatus(rootDir, task_id);
       if (status) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: status.state });
         return {
@@ -164,6 +165,23 @@ export function registerOpsTools(
           };
         }
       } catch {}
+
+      // Ghost task (status says running but no live worker/agent): resolve it directly.
+      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
+        const after = reconcileTaskStatus(rootDir, { taskId: task_id, ...currentStatus }, { graceMs: 0, childExitGraceMs: 0, finalState: "cancelled" });
+        if (after.state === "cancelled") {
+          audit(rootDir, { tool: "cancel_task", taskId: task_id, state: "cancelled" });
+          logger.info(`cancel_task: ${task_id} had no live process; marked cancelled`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Task "${task_id}" had no live worker/agent process (ghost); marked cancelled.\nreason: ${after.reason}`,
+              },
+            ],
+          };
+        }
+      }
 
       // Write control/<task_id>.cancel
       let cancelFilePath: string;

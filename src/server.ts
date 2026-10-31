@@ -6,7 +6,9 @@ import { isValidTaskId, generateTaskId, resolveSafePath } from "./validator.js";
 import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
 import { audit } from "./audit.js";
-import { writeStatus } from "./status.js";
+import { writeStatus, readStatus, TaskStatusInfo } from "./status.js";
+import { isPidAlive } from "./task-reconcile.js";
+import path from "node:path";
 import { registerOpsTools } from "./ops-tools.js";
 import { registerRepoStatusTool } from "./repo-status.js";
 import { registerWorkerAliveTool } from "./worker-alive.js";
@@ -137,7 +139,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
           headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
-          events: z.array(z.enum(["completed", "failed", "pr_opened"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
+          events: z.array(z.enum(["completed", "failed", "pr_opened", "stalled"])).optional().describe("Events to trigger webhook on (default: ['completed', 'failed', 'stalled'])"),
           secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),
         })
         .optional()
@@ -396,11 +398,20 @@ ${prompt}
         if (notifyChannel) metaDetails += `\nnotify_channel: ${notifyChannel}`;
         if (effectiveTimeoutSec) metaDetails += `\ntimeout_seconds: ${effectiveTimeoutSec}`;
 
-        const quota = await withTimeout(
-          getAgentAccountQuota(agentName, { model: modelParam || undefined, command: registry[agentName]?.command }).catch(() => null),
-          5000,
-          null
-        );
+        const [quota, early] = await Promise.all([
+          withTimeout(
+            getAgentAccountQuota(agentName, { model: modelParam || undefined, command: registry[agentName]?.command }).catch(() => null),
+            5000,
+            null
+          ),
+          waitForEarlyOutcome(rootDir, taskId),
+        ]);
+        if (early) {
+          metaDetails += `\nstate: ${early.state}`;
+          if (early.pid) metaDetails += `\npid: ${early.pid}`;
+          if (early.reason) metaDetails += `\nreason: ${early.reason}`;
+          if (early.logTail && early.state === "failed") metaDetails += `\nlog_tail:\n${early.logTail}`;
+        }
         if (quota) {
           metaDetails += `\naccount: ${formatQuotaLine(quota)}`;
           metaDetails += `\naccount_quota: ${JSON.stringify(quota)}`;
@@ -410,9 +421,10 @@ ${prompt}
           content: [
             {
               type: "text",
-              text: `Task dispatched successfully.\ntask_id: ${taskId}\npath: ${taskFilePath}${metaDetails}`,
+              text: `${early && early.state === "failed" ? "Task dispatched but FAILED immediately." : "Task dispatched successfully."}\ntask_id: ${taskId}\npath: ${taskFilePath}${metaDetails}`,
             },
           ],
+          ...(early && early.state === "failed" ? { isError: true } : {}),
         };
       } catch (err: any) {
         logger.error(`send_task error: ${err?.message || String(err)}`);
@@ -596,4 +608,34 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
     const t = setTimeout(() => resolve(fallback), ms);
     p.then(v => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
   });
+}
+
+/**
+ * Fast-failure window: if a live worker picks the task up and it dies within
+ * AGENT_BRIDGE_SEND_TASK_WAIT_MS (default 6000; 0 disables), return its status so the
+ * caller sees the reason immediately. Stops early while the task is still queued
+ * behind another task.
+ */
+async function waitForEarlyOutcome(rootDir: string, taskId: string): Promise<TaskStatusInfo | null> {
+  const waitMs = Number(process.env.AGENT_BRIDGE_SEND_TASK_WAIT_MS ?? 6000);
+  if (!Number.isFinite(waitMs) || waitMs <= 0) return null;
+  let workerPid = 0;
+  try {
+    workerPid = Number(fs.readFileSync(path.join(rootDir, "logs", "worker.pid"), "utf8").trim());
+  } catch {}
+  if (!isPidAlive(workerPid)) return null;
+  const start = Date.now();
+  let last: TaskStatusInfo | null = null;
+  while (Date.now() - start < waitMs) {
+    await new Promise(r => setTimeout(r, 400));
+    try {
+      last = readStatus(rootDir, taskId);
+    } catch {
+      last = null;
+    }
+    if (!last) continue;
+    if (["failed", "cancelled", "completed", "paused_quota"].includes(last.state)) return last;
+    if (last.state === "queued" && Date.now() - start > 3500) return last;
+  }
+  return last;
 }

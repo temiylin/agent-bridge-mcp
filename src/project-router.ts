@@ -22,6 +22,8 @@ export interface VerifyPrConfig {
 export interface MergeDeployConfig {
   checkout_path?: string;
   target_branch?: string;
+  /** Git remote to fast-forward from (default "origin"). */
+  remote?: string;
   services?: string[];
 }
 

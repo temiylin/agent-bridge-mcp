@@ -5,7 +5,7 @@ import { resolveBridgeRoot } from "./config.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 import { getLastLogLine, extractPrUrl } from "./recent-tasks.js";
 
-export type WebhookEvent = "completed" | "failed" | "pr_opened";
+export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled";
 
 export interface TaskWebhookConfig {
   url: string;
@@ -17,7 +17,7 @@ export interface TaskWebhookConfig {
 export interface WebhookPayload {
   taskId: string;
   session_id?: string;
-  status: "completed" | "failed" | "pr_opened";
+  status: "completed" | "failed" | "pr_opened" | "stalled";
   pr_url?: string;
   elapsed_ms?: number;
   last_log_snippet?: string;
@@ -169,7 +169,7 @@ export async function deliverWebhookWithRetry(
 export async function triggerTaskWebhook(
   rootDir: string,
   taskId: string,
-  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota",
+  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota" | "suspected_stalled" | string,
   sessionId?: string,
   elapsedMs?: number
 ): Promise<void> {
@@ -181,8 +181,9 @@ export async function triggerTaskWebhook(
     }
 
     // Determine matching event
-    const status = terminalStatus === "completed" ? "completed" : "failed";
-    const allowedEvents = config.events || ["completed", "failed"];
+    const status = terminalStatus === "completed" ? "completed" : terminalStatus === "suspected_stalled" ? "stalled" : "failed";
+    // Stall alerts fire by default (unless the caller restricted events and left "stalled" out).
+    const allowedEvents = config.events || ["completed", "failed", "stalled"];
 
     // Check if PR URL exists in outputs
     const outPath = path.join(rootDir, "logs", `${taskId}.out`);
