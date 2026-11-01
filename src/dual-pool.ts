@@ -496,6 +496,16 @@ export interface AccountOverviewRow {
   busy_task_id: string; // taskId | "idle" (first task, compact)
   running_task_count: number;
   login_status?: string;
+  quota_5h?: {
+    fraction: number;
+    pct: number;
+    reset_time?: string | number;
+  };
+  quota_weekly?: {
+    fraction: number;
+    pct: number;
+    reset_time?: string | number;
+  };
 }
 
 /** One row per account email across both pools. */
@@ -532,6 +542,54 @@ export function queryAccountOverview(
     r.cockpit_current = r.cockpit_current || !!c.current;
     r.quota_remaining = (c.remainingFractionSummary ?? 1).toFixed(2);
     if (c.resetTime) r.reset_time = c.resetTime;
+
+    // Split quotas into 5-hour rolling window vs multi-day / weekly window
+    if (c.quotas && typeof c.quotas === "object") {
+      let min5h = 1.0;
+      let reset5h: string | number | undefined;
+      let has5h = false;
+
+      let minWeekly = 1.0;
+      let resetWeekly: string | number | undefined;
+      let hasWeekly = false;
+
+      for (const q of Object.values(c.quotas)) {
+        if (!q || !q.resetTime) continue;
+        const resetMs = typeof q.resetTime === "number" ? q.resetTime : new Date(q.resetTime).getTime();
+        if (isNaN(resetMs)) continue;
+        const diffHours = (resetMs - now) / (3600 * 1000);
+        const frac = typeof q.remainingFraction === "number" ? q.remainingFraction : 1.0;
+
+        if (diffHours <= 12) {
+          has5h = true;
+          if (frac < min5h) min5h = frac;
+          if (!reset5h || resetMs < (typeof reset5h === "number" ? reset5h : new Date(reset5h).getTime())) {
+            reset5h = q.resetTime;
+          }
+        } else {
+          hasWeekly = true;
+          if (frac < minWeekly) minWeekly = frac;
+          if (!resetWeekly || resetMs < (typeof resetWeekly === "number" ? resetWeekly : new Date(resetWeekly).getTime())) {
+            resetWeekly = q.resetTime;
+          }
+        }
+      }
+
+      if (has5h) {
+        r.quota_5h = {
+          fraction: min5h,
+          pct: Math.max(0, Math.min(100, Math.round(min5h * 100))),
+          reset_time: reset5h,
+        };
+      }
+      if (hasWeekly) {
+        r.quota_weekly = {
+          fraction: minWeekly,
+          pct: Math.max(0, Math.min(100, Math.round(minWeekly * 100))),
+          reset_time: resetWeekly,
+        };
+      }
+    }
   }
   for (const p of profiles) {
     if (!p.email) continue;

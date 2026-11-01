@@ -1063,7 +1063,17 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
             if (action === "resume_email") {
               const { email } = body;
-              resumeEmail(defaultInstance.rootDir, String(email || ""));
+              const targetEmail = String(email || "").trim().toLowerCase();
+              resumeEmail(defaultInstance.rootDir, targetEmail);
+              // Also resume matching profiles in agy-pool.json if any
+              try {
+                const profiles = loadPoolConfig(defaultInstance.rootDir);
+                for (const p of profiles) {
+                  if (p.email && p.email.trim().toLowerCase() === targetEmail) {
+                    resumePoolProfile(defaultInstance.rootDir, p.alias);
+                  }
+                }
+              } catch {}
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true }));
               return;

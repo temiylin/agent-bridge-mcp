@@ -42,6 +42,16 @@ export interface PoolAccountOverview {
   reset_time?: string;
   pause_reason?: string;
   login_status?: string;
+  quota_5h?: {
+    fraction: number;
+    pct: number;
+    reset_time?: string;
+  };
+  quota_weekly?: {
+    fraction: number;
+    pct: number;
+    reset_time?: string;
+  };
 }
 
 export interface ProfileItem {
