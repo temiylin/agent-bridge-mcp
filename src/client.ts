@@ -89,6 +89,10 @@ export async function startRelayClient(options: RelayClientOptions = {}): Promis
         if (payload.type === "mcp_request") {
           const { requestId, body } = payload;
           if (body && body.id !== undefined) {
+            // Sanitize params if cursor is null to prevent MCP SDK schema validation rejection
+            if (body.params && typeof body.params === "object" && body.params.cursor === null) {
+              delete body.params.cursor;
+            }
             pendingRequests.set(body.id, { requestId, ws });
             await clientTransport.send(body);
           } else {
