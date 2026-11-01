@@ -43,6 +43,9 @@ export interface QueueCompactItem {
   status: QueueItemStatus;
   mode: QueueMode;
   prompt_preview: string;
+  project_id?: string;
+  plan_id?: string;
+  step_id?: string;
 }
 
 export function isValidQueueId(id: unknown): id is string {
@@ -198,7 +201,11 @@ export function toPromptPreview(prompt: string, maxLen = 80): string {
 /**
  * Lists compact queue items, optionally filtered by session_id.
  */
-export function listQueue(rootDir: string, sessionId?: string): QueueCompactItem[] {
+export function listQueue(
+  rootDir: string,
+  sessionId?: string,
+  filter?: { projectId?: string; planId?: string }
+): QueueCompactItem[] {
   let states: SessionQueueState[] = [];
   if (sessionId) {
     states = [loadSessionQueue(rootDir, sessionId.trim())];
@@ -206,9 +213,23 @@ export function listQueue(rootDir: string, sessionId?: string): QueueCompactItem
     states = listAllSessionQueues(rootDir);
   }
 
+  const normProj = filter?.projectId ? filter.projectId.trim().toLowerCase() : undefined;
+  const normPlan = filter?.planId ? filter.planId.trim().toLowerCase() : undefined;
+
   const result: QueueCompactItem[] = [];
   for (const state of states) {
     for (const item of state.items) {
+      const itemProj = (item.options?.project_id || item.options?.project || "").toString().trim();
+      const itemPlan = (item.options?.plan_id || "").toString().trim();
+      const itemStep = (item.options?.step_id || "").toString().trim();
+
+      if (normProj && itemProj.toLowerCase() !== normProj) {
+        continue;
+      }
+      if (normPlan && itemPlan.toLowerCase() !== normPlan) {
+        continue;
+      }
+
       result.push({
         id: item.id,
         session_id: item.session_id,
@@ -216,6 +237,9 @@ export function listQueue(rootDir: string, sessionId?: string): QueueCompactItem
         status: item.status,
         mode: item.mode,
         prompt_preview: toPromptPreview(item.prompt, 80),
+        project_id: itemProj || undefined,
+        plan_id: itemPlan || undefined,
+        step_id: itemStep || undefined,
       });
     }
   }

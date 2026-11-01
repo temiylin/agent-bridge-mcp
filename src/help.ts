@@ -13,6 +13,8 @@ Core Capabilities & Calling Guidelines:
 1. Project-Aware Tasks (projects.json & project_id):
    - Check registered projects via list_projects.
    - When dispatching tasks via send_task or enqueue_task, pass project_id to inherit workspace repo_path, default_base_branch, push_remote, forbidden_remotes, default_agent/model, timeout, and callbacks.
+   - If a task references a plan_id that is already bound to a project, project_id is inherited automatically without passing it again.
+   - Requirements can be saved with project_id (save_requirement), and dispatching a requirement (dispatch_requirement) automatically propagates project_id to the created task, and can directly target plan_id and step_id.
    - git_push and merge_and_deploy strictly enforce forbidden_remotes against resolved push URLs to prevent pushing to forbidden remotes.
 
 2. Multi-Step Execution Plans (feat/plans):
@@ -73,6 +75,8 @@ When \`project_id\` is passed to \`send_task\` or \`enqueue_task\`, the task inh
 - \`default_agent\` & \`default_model\`: Preferred agent executable and model.
 - \`default_timeout_seconds\`: Soft overdue and hard kill limits.
 - \`callback_url\` & \`callback_headers\`: Webhook completion callbacks.
+
+*Tip*: If a task or queue item references a \`plan_id\` that is associated with a \`project_id\`, \`project_id\` and all its settings are inherited automatically. Likewise, \`dispatch_requirement\` automatically forwards the requirement's \`project_id\` to the task.
 
 #### Security Guardrails:
 1. **URL-based \`forbidden_remotes\`**: \`git_push\` and \`merge_and_deploy\` resolve the target remote's push URL (\`git remote get-url --push <remote>\`) and match against host/path rules (e.g., matching \`gitee.com\` or \`ssh://git@gitee.com/...\`). Pushes to forbidden remotes are strictly blocked.

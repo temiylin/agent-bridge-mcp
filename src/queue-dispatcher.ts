@@ -59,8 +59,33 @@ export function dispatchTaskDirect(
     fs.mkdirSync(tasksDir, { recursive: true });
   }
 
+  let effectivePlan: Plan | null = null;
+  let effectiveStep: PlanStep | null = null;
+  let planPromptPrefix = "";
+  if (params.plan_id && params.plan_id.trim()) {
+    const cleanPlanId = params.plan_id.trim();
+    if (!params.step_id || !params.step_id.trim()) {
+      throw new Error("step_id is required when plan_id is provided.");
+    }
+    const cleanStepId = params.step_id.trim();
+    effectivePlan = getPlan(rootDir, cleanPlanId);
+    if (!effectivePlan) {
+      throw new Error(`Plan "${cleanPlanId}" not found.`);
+    }
+    effectiveStep = effectivePlan.steps.find((s) => s.id === cleanStepId) || null;
+    if (!effectiveStep) {
+      throw new Error(`Step "${cleanStepId}" not found in plan "${cleanPlanId}".`);
+    }
+    planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
+  }
+
+  const effectiveProjectId =
+    (params.project_id && params.project_id.trim()) ||
+    (effectivePlan?.project_id && effectivePlan.project_id.trim()) ||
+    undefined;
+
   const projectResolution = resolveProject(rootDir, {
-    projectId: params.project_id,
+    projectId: effectiveProjectId,
     projectDir: params.project_dir,
   });
   const matchedProject = projectResolution.project;
@@ -103,26 +128,6 @@ export function dispatchTaskDirect(
         ? matchedProject.default_timeout_seconds
         : undefined;
   const effectiveProjectDir = params.project_dir || configuredRepoPath;
-
-  let effectivePlan: Plan | null = null;
-  let effectiveStep: PlanStep | null = null;
-  let planPromptPrefix = "";
-  if (params.plan_id && params.plan_id.trim()) {
-    const cleanPlanId = params.plan_id.trim();
-    if (!params.step_id || !params.step_id.trim()) {
-      throw new Error("step_id is required when plan_id is provided.");
-    }
-    const cleanStepId = params.step_id.trim();
-    effectivePlan = getPlan(rootDir, cleanPlanId);
-    if (!effectivePlan) {
-      throw new Error(`Plan "${cleanPlanId}" not found.`);
-    }
-    effectiveStep = effectivePlan.steps.find((s) => s.id === cleanStepId) || null;
-    if (!effectiveStep) {
-      throw new Error(`Step "${cleanStepId}" not found in plan "${cleanPlanId}".`);
-    }
-    planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
-  }
 
   const taskId = generateTaskId();
   const taskFilePath = resolveSafePath(tasksDir, rootDir, `${taskId}.md`);

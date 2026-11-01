@@ -1569,7 +1569,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
             {
               service: "agent-bridge-mcp",
               status: "online",
-              version: "1.0.0",
+              version: "1.1.0",
               endpoints: {
                 mcp: "/mcp",
                 sse: "/sse",
