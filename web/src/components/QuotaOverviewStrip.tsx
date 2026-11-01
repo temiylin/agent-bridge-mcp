@@ -131,35 +131,59 @@ export const QuotaOverviewStrip: React.FC = () => {
                   {/* Quota Bars: if rich quota_buckets exists, show the exact breakdown (Claude, Gemini, Argon) */}
                   {acc.quota_buckets && acc.quota_buckets.length > 0 ? (
                     <div className="space-y-2 mt-1">
-                      {acc.quota_buckets.map((b) => (
-                        <div key={b.bucketId} className="space-y-0.5">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-base-content/70 flex items-center gap-1">
-                              {b.window === 'weekly' ? (
-                                <Calendar className="w-3 h-3 text-purple-400" />
-                              ) : (
-                                <Clock className="w-3 h-3 text-base-content/50" />
-                              )}
-                              <span>{b.label}</span>
-                            </span>
-                            <div className="flex items-center gap-2">
-                              {b.reset_time && (
-                                <span className="font-mono text-[10px] text-base-content/40">
-                                  重置: {formatTime(b.reset_time)}
+                      {(() => {
+                        // Check if Gemini Weekly is 0 or exhausted
+                        const geminiWeeklyBucket = acc.quota_buckets.find(
+                          (bk) => bk.bucketId === 'gemini-weekly' || bk.label.includes('Gemini (Weekly)')
+                        );
+                        const isGeminiWeeklyDepleted = geminiWeeklyBucket !== undefined && geminiWeeklyBucket.pct <= 0;
+
+                        return acc.quota_buckets.map((b) => {
+                          const isGemini5h = b.bucketId === 'gemini-5h' || b.label.includes('Gemini (5h)');
+                          const isBlockedByWeekly = isGemini5h && (isGeminiWeeklyDepleted || b.disabled);
+
+                          // If blocked by weekly limit being 0, don't show green: use muted gray / dashed bar indicating unusable
+                          const barColor = isBlockedByWeekly ? 'progress-neutral opacity-40' : getProgressColor(b.pct);
+                          const textColor = isBlockedByWeekly ? 'text-base-content/40' : getTextColor(b.pct);
+
+                          return (
+                            <div key={b.bucketId} className="space-y-0.5">
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="text-base-content/70 flex items-center gap-1">
+                                  {b.window === 'weekly' ? (
+                                    <Calendar className="w-3 h-3 text-purple-400" />
+                                  ) : (
+                                    <Clock className="w-3 h-3 text-base-content/50" />
+                                  )}
+                                  <span className={isBlockedByWeekly ? 'line-through text-base-content/50' : ''}>
+                                    {b.label}
+                                  </span>
+                                  {isBlockedByWeekly && (
+                                    <span className="badge badge-xs badge-ghost text-[9px] px-1 py-0 text-base-content/50">
+                                      周额度耗尽不可用
+                                    </span>
+                                  )}
                                 </span>
-                              )}
-                              <span className={`font-mono font-bold ${getTextColor(b.pct)}`}>
-                                {b.pct}%
-                              </span>
+                                <div className="flex items-center gap-2">
+                                  {b.reset_time && (
+                                    <span className="font-mono text-[10px] text-base-content/40">
+                                      重置: {formatTime(b.reset_time)}
+                                    </span>
+                                  )}
+                                  <span className={`font-mono font-bold ${textColor}`}>
+                                    {isBlockedByWeekly ? '不可用' : `${b.pct}%`}
+                                  </span>
+                                </div>
+                              </div>
+                              <progress
+                                className={`progress w-full h-1.5 ${barColor}`}
+                                value={isBlockedByWeekly ? 0 : b.pct}
+                                max="100"
+                              ></progress>
                             </div>
-                          </div>
-                          <progress
-                            className={`progress w-full h-1.5 ${getProgressColor(b.pct)}`}
-                            value={b.pct}
-                            max="100"
-                          ></progress>
-                        </div>
-                      ))}
+                          );
+                        });
+                      })()}
                     </div>
                   ) : (
                     /* Fallback to dual 5h & Weekly summary */
