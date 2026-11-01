@@ -9,10 +9,16 @@ import { listAllSessionQueues, SessionQueueState } from "./queue.js";
 
 export interface RecentTaskItem {
   taskId: string;
-  status: "running" | "completed" | "failed" | "queued" | "paused";
+  status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota";
   session_id?: string;
   project?: string;
+  agent?: string;
+  model?: string;
+  account?: string;
+  workDir?: string;
   elapsed?: string;
+  last_activity_at?: string;
+  created_at?: string;
   finished_at?: string;
   pr_url?: string;
   last_log_line?: string;
@@ -117,6 +123,7 @@ export function queryRecentTasks(
         let mappedStatus: RecentTaskItem["status"] = "queued";
         if (stateStr === "running" || stateStr === "suspected_stalled") mappedStatus = "running";
         else if (stateStr === "completed") mappedStatus = "completed";
+        else if (stateStr === "paused_quota") mappedStatus = "paused_quota";
         else if (stateStr === "failed" || stateStr === "cancelled") mappedStatus = "failed";
         else mappedStatus = "queued";
 
@@ -124,6 +131,10 @@ export function queryRecentTasks(
         let sessionId = statusObj.sessionId;
         let project: string | undefined = undefined;
         let prUrl: string | undefined = undefined;
+        let createdAt: string | undefined = undefined;
+        let taskAgent: string | undefined = statusObj.agent;
+        let taskModel: string | undefined = statusObj.model;
+        let taskAccount: string | undefined = statusObj.account;
 
         const taskFilePath = path.join(tasksDir, `${taskId}.md`);
         if (fs.existsSync(taskFilePath)) {
@@ -135,7 +146,31 @@ export function queryRecentTasks(
             }
             const pMatch = taskContent.match(/- \*\*Project(?:\s*Name)?\*\*:\s*([^\r\n]+)/i);
             if (pMatch) project = pMatch[1].trim();
+            const cMatch = taskContent.match(/- \*\*Created At\*\*:\s*([^\r\n]+)/i);
+            if (cMatch) createdAt = cMatch[1].trim();
+            if (!taskAgent) {
+              const aMatch = taskContent.match(/- \*\*Agent\*\*:\s*([^\r\n]+)/i);
+              if (aMatch) taskAgent = aMatch[1].trim();
+            }
+            if (!taskModel) {
+              const mMatch = taskContent.match(/- \*\*Model\*\*:\s*([^\r\n]+)/i);
+              if (mMatch) taskModel = mMatch[1].trim();
+            }
+            if (!taskAccount) {
+              const accMatch = taskContent.match(/- \*\*Account\*\*:\s*([^\r\n]+)/i);
+              if (accMatch) taskAccount = accMatch[1].trim();
+            }
           } catch {}
+        }
+
+        if (!createdAt) {
+          const idMatch = taskId.match(/^task_(\d{13})/);
+          if (idMatch) {
+            const ts = parseInt(idMatch[1], 10);
+            if (!isNaN(ts) && ts > 1000000000000) {
+              createdAt = new Date(ts).toISOString();
+            }
+          }
         }
 
         // Check elapsed for running tasks or finished_at
@@ -150,9 +185,19 @@ export function queryRecentTasks(
           }
         }
 
-        // Get last log line from logs/<taskId>.out
+        // Get last log line from logs/<taskId>.out and last activity timestamp
         const outFilePath = path.join(logsDir, `${taskId}.out`);
         let lastLogLine = getLastLogLine(outFilePath, 120);
+        let lastActivityAt: string | undefined = statusObj.lastActivityAt;
+        if (!lastActivityAt && fs.existsSync(outFilePath)) {
+          try {
+            const stat = fs.statSync(outFilePath);
+            lastActivityAt = stat.mtime.toISOString();
+          } catch {}
+        }
+        if (!lastActivityAt) {
+          lastActivityAt = finished_at || statusObj.startedAt || createdAt;
+        }
 
         // Check for PR URL in out log or result file
         if (fs.existsSync(outFilePath)) {
@@ -192,7 +237,13 @@ export function queryRecentTasks(
           status: mappedStatus,
           session_id: sessionId,
           project,
+          agent: taskAgent,
+          model: taskModel,
+          account: taskAccount,
+          workDir: statusObj.workDir,
           elapsed,
+          last_activity_at: lastActivityAt,
+          created_at: createdAt,
           finished_at,
           pr_url: prUrl,
           last_log_line: lastLogLine,
@@ -224,17 +275,21 @@ export function queryRecentTasks(
         status: itemStatus,
         session_id: q.session_id,
         project,
+        agent: item.options?.agent,
+        model: item.options?.model,
+        account: item.options?.account,
+        created_at: item.created_at,
         last_log_line: lastLogLine,
       });
     }
   }
 
-  // 3. Sort: running tasks first, then by finished_at/createdAt descending
+  // 3. Sort: running tasks first, then by finished_at/created_at descending
   items.sort((a, b) => {
     if (a.status === "running" && b.status !== "running") return -1;
     if (b.status === "running" && a.status !== "running") return 1;
-    const timeA = a.finished_at ? new Date(a.finished_at).getTime() : 0;
-    const timeB = b.finished_at ? new Date(b.finished_at).getTime() : 0;
+    const timeA = (a.finished_at ? new Date(a.finished_at).getTime() : 0) || (a.created_at ? new Date(a.created_at).getTime() : 0);
+    const timeB = (b.finished_at ? new Date(b.finished_at).getTime() : 0) || (b.created_at ? new Date(b.created_at).getTime() : 0);
     return timeB - timeA;
   });
 

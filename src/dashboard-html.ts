@@ -114,9 +114,10 @@ export function renderDashboardHtml(): string {
 
     /* Container */
     .container {
-      max-width: 1100px;
-      margin: 28px auto;
-      padding: 0 24px;
+      width: 100%;
+      max-width: 100%;
+      margin: 18px 0;
+      padding: 0 28px;
     }
 
     /* Hero / Access Bar */
@@ -643,6 +644,186 @@ export function renderDashboardHtml(): string {
       margin-top: 4px;
       font-family: monospace;
     }
+
+    /* 2-Layer Layout: Compact Hardware Bar */
+    .compact-hw-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px 16px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+    .compact-hw-bar.warning {
+      border-color: rgba(239, 68, 68, 0.5);
+      background: rgba(239, 68, 68, 0.08);
+      color: #fca5a5;
+    }
+    .hw-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .hw-val {
+      font-family: monospace;
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    /* Top Overview Metric Cards */
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .metric-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+    .metric-card.active {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.08);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .metric-card-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .metric-card-val {
+      font-size: 26px;
+      font-weight: 800;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: -0.02em;
+    }
+    .metric-card-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .val-running { color: #38bdf8; }
+    .val-queued { color: #fbbf24; }
+    .val-paused { color: #c084fc; }
+    .val-completed { color: #34d399; }
+    .val-failed { color: #f87171; }
+
+    /* Quick Quota Strip */
+    .quick-quota-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-top: 24px;
+    }
+    .quick-quota-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .quota-chip {
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .quota-chip-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .quota-chip-bar {
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .quota-chip-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    /* Settings Button & Modal Drawer */
+    .btn-settings {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-settings:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .settings-modal-box {
+      background: #101726;
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+      width: 95%;
+      max-width: 1200px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+      position: relative;
+    }
+    .settings-tab-bar {
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .settings-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .settings-tab-btn:hover { color: var(--text-main); }
+    .settings-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -661,324 +842,375 @@ export function renderDashboardHtml(): string {
         <span class="badge-dot"></span>
         <span>本地控制台已激活 (Port 38080)</span>
       </div>
+      <button class="btn-settings" onclick="openSettingsModal()">
+        <span>⚙️ 设置与配置</span>
+      </button>
     </div>
   </header>
 
   <div class="container">
-    <!-- Top Access Bar -->
-    <div class="access-card">
-      <div class="access-item">
-        <span class="access-label">本机专属识别码 (Device Token)</span>
-        <div class="access-val">
-          <span id="txt-token">加载中...</span>
-          <button class="btn-copy" onclick="copyText('txt-token')">复制</button>
-        </div>
+    <!-- Compact Hardware Status Bar -->
+    <div id="compact-hw-bar" class="compact-hw-bar">
+      <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+        <span class="hw-item">💻 <span id="hw-cpu" class="hw-val">加载中...</span></span>
+        <span class="hw-item">🧠 内存: <span id="hw-mem" class="hw-val">-</span></span>
+        <span class="hw-item">⚙️ 守护进程: <span id="hw-worker" class="hw-val" style="color:var(--green);">-</span></span>
       </div>
-      <div class="access-item">
-        <span class="access-label">云端 MCP 接入地址 (用于 ChatGPT)</span>
-        <div class="access-val">
-          <span id="txt-url">加载中...</span>
-          <button class="btn-copy" onclick="copyText('txt-url')">复制</button>
-        </div>
+      <div style="display:flex; gap:12px; align-items:center;">
+        <a href="/health" target="_blank" style="color:var(--accent); text-decoration:none; font-size:12px;">🩺 健康检测</a>
+        <a href="/status" target="_blank" style="color:var(--text-muted); text-decoration:none; font-size:12px;">📊 状态接口</a>
+        <a href="/mcp" target="_blank" style="color:var(--text-muted); text-decoration:none; font-size:12px;">🔌 MCP</a>
       </div>
     </div>
 
-    <!-- Tab Bar -->
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchTab('tab-routing', this)">🎯 调度偏好与场景规则</button>
-      <button class="tab-btn" onclick="switchTab('tab-agents', this)">🤖 本地 Agent 注册 (agents.json)</button>
-      <button class="tab-btn" onclick="switchTab('tab-recent-tasks', this); loadRecentTasks();">🕒 最近任务</button>
-      <button class="tab-btn" onclick="switchTab('tab-requirements', this); loadRequirements();">📋 需求暂存</button>
-      <button class="tab-btn" onclick="switchTab('tab-queue', this); loadQueue();">⏳ 自动排队</button>
-      <button class="tab-btn" onclick="switchTab('tab-pool', this); loadPool();">👥 agy 账号池</button>
-      <button class="tab-btn" onclick="switchTab('tab-system', this); loadSystemStats();">💻 硬件监控与诊断</button>
+    <!-- Top Overview Metric Cards -->
+    <div class="overview-grid">
+      <div class="metric-card" onclick="filterByOverviewCard('running')">
+        <div class="metric-card-label">⚡ 运行中任务</div>
+        <div class="metric-card-val val-running" id="ov-running">0</div>
+        <div class="metric-card-hint">正在占用 Agent 执行</div>
+      </div>
+      <div class="metric-card" onclick="filterByOverviewCard('queued')">
+        <div class="metric-card-label">⏳ 排队等待中</div>
+        <div class="metric-card-val val-queued" id="ov-queued">0</div>
+        <div class="metric-card-hint">排队等待空闲通道</div>
+      </div>
+      <div class="metric-card" onclick="filterByOverviewCard('paused_quota')">
+        <div class="metric-card-label">⏸ 额度暂停</div>
+        <div class="metric-card-val val-paused" id="ov-paused">0</div>
+        <div class="metric-card-hint">等额度重置或改派</div>
+      </div>
+      <div class="metric-card" onclick="filterByOverviewCard('completed_today')">
+        <div class="metric-card-label">✓ 今日完成</div>
+        <div class="metric-card-val val-completed" id="ov-completed-today">0</div>
+        <div class="metric-card-hint">今日已交付的 PR/结果</div>
+      </div>
+      <div class="metric-card" onclick="filterByOverviewCard('failed_today')">
+        <div class="metric-card-label">✕ 今日异常/取消</div>
+        <div class="metric-card-val val-failed" id="ov-failed-today">0</div>
+        <div class="metric-card-hint">失败或用户手动取消</div>
+      </div>
     </div>
 
-    <!-- Tab 1: Routing & Instructions -->
-    <div id="tab-routing" class="tab-pane active">
-      <!-- Section 1: Global Instructions -->
-      <div class="section-card">
-        <div class="section-title">
-          <span>📝 全局分发指导说明 (AI Dispatch Instructions)</span>
-        </div>
-        <p class="section-desc">
-          在这里写下您期望 AI 遵循的分发习惯与场景规则。此说明会自动同步给 ChatGPT 及外部调用者，作为其自动判断任务归属的首要原则。默认留空，由您自主按需定义。
-        </p>
-        <div class="form-group">
-          <textarea id="inp-instructions" placeholder="默认留空（选填）。由您自主决定，例如可填写：'涉及后端开发走 codex；涉及前端页面走 agy' 等自定义习惯。"></textarea>
-        </div>
-        <div class="form-group" style="margin-bottom:0">
-          <label>默认兜底 Agent (Default Fallback Agent)</label>
-          <select id="sel-default-agent" style="max-width:320px"></select>
-          <p class="section-desc" style="margin-top:6px; margin-bottom:0">
-            当外部请求未显式指定 Agent，且未能命中任何特定关键词规则时，自动指派至此 Agent。
+    <!-- Main Monitoring View (Tasks Stream & Flow) -->
+    <div class="section-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+        <div>
+          <div class="section-title">🕒 任务流与实时监控 (Task Monitor)</div>
+          <p class="section-desc" style="margin-bottom:0">
+            默认实时追踪运行中、排队及暂停任务，支持快速改派、重试续跑、挂起和日志回溯。
           </p>
         </div>
-      </div>
-
-      <!-- Section 2: Scenario Rules -->
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
-          <div>
-            <div class="section-title">⚡ 场景与关键词路由表 (Keyword Routing Rules)</div>
-            <p class="section-desc" style="margin-bottom:0">
-              当任务内容（Prompt）中包含以下关键词时，底层任务派发中心将自动路由到对应的 Agent 执行。
-            </p>
-          </div>
-          <div style="display:flex; gap:8px;">
-            <button class="btn-secondary" onclick="loadDefaultTemplate()">🪄 载入经典模版</button>
-            <button class="btn-secondary" onclick="addNewRuleModal()">+ 添加场景规则</button>
-          </div>
-        </div>
-
-        <div id="rules-container" class="rules-list"></div>
-      </div>
-    </div>
-
-    <!-- Tab 2: Local Agents (agents.json) -->
-    <div id="tab-agents" class="tab-pane">
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
-          <div>
-            <div class="section-title">🤖 已配置的本地执行 Agent</div>
-            <p class="section-desc" style="margin-bottom:0">
-              对应本机 <code>~/agent-bridge/agents.json</code> 文件。后台 Worker 进程将调用这些命令行工具执行实际任务。
-            </p>
-          </div>
-          <button class="btn-secondary" onclick="addAgentModal()">+ 注册新 Agent</button>
-        </div>
-
-        <div id="agents-container" class="agent-grid"></div>
-      </div>
-    </div>
-
-    <!-- Tab: Recent Tasks -->
-    <div id="tab-recent-tasks" class="tab-pane">
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
-          <div>
-            <div class="section-title">🕒 最近任务执行流 (Recent Tasks)</div>
-            <p class="section-desc" style="margin-bottom:0">
-              汇总 status/、tasks/、results/ 及 logs/ 中最新的任务调度执行状态与日志摘要。
-            </p>
-          </div>
-          <div style="display:flex; gap:10px; align-items:center;">
-            <select id="filter-task-status" onchange="loadRecentTasks()" style="background:var(--input-bg); color:var(--text-main); border:1px solid var(--card-border); padding:6px 12px; border-radius:8px; font-size:13px;">
-              <option value="">全部状态 (All)</option>
-              <option value="running">运行中 (running)</option>
-              <option value="completed">已完成 (completed)</option>
-              <option value="failed">失败/取消 (failed)</option>
-              <option value="queued">排队中 (queued)</option>
-            </select>
-            <button class="btn-secondary" onclick="loadRecentTasks()">🔄 刷新列表</button>
-          </div>
-        </div>
-
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th style="width:180px;">任务 ID</th>
-                <th style="width:140px;">主题 / 会话</th>
-                <th style="width:100px;">状态</th>
-                <th style="width:130px;">耗时 / 完成时间</th>
-                <th style="width:160px;">PR 链接</th>
-                <th>最新日志输出 (Tail)</th>
-              </tr>
-            </thead>
-            <tbody id="recent-tasks-tbody">
-              <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <select id="filter-task-status" onchange="loadRecentTasks()" style="background:var(--input-bg); color:var(--text-main); border:1px solid var(--card-border); padding:6px 12px; border-radius:8px; font-size:13px;">
+            <option value="active" selected>⚡ 活跃任务 (运行中/排队/暂停)</option>
+            <option value="all">全部历史任务 (All Tasks)</option>
+            <option value="running">运行中 (running)</option>
+            <option value="paused_quota">额度暂停 (paused_quota)</option>
+            <option value="completed">已完成任务 (completed)</option>
+            <option value="failed">失败/取消 (failed)</option>
+            <option value="queued">排队中 (queued)</option>
+            <option value="requirements">📋 需求暂存草稿 (Requirements)</option>
+            <option value="queue">⏳ 会话排队序列 (Queue Details)</option>
+          </select>
+          <button class="btn-secondary" onclick="loadRecentTasks()">🔄 刷新</button>
         </div>
       </div>
-    </div>
 
-    <!-- Tab: Requirements Backlog -->
-    <div id="tab-requirements" class="tab-pane">
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
-          <div>
-            <div class="section-title">📋 需求暂存箱 (Requirements Backlog)</div>
-            <p class="section-desc" style="margin-bottom:0">
-              暂存未分发的原始需求与功能草稿。支持在线归类、合并、编辑，以及一键派发至本地 Agent 执行。
-            </p>
-          </div>
-          <div style="display:flex; gap:10px;">
-            <button class="btn-primary" onclick="openCreateRequirementModal()">+ 暂存新需求</button>
-            <button class="btn-secondary" onclick="loadRequirements()">🔄 刷新需求</button>
-          </div>
+      <!-- Batch Toolbar -->
+      <div id="tasks-batch-bar" style="display:none; align-items:center; justify-content:space-between; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.25); border-radius:8px; padding:8px 14px; margin-bottom:12px;">
+        <div style="font-size:13px; color:var(--text-main);">
+          已选中 <strong id="tasks-selected-count" style="color:var(--accent);">0</strong> 条任务
         </div>
-
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th style="width:160px;">需求 ID</th>
-                <th style="width:120px;">项目归属</th>
-                <th style="width:140px;">主题 / 会话</th>
-                <th>需求标题与规格预览</th>
-                <th style="width:90px;">状态</th>
-                <th style="width:130px;">创建时间</th>
-                <th style="width:200px; text-align:right;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="requirements-tbody">
-              <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-sm btn-sm-danger" onclick="batchCancelTasks()">✕ 批量取消</button>
+          <button class="btn-sm" style="color:var(--text-muted);" onclick="batchArchiveTasks(false)">📦 批量归档</button>
+          <button class="btn-sm btn-sm-danger" onclick="batchArchiveTasks(true)">🗑️ 批量归档 + 清理 Worktree</button>
         </div>
       </div>
-    </div>
 
-    <!-- Tab: Auto Queue -->
-    <div id="tab-queue" class="tab-pane">
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
-          <div>
-            <div class="section-title">⏳ 任务自动排队与会话序列 (Auto Queue)</div>
-            <p class="section-desc" style="margin-bottom:0">
-              各独立会话的任务排队队列。当当前任务执行完成时，后台调度系统自动顺序触发下一个排队任务。
-            </p>
-          </div>
-          <button class="btn-secondary" onclick="loadQueue()">🔄 刷新队列</button>
+      <!-- Container 1: Tasks Table -->
+      <div id="view-tasks-container" style="overflow-x:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:36px; text-align:center;"><input type="checkbox" id="chk-tasks-select-all" onchange="toggleSelectAllTasks(this.checked)"></th>
+              <th style="width:160px;">任务 ID</th>
+              <th style="width:120px;">主题 / 会话</th>
+              <th style="width:95px;">状态</th>
+              <th style="width:90px;">活跃度</th>
+              <th style="width:115px;">创建时间</th>
+              <th style="width:115px;">完成时间</th>
+              <th style="width:110px;">PR 链接</th>
+              <th>最新日志输出 (Tail)</th>
+              <th style="width:180px; text-align:right;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="recent-tasks-tbody">
+            <tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Container 2: Embedded Requirements Table (Switched via Filter) -->
+      <div id="view-requirements-container" style="display:none; overflow-x:auto;">
+        <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+          <button class="btn-primary" onclick="openCreateRequirementModal()">+ 暂存新需求草稿</button>
         </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:160px;">需求 ID</th>
+              <th style="width:120px;">项目归属</th>
+              <th style="width:140px;">主题 / 会话</th>
+              <th>需求标题与规格预览</th>
+              <th style="width:90px;">状态</th>
+              <th style="width:130px;">创建时间</th>
+              <th style="width:200px; text-align:right;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="requirements-tbody">
+            <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
 
+      <!-- Container 3: Embedded Queue Container (Switched via Filter) -->
+      <div id="view-queue-container" style="display:none;">
         <div id="queue-sessions-container">
           <div style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab: Account Pool & Cockpit -->
-    <div id="tab-pool" class="tab-pane">
-      <!-- Section 0: Dual pool overview (one row per account/email) -->
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
-          <div>
-            <div class="section-title">🧮 账号总览（按邮箱，两池共享额度/暂停/占用）</div>
-            <p class="section-desc" style="margin-bottom:0">
-              <b>默认池</b>：机器默认 HOME + Cockpit 当前账号，额度不足时经 Cockpit 自动切号。<b>自定义池</b>：你添加的独立 Profile。
-              派发顺序：自定义池有可用 Profile 先用；全部暂停/忙/无额度时回退默认池（不排队）；两池都不可用才排队。
-              同一邮箱同一时刻只跑一个任务；只配置未运行的 Profile 不会阻止默认池切到该账号。
-            </p>
-          </div>
-          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-            <input type="checkbox" id="custom-pool-toggle" onchange="toggleCustomPool(this.checked)">
-            <span id="custom-pool-toggle-label">启用/停用自定义池</span>
-          </label>
+    <!-- Quick Read-Only Account Quota Strip -->
+    <div class="quick-quota-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <div>
+          <div class="section-title">👥 账号池额度概览 (Read-Only Quota Overview)</div>
+          <p class="section-desc" style="margin-bottom:0">实时汇总本地 Cockpit 与 Profile 账号 5 小时窗口可用额度与重置时间。</p>
         </div>
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>邮箱</th>
-                <th style="width:200px;">所在池</th>
-                <th style="width:110px;">共享额度</th>
-                <th style="width:200px;">暂停</th>
-                <th style="width:200px;">占用</th>
-                <th style="width:100px; text-align:right;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="pool-accounts-tbody">
-              <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <button class="btn-secondary" style="font-size:12px;" onclick="loadQuickQuota()">🔄 刷新额度</button>
       </div>
-
-      <!-- Section 1: Cockpit Quota & Accounts -->
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
-          <div>
-            <div class="section-title">🎛️ Cockpit 账号与 5 小时额度窗口</div>
-            <p class="section-desc" style="margin-bottom:0">
-              数据来源于本地 Cockpit Tools（<code>~/.antigravity_cockpit</code>）。额度多模型聚合计算，账号切换由 WebSocket 实时触发。
-            </p>
-          </div>
-          <button class="btn-secondary" onclick="loadPool()">🔄 刷新 Cockpit 状态</button>
-        </div>
-
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th style="width:220px;">Cockpit 账号 ID</th>
-                <th>绑定邮箱</th>
-                <th style="width:120px;">当前主账号</th>
-                <th style="width:220px;">5h 额度窗口</th>
-                <th style="width:170px;">重置时间</th>
-                <th style="width:140px; text-align:right;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="cockpit-accounts-tbody">
-              <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Section 2: Isolated Multi-Account Profiles -->
-      <div class="section-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
-          <div>
-            <div class="section-title">👥 agy 多账号并发隔离 Profile 池 (agy-pool.json)</div>
-            <p class="section-desc" style="margin-bottom:0">
-              每个 Profile 拥有独立的 <code>$HOME</code> 运行空间。初始化时从 Cockpit 已登录会话同步 agy 凭证；未登录 / 需重新登录的 Profile 不会被派发任务。「⏸ 暂停」只停止向该 Profile 派发，不影响默认池使用同一账号；所有 Profile 都暂停或忙时任务回退默认池。
-            </p>
-          </div>
-          <div style="display:flex; gap:10px;">
-            <button class="btn-primary" onclick="initNewProfileModal()">+ 初始化新 Profile</button>
-            <button class="btn-secondary" onclick="loadPool()">🔄 刷新 Profile</button>
-          </div>
-        </div>
-
-        <div style="overflow-x:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th style="width:120px;">别名 (Alias)</th>
-                <th>隔离主目录 (HOME)</th>
-                <th style="width:180px;">对齐 Cockpit 邮箱</th>
-                <th style="width:100px;">调度状态</th>
-                <th style="width:120px;">登录状态</th>
-                <th style="width:140px;">当前执行任务</th>
-                <th style="width:90px;">今日任务数</th>
-                <th style="width:100px;">额度参考</th>
-                <th style="width:240px; text-align:right;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="pool-profiles-tbody">
-              <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 3: System & Status -->
-    <div id="tab-system" class="tab-pane">
-      <div class="section-card">
-        <div class="section-title">💻 宿主机环境与硬件概览</div>
-        <p class="section-desc">当前运行 Agent Bridge 的物理机器实时运行指标。</p>
-        <div id="system-stats" class="stats-grid"></div>
-      </div>
-      <div class="section-card">
-        <div class="section-title">🔍 本地诊断接口快捷直达</div>
-        <p class="section-desc">用于验证本地服务各项传输层与状态健康度。</p>
-        <div style="display:flex; gap:12px; flex-wrap:wrap;">
-          <a href="/health" target="_blank" class="btn-secondary">🩺 健康检测 (/health)</a>
-          <a href="/status" target="_blank" class="btn-secondary">📊 服务状态 (/status)</a>
-          <a href="/mcp" target="_blank" class="btn-secondary">🔌 MCP 端点 (/mcp)</a>
-        </div>
+      <div id="quick-quota-grid" class="quick-quota-grid">
+        <div style="color:var(--text-muted); font-size:13px; padding:12px;">加载账号额度中...</div>
       </div>
     </div>
   </div>
 
-  <!-- Sticky Bottom Save Bar -->
-  <div class="bottom-bar">
-    <div class="save-hint">💡 任何修改保存后将直接写盘，即刻生效，无需重启服务。</div>
-    <button class="btn-primary" onclick="saveAllConfig()">💾 保存配置并即刻生效</button>
+  <!-- Settings Modal (Dedicated Layer for Configurations) -->
+  <div id="modal-settings" class="modal-overlay">
+    <div class="settings-modal-box">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="section-title" style="font-size:18px;">⚙️ Agent Bridge 系统配置与管理</div>
+        <button class="btn-sm" onclick="closeSettingsModal()">✕ 关闭</button>
+      </div>
+
+      <!-- Device Access Details (Hidden from daily view, ready for copy) -->
+      <div class="access-card" style="margin-bottom:20px;">
+        <div class="access-item">
+          <span class="access-label">本机专属识别码 (Device Token)</span>
+          <div class="access-val">
+            <span id="txt-token">加载中...</span>
+            <button class="btn-copy" onclick="copyText('txt-token')">复制</button>
+          </div>
+        </div>
+        <div class="access-item">
+          <span class="access-label">云端 MCP 接入地址 (用于 ChatGPT)</span>
+          <div class="access-val">
+            <span id="txt-url">加载中...</span>
+            <button class="btn-copy" onclick="copyText('txt-url')">复制</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Navigation Tabs -->
+      <div class="settings-tab-bar">
+        <button class="settings-tab-btn active" onclick="switchSettingsTab('stab-routing', this)">🎯 调度偏好与场景规则</button>
+        <button class="settings-tab-btn" onclick="switchSettingsTab('stab-agents', this)">🤖 本地 Agent 注册 (agents.json)</button>
+        <button class="settings-tab-btn" onclick="switchSettingsTab('stab-pool', this); loadPool();">👥 agy 账号池管理</button>
+        <button class="settings-tab-btn" onclick="switchSettingsTab('stab-system', this); loadSystemStats();">💻 硬件诊断详细</button>
+      </div>
+
+      <!-- Settings Tab 1: Routing & Instructions -->
+      <div id="stab-routing" class="tab-pane active">
+        <div class="section-card" style="margin-bottom:16px;">
+          <div class="section-title">
+            <span>📝 全局分发指导说明 (AI Dispatch Instructions)</span>
+          </div>
+          <p class="section-desc">
+            在这里写下您期望 AI 遵循的分发习惯与场景规则。此说明会自动同步给 ChatGPT 及外部调用者，作为其自动判断任务归属的首要原则。
+          </p>
+          <div class="form-group">
+            <textarea id="inp-instructions" placeholder="默认留空（选填）。例如：'涉及后端开发走 codex；涉及前端页面走 agy'"></textarea>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>默认兜底 Agent (Default Fallback Agent)</label>
+            <select id="sel-default-agent" style="max-width:320px"></select>
+          </div>
+        </div>
+
+        <div class="section-card" style="margin-bottom:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+            <div>
+              <div class="section-title">⚡ 场景与关键词路由表 (Keyword Routing Rules)</div>
+              <p class="section-desc" style="margin-bottom:0">
+                当任务内容（Prompt）中包含以下关键词时，底层任务派发中心将自动路由到对应的 Agent 执行。
+              </p>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-secondary" onclick="loadDefaultTemplate()">🪄 载入经典模版</button>
+              <button class="btn-secondary" onclick="addNewRuleModal()">+ 添加场景规则</button>
+            </div>
+          </div>
+          <div id="rules-container" class="rules-list"></div>
+        </div>
+      </div>
+
+      <!-- Settings Tab 2: Local Agents -->
+      <div id="stab-agents" class="tab-pane">
+        <div class="section-card" style="margin-bottom:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+            <div>
+              <div class="section-title">🤖 已配置的本地执行 Agent</div>
+              <p class="section-desc" style="margin-bottom:0">
+                对应本机 <code>~/agent-bridge/agents.json</code> 文件。后台 Worker 进程将调用这些命令行工具执行实际任务。
+              </p>
+            </div>
+            <button class="btn-secondary" onclick="addAgentModal()">+ 注册新 Agent</button>
+          </div>
+          <div id="agents-container" class="agent-grid"></div>
+        </div>
+      </div>
+
+      <!-- Settings Tab 3: Account Pool Management -->
+      <div id="stab-pool" class="tab-pane">
+        <!-- Section 0: Dual pool overview -->
+        <div class="section-card" style="margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+            <div>
+              <div class="section-title">🧮 账号总览（按邮箱，两池共享额度/暂停/占用）</div>
+              <p class="section-desc" style="margin-bottom:0">
+                <b>默认池</b>：机器默认 HOME + Cockpit 当前账号。<b>自定义池</b>：独立 Profile。
+              </p>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="custom-pool-toggle" onchange="toggleCustomPool(this.checked)">
+              <span id="custom-pool-toggle-label">启用/停用自定义池</span>
+            </label>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>邮箱</th>
+                  <th style="width:160px;">所在池</th>
+                  <th style="width:110px;">共享额度</th>
+                  <th style="width:170px;">暂停</th>
+                  <th style="width:170px;">占用</th>
+                  <th style="width:100px; text-align:right;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="pool-accounts-tbody">
+                <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Section 1: Cockpit Quota & Accounts -->
+        <div class="section-card" style="margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+            <div>
+              <div class="section-title">🎛️ Cockpit 账号与 5 小时额度窗口</div>
+              <p class="section-desc" style="margin-bottom:0">
+                数据来源于本地 Cockpit Tools（<code>~/.antigravity_cockpit</code>）。
+              </p>
+            </div>
+            <button class="btn-secondary" onclick="loadPool()">🔄 刷新 Cockpit 状态</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:200px;">Cockpit 账号 ID</th>
+                  <th>绑定邮箱</th>
+                  <th style="width:110px;">当前主账号</th>
+                  <th style="width:200px;">5h 额度窗口</th>
+                  <th style="width:160px;">重置时间</th>
+                  <th style="width:130px; text-align:right;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cockpit-accounts-tbody">
+                <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Section 2: Isolated Profiles -->
+        <div class="section-card" style="margin-bottom:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px;">
+            <div>
+              <div class="section-title">👥 agy 多账号并发隔离 Profile 池</div>
+              <p class="section-desc" style="margin-bottom:0">
+                每个 Profile 拥有独立的 <code>$HOME</code> 运行空间。
+              </p>
+            </div>
+            <div style="display:flex; gap:10px;">
+              <button class="btn-primary" onclick="initNewProfileModal()">+ 初始化新 Profile</button>
+              <button class="btn-secondary" onclick="loadPool()">🔄 刷新 Profile</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:110px;">别名</th>
+                  <th>主目录 (HOME)</th>
+                  <th style="width:160px;">Cockpit 邮箱</th>
+                  <th style="width:90px;">调度状态</th>
+                  <th style="width:100px;">登录状态</th>
+                  <th style="width:120px;">当前执行任务</th>
+                  <th style="width:80px;">今日任务</th>
+                  <th style="width:90px;">额度参考</th>
+                  <th style="width:220px; text-align:right;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="pool-profiles-tbody">
+                <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Tab 4: Detailed Hardware Diagnostics -->
+      <div id="stab-system" class="tab-pane">
+        <div class="section-card" style="margin-bottom:16px;">
+          <div class="section-title">💻 宿主机物理硬件与环境详情</div>
+          <p class="section-desc">当前运行 Agent Bridge 的系统物理资源利用状况。</p>
+          <div id="system-stats" class="stats-grid"></div>
+        </div>
+        <div class="section-card" style="margin-bottom:0;">
+          <div class="section-title">🔍 本地诊断接口快捷直达</div>
+          <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:8px;">
+            <a href="/health" target="_blank" class="btn-secondary">🩺 健康检测 (/health)</a>
+            <a href="/status" target="_blank" class="btn-secondary">📊 服务状态 (/status)</a>
+            <a href="/mcp" target="_blank" class="btn-secondary">🔌 MCP 端点 (/mcp)</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Save Action Footer -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:24px; padding-top:16px; border-top:1px solid var(--card-border);">
+        <div style="font-size:12px; color:var(--text-muted);">💡 规则与代理修改保存后直接写入本机 agents.json，即刻生效。</div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn-secondary" onclick="closeSettingsModal()">取消</button>
+          <button class="btn-primary" onclick="saveAllConfig()">💾 保存配置并即刻生效</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Toast -->
@@ -1091,6 +1323,96 @@ export function renderDashboardHtml(): string {
     </div>
   </div>
 
+  <!-- Modal: Task Details -->
+  <div id="modal-task-details" class="modal-overlay">
+    <div class="modal-box" style="max-width:800px; max-height:85vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div class="section-title" id="td-modal-title">📄 任务详情</div>
+        <button class="btn-sm" onclick="closeModal('modal-task-details')">✕ 关闭</button>
+      </div>
+      <div id="td-meta-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-bottom:14px; background:rgba(255,255,255,0.03); border:1px solid var(--card-border); border-radius:8px; padding:12px;"></div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="display:flex; justify-content:space-between; align-items:center;">
+          <span>提示词 (Prompt)</span>
+          <button class="btn-sm" style="font-size:11px;" onclick="copyTaskPromptFromModal()">📋 复制提示词</button>
+        </label>
+        <textarea id="td-prompt-text" rows="8" readonly style="font-family:monospace; font-size:12px; background:var(--bg); color:var(--text-main);"></textarea>
+      </div>
+      <div id="td-result-box" style="display:none; margin-bottom:12px;">
+        <label>执行结果与产物摘要 (Result Markdown)</label>
+        <div id="td-result-content" class="code-box" style="max-height:220px; overflow-y:auto; font-size:12px; margin-top:4px;"></div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn-secondary" onclick="closeModal('modal-task-details')">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Task Logs -->
+  <div id="modal-task-logs" class="modal-overlay">
+    <div class="modal-box" style="max-width:850px; max-height:85vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div class="section-title" id="tl-modal-title">📜 任务日志输出 (Tail)</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-secondary btn-sm" onclick="refreshCurrentTaskLogs()">🔄 刷新日志</button>
+          <button class="btn-sm" onclick="closeModal('modal-task-logs')">✕ 关闭</button>
+        </div>
+      </div>
+      <div style="margin-bottom:8px; font-size:12px; color:var(--text-muted);">
+        最近 100 行标准输出与会话 tail：
+      </div>
+      <div id="tl-log-container" class="code-box" style="max-height:460px; overflow-y:auto; font-size:12px; white-space:pre-wrap; word-break:break-all; background:#080d16; color:#a5b4fc; padding:14px; border-radius:8px;">
+        加载中...
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button class="btn-secondary" onclick="closeModal('modal-task-logs')">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Retry / Resume / Switch Account -->
+  <div id="modal-task-retry" class="modal-overlay">
+    <div class="modal-box" style="max-width:620px;">
+      <div class="section-title" id="tr-modal-title" style="margin-bottom:12px;">⚡ 重试 / 续跑 / 改派任务</div>
+      <input type="hidden" id="tr-task-id">
+      <div class="form-group">
+        <label>执行模式</label>
+        <div style="display:flex; gap:16px; margin-top:4px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="radio" name="tr-mode" value="continue" checked>
+            <span>续跑模式（保留已有会话上下文与历史）</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="radio" name="tr-mode" value="fresh">
+            <span>全新重跑（不继承历史会话）</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-group" style="display:flex; gap:12px;">
+        <div style="flex:1;">
+          <label>改派执行 Agent (可选)</label>
+          <select id="tr-sel-agent"></select>
+        </div>
+        <div style="flex:1;">
+          <label>改派模型 (可选)</label>
+          <input type="text" id="tr-inp-model" placeholder="留空使用原配置">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>指定运行账号 / Profile (可选)</label>
+        <input type="text" id="tr-inp-account" placeholder="auto 或指定 profile 别名，改派至其他有额度的账号">
+      </div>
+      <div class="form-group">
+        <label>提示词调整 (选填，留空沿用原提示词)</label>
+        <textarea id="tr-inp-prompt" rows="4" placeholder="留空则沿用原提示词..."></textarea>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+        <button class="btn-secondary" onclick="closeModal('modal-task-retry')">取消</button>
+        <button class="btn-primary" onclick="submitTaskRetry()">🚀 立即执行</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentConfig = {
       deviceToken: "",
@@ -1104,6 +1426,7 @@ export function renderDashboardHtml(): string {
     };
 
     let lastPoolData = { cockpitAccounts: [], profiles: [], pool: [], runningTasks: {} };
+    let overviewFilterActive = "active";
 
     function copyText(elementId) {
       const text = document.getElementById(elementId).textContent;
@@ -1117,6 +1440,51 @@ export function renderDashboardHtml(): string {
       toast.textContent = msg || "✅ 操作成功！";
       toast.classList.add("show");
       setTimeout(() => toast.classList.remove("show"), 2500);
+    }
+
+    function openSettingsModal() {
+      openModal("modal-settings");
+      loadPool();
+      loadSystemStats();
+    }
+
+    function closeSettingsModal() {
+      closeModal("modal-settings");
+    }
+
+    function switchSettingsTab(tabId, btn) {
+      document.querySelectorAll(".settings-tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".settings-modal-box .tab-pane").forEach(p => p.classList.remove("active"));
+      if (btn) btn.classList.add("active");
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add("active");
+    }
+
+    function filterByOverviewCard(type) {
+      const sel = document.getElementById("filter-task-status");
+      if (!sel) return;
+      if (type === "completed_today") {
+        sel.value = "completed";
+      } else if (type === "failed_today") {
+        sel.value = "failed";
+      } else {
+        sel.value = type;
+      }
+      loadRecentTasks();
+    }
+
+    function formatActivityAgo(iso) {
+      if (!iso) return '<span style="color:var(--text-muted);">-</span>';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '<span style="color:var(--text-muted);">-</span>';
+      const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+      if (sec < 60) return '<span style="color:var(--green); font-size:12px;">' + sec + '秒前</span>';
+      const min = Math.floor(sec / 60);
+      if (min < 60) return '<span style="color:var(--accent); font-size:12px;">' + min + '分钟前</span>';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return '<span style="color:var(--yellow); font-size:12px;">' + hr + '小时前</span>';
+      const day = Math.floor(hr / 24);
+      return '<span style="color:var(--text-muted); font-size:12px;">' + day + '天前</span>';
     }
 
     function switchTab(tabId, btn) {
@@ -1199,60 +1567,513 @@ export function renderDashboardHtml(): string {
     }
 
     // --- Tab 1: Recent Tasks ---
-    async function loadRecentTasks() {
-      const tbody = document.getElementById("recent-tasks-tbody");
-      if (!tbody) return;
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>';
-      const statusFilter = document.getElementById("filter-task-status")?.value || "";
+    let cachedRecentTasks = [];
+    let selectedTaskIds = new Set();
+    let currentLogsTaskId = "";
+    let cachedModalPrompt = "";
+
+    function formatTimeCompact(iso) {
+      if (!iso) return "-";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "-";
+      const pad = n => String(n).padStart(2, "0");
+      const month = pad(d.getMonth() + 1);
+      const day = pad(d.getDate());
+      const hours = pad(d.getHours());
+      const minutes = pad(d.getMinutes());
+      const seconds = pad(d.getSeconds());
+      return month + "-" + day + " " + hours + ":" + minutes + ":" + seconds;
+    }
+
+    function updateBatchBar() {
+      const bar = document.getElementById("tasks-batch-bar");
+      const countEl = document.getElementById("tasks-selected-count");
+      const selectAll = document.getElementById("chk-tasks-select-all");
+      if (!bar || !countEl) return;
+      if (selectedTaskIds.size > 0) {
+        bar.style.display = "flex";
+        countEl.textContent = String(selectedTaskIds.size);
+      } else {
+        bar.style.display = "none";
+      }
+      if (selectAll) {
+        selectAll.checked = cachedRecentTasks.length > 0 && selectedTaskIds.size === cachedRecentTasks.length;
+      }
+    }
+
+    function toggleSelectAllTasks(checked) {
+      if (checked) {
+        cachedRecentTasks.forEach(t => selectedTaskIds.add(t.taskId));
+      } else {
+        selectedTaskIds.clear();
+      }
+      document.querySelectorAll(".chk-task-item").forEach(cb => {
+        cb.checked = checked;
+      });
+      updateBatchBar();
+    }
+
+    function toggleTaskSelection(taskId, checked) {
+      if (checked) selectedTaskIds.add(taskId);
+      else selectedTaskIds.delete(taskId);
+      updateBatchBar();
+    }
+
+    async function cancelRecentTask(taskId) {
+      if (!confirm("确认取消任务 " + taskId + " 吗？")) return;
+      try {
+        const res = await fetch("/api/recent-tasks/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskId }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || "取消任务失败");
+        }
+        showToast("✕ " + (data.message || ("任务 " + taskId + " 已取消")));
+        loadRecentTasks();
+      } catch (err) {
+        alert("取消失败: " + err.message);
+      }
+    }
+
+    async function archiveRecentTask(taskId, cleanWorktree) {
+      const promptMsg = cleanWorktree
+        ? "确认归档任务 " + taskId + " 并清理对应 worktree 目录吗？不可撤销。"
+        : "确认归档并移除任务 " + taskId + " 记录吗？";
+      if (!confirm(promptMsg)) return;
+      try {
+        const res = await fetch("/api/recent-tasks/archive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskIds: [taskId], cleanWorktree: !!cleanWorktree }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) throw new Error(data.error || "归档失败");
+        showToast(data.message || "任务已归档");
+        selectedTaskIds.delete(taskId);
+        loadRecentTasks();
+      } catch (err) {
+        alert("归档失败: " + err.message);
+      }
+    }
+
+    async function batchCancelTasks() {
+      const ids = Array.from(selectedTaskIds);
+      if (ids.length === 0) return;
+      if (!confirm("确认批量取消选中的 " + ids.length + " 个任务吗？")) return;
+      let successCount = 0;
+      for (const tid of ids) {
+        try {
+          const res = await fetch("/api/recent-tasks/cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ taskId: tid }),
+          });
+          const d = await res.json();
+          if (d.success) successCount++;
+        } catch {}
+      }
+      showToast("已批量取消 " + successCount + " 个任务");
+      selectedTaskIds.clear();
+      loadRecentTasks();
+    }
+
+    async function batchArchiveTasks(cleanWorktree) {
+      const ids = Array.from(selectedTaskIds);
+      if (ids.length === 0) return;
+      const msg = cleanWorktree
+        ? "确认批量归档 " + ids.length + " 条任务并清理关联的 worktree 吗？"
+        : "确认批量归档并删除 " + ids.length + " 条任务记录吗？";
+      if (!confirm(msg)) return;
+      try {
+        const res = await fetch("/api/recent-tasks/archive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ taskIds: ids, cleanWorktree: !!cleanWorktree }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "批量归档失败");
+        showToast(data.message || "批量归档成功");
+        selectedTaskIds.clear();
+        loadRecentTasks();
+      } catch (err) {
+        alert("批量归档失败: " + err.message);
+      }
+    }
+
+    async function toggleTaskSessionPause(sessionId, shouldPause) {
+      try {
+        const res = await fetch("/api/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: shouldPause ? "pause" : "resume",
+            session_id: sessionId,
+            reason: shouldPause ? "用户通过最近任务列表手动挂起" : undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "操作队列失败");
+        showToast(shouldPause ? "⏸ 会话队列已挂起暂停" : "▶ 会话队列已恢复放行");
+        loadRecentTasks();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function openTaskDetailsModal(taskId) {
+      document.getElementById("td-modal-title").textContent = "📄 任务详情: " + taskId;
+      document.getElementById("td-meta-grid").innerHTML = "加载中...";
+      document.getElementById("td-prompt-text").value = "加载中...";
+      document.getElementById("td-result-box").style.display = "none";
+      cachedModalPrompt = "";
+      openModal("modal-task-details");
 
       try {
-        const url = "/api/recent-tasks" + (statusFilter ? "?status=" + encodeURIComponent(statusFilter) : "");
-        const res = await fetch(url);
+        const res = await fetch("/api/recent-tasks/details?taskId=" + encodeURIComponent(taskId));
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "加载详情失败");
+
+        const m = data.meta || {};
+        const s = data.status || {};
+        cachedModalPrompt = data.prompt || "";
+        document.getElementById("td-prompt-text").value = cachedModalPrompt || "(无独立提示词)";
+
+        const gridItems = [
+          { k: "任务 ID", v: '<span style="font-family:monospace; color:var(--accent);">' + escapeHtml(taskId) + '</span>' },
+          { k: "当前状态", v: '<span class="badge">' + escapeHtml(s.state || "unknown") + '</span>' },
+          { k: "所属 Agent", v: escapeHtml(s.agent || m["Agent"] || "-") },
+          { k: "模型", v: escapeHtml(s.model || m["Model"] || "-") },
+          { k: "账号 / Profile", v: escapeHtml(s.account || m["Account"] || "-") },
+          { k: "会话 ID", v: escapeHtml(s.sessionId || m["Session ID"] || "-") },
+          { k: "工作目录 / Worktree", v: data.workDir ? '<span style="font-family:monospace; font-size:11px;" title="' + escapeHtml(data.workDir) + '">' + escapeHtml(data.workDir) + '</span>' : '-' },
+          { k: "退出代码", v: s.exitCode !== undefined && s.exitCode !== null ? String(s.exitCode) : '-' },
+          { k: "失败 / 暂停原因", v: s.reason ? '<span style="color:var(--red); font-size:11px;">' + escapeHtml(s.reason) + '</span>' : '-' },
+        ];
+
+        document.getElementById("td-meta-grid").innerHTML = gridItems.map(it => 
+          '<div><div style="font-size:11px; color:var(--text-muted);">' + it.k + '</div><div style="font-size:13px; font-weight:500; margin-top:2px;">' + it.v + '</div></div>'
+        ).join("");
+
+        if (data.resultRaw) {
+          document.getElementById("td-result-box").style.display = "block";
+          document.getElementById("td-result-content").textContent = data.resultRaw;
+        }
+      } catch (err) {
+        document.getElementById("td-meta-grid").innerHTML = '<div style="color:var(--red);">加载详情失败: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    function copyTaskPromptFromModal() {
+      if (!cachedModalPrompt) {
+        showToast("无提示词可复制");
+        return;
+      }
+      navigator.clipboard.writeText(cachedModalPrompt);
+      showToast("📋 已复制提示词到剪贴板");
+    }
+
+    async function copyTaskPromptDirect(taskId) {
+      try {
+        const res = await fetch("/api/recent-tasks/details?taskId=" + encodeURIComponent(taskId));
+        const data = await res.json();
+        if (data.prompt) {
+          navigator.clipboard.writeText(data.prompt);
+          showToast("📋 已复制提示词: " + taskId);
+        } else {
+          showToast("未找到此任务的提示词");
+        }
+      } catch {
+        showToast("复制失败");
+      }
+    }
+
+    async function openTaskLogsModal(taskId) {
+      currentLogsTaskId = taskId;
+      document.getElementById("tl-modal-title").textContent = "📜 任务日志 (Tail): " + taskId;
+      document.getElementById("tl-log-container").textContent = "正在读取最新日志...";
+      openModal("modal-task-logs");
+      refreshCurrentTaskLogs();
+    }
+
+    async function refreshCurrentTaskLogs() {
+      if (!currentLogsTaskId) return;
+      try {
+        const res = await fetch("/api/recent-tasks/logs?taskId=" + encodeURIComponent(currentLogsTaskId) + "&lines=100");
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "读取日志失败");
+        const out = data.stdout || "";
+        const err = data.stderr || "";
+        let combined = "";
+        if (out) combined += "[STDOUT]\\n" + out + "\\n";
+        if (err) combined += "\\n[STDERR]\\n" + err;
+        if (!combined.trim()) combined = "(暂无日志输出)";
+        document.getElementById("tl-log-container").textContent = combined;
+      } catch (err) {
+        document.getElementById("tl-log-container").textContent = "读取日志失败: " + err.message;
+      }
+    }
+
+    function openTaskRetryModal(taskId, suggestedMode) {
+      document.getElementById("tr-task-id").value = taskId;
+      document.getElementById("tr-modal-title").textContent = (suggestedMode === "switch_account" ? "🔄 改派账号 / Agent: " : "⚡ 重试 / 续跑任务: ") + taskId;
+      
+      const radios = document.getElementsByName("tr-mode");
+      for (const r of radios) {
+        if (suggestedMode === "fresh") {
+          r.checked = (r.value === "fresh");
+        } else {
+          r.checked = (r.value === "continue");
+        }
+      }
+
+      // Populate agents in tr-sel-agent
+      const selAgent = document.getElementById("tr-sel-agent");
+      selAgent.innerHTML = '<option value="">保持原 Agent</option>' + Object.keys(currentConfig.agents || {}).map(a => 
+        '<option value="' + a + '">' + a + '</option>'
+      ).join("");
+
+      document.getElementById("tr-inp-model").value = "";
+      document.getElementById("tr-inp-account").value = "";
+      document.getElementById("tr-inp-prompt").value = "";
+
+      openModal("modal-task-retry");
+    }
+
+    async function submitTaskRetry() {
+      const taskId = document.getElementById("tr-task-id").value;
+      let mode = "continue";
+      const radios = document.getElementsByName("tr-mode");
+      for (const r of radios) {
+        if (r.checked) mode = r.value;
+      }
+      const agent = document.getElementById("tr-sel-agent").value;
+      const model = document.getElementById("tr-inp-model").value;
+      const account = document.getElementById("tr-inp-account").value;
+      const prompt = document.getElementById("tr-inp-prompt").value;
+
+      try {
+        const res = await fetch("/api/recent-tasks/retry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            taskId,
+            mode,
+            agent: agent || undefined,
+            model: model || undefined,
+            account: account || undefined,
+            prompt: prompt || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "操作失败");
+        closeModal("modal-task-retry");
+        showToast("🚀 " + (data.message || "任务已派发执行"));
+        loadRecentTasks();
+      } catch (err) {
+        alert("执行失败: " + err.message);
+      }
+    }
+
+    async function loadRecentTasks() {
+      const statusFilter = document.getElementById("filter-task-status")?.value || "active";
+      const viewTasks = document.getElementById("view-tasks-container");
+      const viewReqs = document.getElementById("view-requirements-container");
+      const viewQueue = document.getElementById("view-queue-container");
+
+      if (statusFilter === "requirements") {
+        if (viewTasks) viewTasks.style.display = "none";
+        if (viewQueue) viewQueue.style.display = "none";
+        if (viewReqs) viewReqs.style.display = "block";
+        loadRequirements();
+        return;
+      } else if (statusFilter === "queue") {
+        if (viewTasks) viewTasks.style.display = "none";
+        if (viewReqs) viewReqs.style.display = "none";
+        if (viewQueue) viewQueue.style.display = "block";
+        loadQueue();
+        return;
+      } else {
+        if (viewTasks) viewTasks.style.display = "block";
+        if (viewReqs) viewReqs.style.display = "none";
+        if (viewQueue) viewQueue.style.display = "none";
+      }
+
+      const tbody = document.getElementById("recent-tasks-tbody");
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:24px;">加载中...</td></tr>';
+
+      try {
+        // Query tasks from backend
+        let queryParam = "";
+        if (statusFilter === "active") {
+          queryParam = ""; // fetch all recent, filter client-side for active and compute cards
+        } else if (statusFilter === "all") {
+          queryParam = "";
+        } else {
+          queryParam = "?status=" + encodeURIComponent(statusFilter);
+        }
+
+        const res = await fetch("/api/recent-tasks" + queryParam);
         if (!res.ok) throw new Error("获取最近任务失败");
         const data = await res.json();
-        const tasks = data.tasks || [];
+        const allFetchedTasks = data.tasks || [];
 
-        if (tasks.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:24px;">暂无匹配的任务执行记录</td></tr>';
+        // Compute Overview Metrics Cards
+        updateOverviewCards(allFetchedTasks);
+
+        // Filter list based on selected view
+        if (statusFilter === "active") {
+          cachedRecentTasks = allFetchedTasks.filter(t => 
+            t.status === "running" || t.status === "queued" || t.status === "paused_quota" || t.status === "paused"
+          );
+        } else {
+          cachedRecentTasks = allFetchedTasks;
+        }
+
+        // Clean selectedTaskIds not in cached list
+        const validIds = new Set(cachedRecentTasks.map(t => t.taskId));
+        for (const sid of Array.from(selectedTaskIds)) {
+          if (!validIds.has(sid)) selectedTaskIds.delete(sid);
+        }
+        updateBatchBar();
+
+        if (cachedRecentTasks.length === 0) {
+          const emptyHint = statusFilter === "active"
+            ? "当前暂无活跃中的任务（运行中、排队中或暂停中）"
+            : "暂无匹配的任务执行记录";
+          tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--text-muted); padding:24px;">' + emptyHint + '</td></tr>';
           return;
         }
 
-        tbody.innerHTML = tasks.map(t => {
+        tbody.innerHTML = cachedRecentTasks.map(t => {
           let badgeClass = "badge-queued";
           let statusText = t.status || "queued";
           if (t.status === "running") { badgeClass = "badge-running"; statusText = "● 运行中"; }
           else if (t.status === "completed") { badgeClass = "badge-completed"; statusText = "✓ 已完成"; }
-          else if (t.status === "failed") { badgeClass = "badge-failed"; statusText = "✕ 失败/取消"; }
-          else if (t.status === "paused_quota" || t.status === "paused") { badgeClass = "badge-paused"; statusText = "⏸ 额度暂停"; }
+          else if (t.status === "failed") { badgeClass = "badge-failed"; statusText = "✕ 失败"; }
+          else if (t.status === "paused_quota") { badgeClass = "badge-paused"; statusText = "⏸ 额度暂停"; }
+          else if (t.status === "paused") { badgeClass = "badge-paused"; statusText = "⏸ 队列暂停"; }
           if (t.state === "suspected_stalled") { badgeClass = "badge-paused"; statusText = "⚠ 疑似卡住"; }
-          else if (t.state === "cancelled") { statusText = "✕ 已取消"; }
+          else if (t.state === "cancelled") { badgeClass = "badge-failed"; statusText = "✕ 已取消"; }
 
           const prLink = t.pr_url
-            ? '<a href="' + t.pr_url + '" target="_blank" style="color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; gap:4px;">🔗 查看 PR</a>'
+            ? '<a href="' + t.pr_url + '" target="_blank" style="color:var(--accent); text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px;">🔗 查看 PR</a>'
             : '<span style="color:var(--text-muted);">-</span>';
 
-          const tidDisplay = '<span style="font-family:monospace; color:var(--accent); cursor:pointer;" title="点击复制" onclick="navigator.clipboard.writeText(\\'' + t.taskId + '\\'); showToast(\\'已复制: ' + t.taskId + '\\');">' + t.taskId + '</span>';
+          const tidDisplay = '<span style="font-family:monospace; color:var(--accent); cursor:pointer;" title="点击复制 ID" onclick="navigator.clipboard.writeText(\\'' + t.taskId + '\\'); showToast(\\'已复制: ' + t.taskId + '\\');">' + t.taskId + '</span>';
 
-          const sessionDisplay = t.session_id ? '<span style="font-family:monospace; font-size:12px;">' + t.session_id + '</span>' : (t.project ? '<span>' + t.project + '</span>' : '<span style="color:var(--text-muted);">-</span>');
-          const elapsedDisplay = t.elapsed || (t.finished_at ? new Date(t.finished_at).toLocaleTimeString() : "-");
+          const sessionDisplay = t.session_id ? '<span style="font-family:monospace; font-size:12px;" title="' + escapeHtml(t.session_id) + '">' + escapeHtml(t.session_id.slice(0, 16)) + (t.session_id.length > 16 ? '...' : '') + '</span>' : (t.project ? '<span>' + escapeHtml(t.project) + '</span>' : '<span style="color:var(--text-muted);">-</span>');
+          
+          const activityDisplay = formatActivityAgo(t.last_activity_at || t.finished_at || t.created_at);
+
+          const createdDisplay = t.created_at ? '<span style="font-size:12px; font-family:monospace;" title="' + escapeHtml(t.created_at) + '">' + formatTimeCompact(t.created_at) + '</span>' : '<span style="color:var(--text-muted);">-</span>';
+
+          let finishedDisplay = "-";
+          if (t.status === "running") {
+            finishedDisplay = '<span style="color:var(--accent); font-size:12px;">进行中' + (t.elapsed ? ' (' + t.elapsed + ')' : '') + '</span>';
+          } else if (t.finished_at) {
+            finishedDisplay = '<span style="font-size:12px; font-family:monospace;" title="' + escapeHtml(t.finished_at) + '">' + formatTimeCompact(t.finished_at) + '</span>';
+          } else {
+            finishedDisplay = '<span style="color:var(--text-muted);">-</span>';
+          }
+
           const logDisplay = t.reason
             ? '<span style="font-family:monospace; font-size:12px; color:var(--red); word-break:break-all;" title="reason">' + escapeHtml(t.reason) + '</span>'
             : t.last_log_line
             ? '<span style="font-family:monospace; font-size:12px; color:var(--text-muted); word-break:break-all;">' + escapeHtml(t.last_log_line) + '</span>'
             : '<span style="color:var(--text-muted);">-</span>';
 
+          const isChecked = selectedTaskIds.has(t.taskId) ? "checked" : "";
+          const chkCol = '<td style="text-align:center;"><input type="checkbox" class="chk-task-item" ' + isChecked + ' onchange="toggleTaskSelection(\\'' + t.taskId + '\\', this.checked)"></td>';
+
+          // Action buttons group
+          let actionsHtml = '<div style="display:flex; justify-content:flex-end; gap:4px; flex-wrap:wrap;">';
+
+          // 1. Details & Logs
+          actionsHtml += '<button class="btn-sm" style="padding:2px 6px;" title="查看详情与完整规格" onclick="openTaskDetailsModal(\\'' + t.taskId + '\\')">详情</button>';
+          actionsHtml += '<button class="btn-sm" style="padding:2px 6px;" title="查看实时/历史尾部日志" onclick="openTaskLogsModal(\\'' + t.taskId + '\\')">日志</button>';
+
+          // 2. State-specific action buttons
+          if (t.status === "running") {
+            actionsHtml += '<button class="btn-sm btn-sm-danger" style="padding:2px 6px;" onclick="cancelRecentTask(\\'' + t.taskId + '\\')">✕ 取消</button>';
+          } else if (t.status === "paused_quota" || t.status === "paused") {
+            actionsHtml += '<button class="btn-sm" style="color:var(--green); border-color:rgba(16,185,129,0.4); padding:2px 6px;" onclick="openTaskRetryModal(\\'' + t.taskId + '\\', \\'continue\\')">▶ 续跑</button>';
+            actionsHtml += '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4); padding:2px 6px;" onclick="openTaskRetryModal(\\'' + t.taskId + '\\', \\'switch_account\\')">换号</button>';
+            if (t.session_id) {
+              actionsHtml += '<button class="btn-sm" style="color:var(--yellow); border-color:rgba(245,158,11,0.4); padding:2px 6px;" title="挂起此会话队列" onclick="toggleTaskSessionPause(\\'' + t.session_id + '\\', true)">挂起</button>';
+            }
+            actionsHtml += '<button class="btn-sm btn-sm-danger" style="padding:2px 6px;" onclick="cancelRecentTask(\\'' + t.taskId + '\\')">✕</button>';
+          } else if (t.status === "failed" || t.state === "cancelled") {
+            actionsHtml += '<button class="btn-sm" style="color:var(--green); border-color:rgba(16,185,129,0.4); padding:2px 6px;" onclick="openTaskRetryModal(\\'' + t.taskId + '\\', \\'continue\\')">重试</button>';
+            actionsHtml += '<button class="btn-sm" style="color:var(--accent); border-color:rgba(56,189,248,0.4); padding:2px 6px;" onclick="openTaskRetryModal(\\'' + t.taskId + '\\', \\'switch_account\\')">改派</button>';
+            actionsHtml += '<button class="btn-sm btn-sm-danger" style="padding:2px 6px;" title="归档删除此任务记录" onclick="archiveRecentTask(\\'' + t.taskId + '\\', false)">🗑️</button>';
+          } else if (t.status === "completed") {
+            if (t.pr_url) {
+              actionsHtml += '<a href="' + t.pr_url + '" target="_blank" class="btn-sm" style="text-decoration:none; padding:2px 6px; color:var(--accent); border-color:rgba(56,189,248,0.4);">PR ↗</a>';
+            }
+            actionsHtml += '<button class="btn-sm btn-sm-danger" style="padding:2px 6px;" title="归档清理记录" onclick="archiveRecentTask(\\'' + t.taskId + '\\', false)">🗑️</button>';
+          } else {
+            actionsHtml += '<button class="btn-sm btn-sm-danger" style="padding:2px 6px;" onclick="cancelRecentTask(\\'' + t.taskId + '\\')">✕ 取消</button>';
+          }
+
+          // Copy prompt shortcut
+          actionsHtml += '<button class="btn-sm" style="padding:2px 5px;" title="复制任务提示词" onclick="copyTaskPromptDirect(\\'' + t.taskId + '\\')">📋</button>';
+          actionsHtml += '</div>';
+
           return '<tr>' +
+            chkCol +
             '<td>' + tidDisplay + '</td>' +
             '<td>' + sessionDisplay + '</td>' +
             '<td><span class="badge ' + badgeClass + '">' + statusText + '</span></td>' +
-            '<td>' + elapsedDisplay + '</td>' +
+            '<td>' + activityDisplay + '</td>' +
+            '<td>' + createdDisplay + '</td>' +
+            '<td>' + finishedDisplay + '</td>' +
             '<td>' + prLink + '</td>' +
             '<td>' + logDisplay + '</td>' +
+            '<td style="text-align:right;">' + actionsHtml + '</td>' +
             '</tr>';
         }).join("");
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--red); padding:24px;">加载失败: ' + err.message + '</td></tr>';
       }
+    }
+
+    function updateOverviewCards(tasks) {
+      const now = new Date();
+      const todayYMD = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+
+      let running = 0;
+      let queued = 0;
+      let paused = 0;
+      let completedToday = 0;
+      let failedToday = 0;
+
+      tasks.forEach(t => {
+        if (t.status === "running") running++;
+        else if (t.status === "queued") queued++;
+        else if (t.status === "paused_quota" || t.status === "paused") paused++;
+
+        const isToday = (t.finished_at && t.finished_at.startsWith(todayYMD)) || (t.created_at && t.created_at.startsWith(todayYMD));
+        if (isToday) {
+          if (t.status === "completed") completedToday++;
+          else if (t.status === "failed" || t.state === "cancelled") failedToday++;
+        }
+      });
+
+      const elRun = document.getElementById("ov-running");
+      const elQue = document.getElementById("ov-queued");
+      const elPau = document.getElementById("ov-paused");
+      const elComp = document.getElementById("ov-completed-today");
+      const elFail = document.getElementById("ov-failed-today");
+
+      if (elRun) elRun.textContent = String(running);
+      if (elQue) elQue.textContent = String(queued);
+      if (elPau) elPau.textContent = String(paused);
+      if (elComp) elComp.textContent = String(completedToday);
+      if (elFail) elFail.textContent = String(failedToday);
     }
 
     // --- Tab 2: Requirements Backlog ---
@@ -1935,8 +2756,10 @@ export function renderDashboardHtml(): string {
         // Agents
         renderAgents();
 
-        // Load System Stats
+        // Load System Stats & Quota & Tasks
         loadSystemStats();
+        loadQuickQuota();
+        loadRecentTasks();
       } catch (err) {
         console.error("加载配置失败:", err);
       }
@@ -2177,16 +3000,109 @@ export function renderDashboardHtml(): string {
 
     async function loadSystemStats() {
       const grid = document.getElementById("system-stats");
+      const hwBar = document.getElementById("compact-hw-bar");
+      const hwCpu = document.getElementById("hw-cpu");
+      const hwMem = document.getElementById("hw-mem");
+      const hwWorker = document.getElementById("hw-worker");
+
       try {
         const res = await fetch("/api/system");
         if (!res.ok) return;
         const data = await res.json();
-        grid.innerHTML = 
-          '<div class="stat-card"><div class="access-label">操作系统</div><div class="stat-num">' + (data.platform || "macOS") + ' (' + (data.arch || "arm64") + ')</div></div>' +
-          '<div class="stat-card"><div class="access-label">CPU 规格</div><div class="stat-num">' + (data.cpuModel || "Apple Silicon") + ' (' + (data.cores || 8) + ' Cores)</div></div>' +
-          '<div class="stat-card"><div class="access-label">内存状况</div><div class="stat-num">' + (data.freeMemGb || 0) + ' GB 可用 / ' + (data.totalMemGb || 0) + ' GB</div></div>' +
-          '<div class="stat-card"><div class="access-label">后台守护进程</div><div class="stat-num" style="color:#34d399">● 运行中 (PID: ' + (data.workerPid || "Active") + ')</div></div>';
+        
+        // Populate settings detailed grid
+        if (grid) {
+          grid.innerHTML = 
+            '<div class="stat-card"><div class="access-label">操作系统</div><div class="stat-num">' + (data.platform || "macOS") + ' (' + (data.arch || "arm64") + ')</div></div>' +
+            '<div class="stat-card"><div class="access-label">CPU 规格</div><div class="stat-num">' + (data.cpuModel || "Apple Silicon") + ' (' + (data.cores || 8) + ' Cores)</div></div>' +
+            '<div class="stat-card"><div class="access-label">内存状况</div><div class="stat-num">' + (data.freeMemGb || 0) + ' GB 可用 / ' + (data.totalMemGb || 0) + ' GB</div></div>' +
+            '<div class="stat-card"><div class="access-label">后台守护进程</div><div class="stat-num" style="color:#34d399">● 运行中 (PID: ' + (data.workerPid || "Active") + ')</div></div>';
+        }
+
+        // Populate compact home hardware bar
+        if (hwCpu) hwCpu.textContent = (data.cpuModel || "CPU") + " (" + (data.cores || 0) + "核)";
+        if (hwMem) hwMem.textContent = (data.freeMemGb || 0) + " GB 可用 / " + (data.totalMemGb || 0) + " GB";
+        if (hwWorker) {
+          if (data.workerPid) {
+            hwWorker.textContent = "● 正常 (PID " + data.workerPid + ")";
+            hwWorker.style.color = "var(--green)";
+          } else {
+            hwWorker.textContent = "✕ 未检测到 PID";
+            hwWorker.style.color = "var(--red)";
+          }
+        }
+
+        // Anomaly highlight if free memory < 2GB or worker absent
+        const freeMemNum = parseFloat(data.freeMemGb || "10");
+        if (hwBar) {
+          if (!data.workerPid || freeMemNum < 2.0) {
+            hwBar.classList.add("warning");
+          } else {
+            hwBar.classList.remove("warning");
+          }
+        }
       } catch (e) {}
+    }
+
+    async function loadQuickQuota() {
+      const grid = document.getElementById("quick-quota-grid");
+      if (!grid) return;
+      try {
+        const res = await fetch("/api/pool");
+        if (!res.ok) throw new Error("获取额度失败");
+        const data = await res.json();
+        lastPoolData = data;
+        const accounts = data.accounts || [];
+
+        if (accounts.length === 0) {
+          grid.innerHTML = '<div style="color:var(--text-muted); font-size:13px; padding:10px;">暂无本地 Cockpit 账号关联</div>';
+          return;
+        }
+
+        grid.innerHTML = accounts.map(acc => {
+          const email = acc.email || "-";
+          const fraction = parseFloat(acc.quota_remaining || "1.0");
+          const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+          const isCurrent = !!acc.cockpit_current;
+          const isPaused = acc.paused_until && acc.paused_until !== "none";
+
+          let barColor = "var(--green)";
+          if (pct <= 20) barColor = "var(--red)";
+          else if (pct <= 50) barColor = "var(--yellow)";
+
+          let statusTag = '<span style="font-size:11px; color:var(--green);">● 正常</span>';
+          if (isPaused) {
+            const pauseTimeStr = formatTimeCompact(acc.paused_until);
+            statusTag = '<span style="font-size:11px; color:var(--purple);">⏸ 暂停至 ' + pauseTimeStr + '</span>';
+          } else if (pct <= 5) {
+            statusTag = '<span style="font-size:11px; color:var(--red);">⚠ 额度耗尽</span>';
+          }
+
+          let resetTag = "";
+          if (acc.reset_time) {
+            resetTag = '<span style="font-size:11px; color:var(--text-muted);">重置: ' + formatTimeCompact(acc.reset_time) + '</span>';
+          }
+
+          return '<div class="quota-chip">' +
+            '<div class="quota-chip-header">' +
+              '<div style="font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px;">' +
+                (isCurrent ? '<span style="color:var(--accent);" title="当前 Cockpit 主账号">★</span>' : '') +
+                escapeHtml(email) +
+              '</div>' +
+              '<div style="font-family:monospace; font-weight:700; color:' + barColor + ';">' + pct + '%</div>' +
+            '</div>' +
+            '<div class="quota-chip-bar">' +
+              '<div class="quota-chip-fill" style="width:' + pct + '%; background:' + barColor + ';"></div>' +
+            '</div>' +
+            '<div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">' +
+              statusTag +
+              resetTag +
+            '</div>' +
+          '</div>';
+        }).join("");
+      } catch (err) {
+        grid.innerHTML = '<div style="color:var(--red); font-size:12px; padding:10px;">读取账号额度异常: ' + escapeHtml(err.message) + '</div>';
+      }
     }
 
     async function saveAllConfig() {

@@ -13,6 +13,11 @@ import { renderDashboardHtml } from "./dashboard-html.js";
 import { loadAgents, saveAgents } from "./agents.js";
 import { loadRoutingConfig, saveRoutingConfig } from "./routing.js";
 import { queryRecentTasks } from "./recent-tasks.js";
+import { readStatus, writeStatus, ACTIVE_STATES } from "./status.js";
+import { reconcileTaskStatus } from "./task-reconcile.js";
+import { isValidTaskId, resolveSafePath } from "./validator.js";
+import { audit } from "./audit.js";
+import { getStashedQuotaTask, removeStashedQuotaTask } from "./session-quota.js";
 import {
   listRequirements,
   getRequirement,
@@ -44,7 +49,10 @@ import {
   removePoolProfile,
 } from "./account-pool.js";
 import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
+import { fileURLToPath } from "node:url";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface HttpServerOptions {
   port?: number;
@@ -154,10 +162,34 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         pathname === "/dashboard" ||
         pathname === "/admin";
 
+      const webDistDir = path.resolve(__dirname, "..", "web", "dist");
+
+      // Serve static assets from web/dist (Vite React app)
+      if (pathname.startsWith("/assets/") && fs.existsSync(path.join(webDistDir, pathname))) {
+        const filePath = path.join(webDistDir, pathname);
+        const ext = path.extname(filePath).toLowerCase();
+        let mime = "application/octet-stream";
+        if (ext === ".js") mime = "application/javascript; charset=utf-8";
+        else if (ext === ".css") mime = "text/css; charset=utf-8";
+        else if (ext === ".svg") mime = "image/svg+xml";
+        else if (ext === ".png") mime = "image/png";
+
+        res.setHeader("Content-Type", mime);
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        res.statusCode = 200;
+        res.end(fs.readFileSync(filePath));
+        return;
+      }
+
       if (isHtmlRequest && (pathname === "/" || pathname === "/dashboard" || pathname === "/admin")) {
+        const reactIndexHtml = path.join(webDistDir, "index.html");
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.statusCode = 200;
-        res.end(renderDashboardHtml());
+        if (fs.existsSync(reactIndexHtml)) {
+          res.end(fs.readFileSync(reactIndexHtml, "utf8"));
+        } else {
+          res.end(renderDashboardHtml());
+        }
         return;
       }
 
@@ -274,6 +306,391 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           });
           res.statusCode = 200;
           res.end(JSON.stringify({ success: true, tasks }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Cancel Recent Task
+      if (pathname === "/api/recent-tasks/cancel" && method === "POST") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+          const body = await readBody();
+          const taskId = body?.taskId || body?.id;
+          if (!taskId || !isValidTaskId(taskId)) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: "Invalid or missing taskId" }));
+            return;
+          }
+
+          const rootDir = defaultInstance.rootDir;
+          const currentStatus = readStatus(rootDir, taskId);
+
+          // 1. If already finished, return immediately
+          if (currentStatus && ["completed", "failed", "cancelled"].includes(currentStatus.state)) {
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: `Task "${taskId}" has already finished with status "${currentStatus.state}".` }));
+            return;
+          }
+
+          // 2. Check if result file already exists
+          const resultsDir = path.join(rootDir, "results");
+          const resultFilePath = path.join(resultsDir, `${taskId}.md`);
+          if (fs.existsSync(resultFilePath)) {
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: `Task "${taskId}" has already finished with result file.` }));
+            return;
+          }
+
+          // 3. If paused_quota or queued in status with no active running process, cancel immediately
+          if (currentStatus && (currentStatus.state === "paused_quota" || currentStatus.state === "queued")) {
+            writeStatus(rootDir, taskId, {
+              ...currentStatus,
+              state: "cancelled",
+              finishedAt: currentStatus.finishedAt || new Date().toISOString(),
+              reason: "cancelled by user request via dashboard",
+            });
+            audit(rootDir, { tool: "http_cancel_task", taskId, state: "cancelled" });
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: `Task "${taskId}" marked cancelled.` }));
+            return;
+          }
+
+          // 4. Ghost task check (marked running but process is dead)
+          if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
+            const after = reconcileTaskStatus(rootDir, { taskId, ...currentStatus }, { graceMs: 0, childExitGraceMs: 0, finalState: "cancelled" });
+            if (after.state === "cancelled") {
+              audit(rootDir, { tool: "http_cancel_task", taskId, state: "cancelled" });
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, message: `Task "${taskId}" had no live process; marked cancelled.` }));
+              return;
+            }
+          }
+
+          // 5. Also try removing from queue if present
+          cancelQueueItem(rootDir, taskId);
+
+          // 6. Write control/<taskId>.cancel for running worker/agent
+          const controlDir = path.join(rootDir, "control");
+          if (!fs.existsSync(controlDir)) {
+            fs.mkdirSync(controlDir, { recursive: true });
+          }
+          const cancelFilePath = path.join(controlDir, `${taskId}.cancel`);
+          fs.writeFileSync(cancelFilePath, new Date().toISOString(), "utf8");
+          audit(rootDir, { tool: "http_cancel_task", taskId, state: "cancel_requested" });
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, message: `Cancel requested for task "${taskId}".` }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Task Details
+      if (pathname === "/api/recent-tasks/details" && method === "GET") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        const taskId = url.searchParams.get("taskId") || "";
+        if (!taskId || !isValidTaskId(taskId)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, error: "Invalid or missing taskId" }));
+          return;
+        }
+
+        try {
+          const rootDir = defaultInstance.rootDir;
+          const status = readStatus(rootDir, taskId);
+          const taskFilePath = path.join(rootDir, "tasks", `${taskId}.md`);
+          let taskRaw = "";
+          let meta: Record<string, string> = {};
+          let prompt = "";
+
+          if (fs.existsSync(taskFilePath)) {
+            taskRaw = fs.readFileSync(taskFilePath, "utf8");
+            const parts = taskRaw.split(/\r?\n---\r?\n/);
+            const header = parts[0] || "";
+            for (const line of header.split(/\r?\n/)) {
+              const m = line.match(/^-[ \t]*\*\*([^*]+)\*\*:[ \t]*(.*)$/);
+              if (m) meta[m[1].trim()] = m[2].trim();
+            }
+            const pMatch = taskRaw.match(/## Prompt\s*\n([\s\S]*)$/i);
+            prompt = pMatch ? pMatch[1].trim() : "";
+          }
+
+          const resultFilePath = path.join(rootDir, "results", `${taskId}.md`);
+          let resultRaw: string | null = null;
+          if (fs.existsSync(resultFilePath)) {
+            resultRaw = fs.readFileSync(resultFilePath, "utf8");
+          }
+
+          const workDir = status?.workDir || meta["Worktree Dir"] || meta["Project Dir"] || undefined;
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            success: true,
+            taskId,
+            status,
+            meta,
+            prompt,
+            workDir,
+            hasResult: !!resultRaw,
+            resultRaw,
+          }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Task Logs (Tail)
+      if (pathname === "/api/recent-tasks/logs" && method === "GET") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        const taskId = url.searchParams.get("taskId") || "";
+        const maxLines = parseInt(url.searchParams.get("lines") || "100", 10);
+        if (!taskId || !isValidTaskId(taskId)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, error: "Invalid or missing taskId" }));
+          return;
+        }
+
+        try {
+          const rootDir = defaultInstance.rootDir;
+          const logsDir = path.join(rootDir, "logs");
+          const outPath = path.join(logsDir, `${taskId}.out`);
+          const errPath = path.join(logsDir, `${taskId}.err`);
+
+          let stdout = "";
+          let stderr = "";
+
+          if (fs.existsSync(outPath)) {
+            const raw = fs.readFileSync(outPath, "utf8");
+            const lines = raw.split(/\r?\n/);
+            stdout = lines.slice(-maxLines).join("\n");
+          }
+          if (fs.existsSync(errPath)) {
+            const raw = fs.readFileSync(errPath, "utf8");
+            const lines = raw.split(/\r?\n/);
+            stderr = lines.slice(-maxLines).join("\n");
+          }
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            success: true,
+            taskId,
+            stdout,
+            stderr,
+          }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Task Retry / Resume
+      if (pathname === "/api/recent-tasks/retry" && method === "POST") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+          const body = await readBody();
+          const target = String(body?.taskId || body?.id || "").trim();
+          if (!target || !isValidTaskId(target)) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: "Invalid or missing taskId" }));
+            return;
+          }
+
+          const rootDir = defaultInstance.rootDir;
+          const mode = body?.mode === "fresh" ? "fresh" : "continue";
+          const agentOverride = body?.agent ? String(body.agent).trim() : undefined;
+          const modelOverride = body?.model ? String(body.model).trim() : undefined;
+          const accountOverride = body?.account ? String(body.account).trim() : undefined;
+          const promptOverride = body?.prompt ? String(body.prompt).trim() : undefined;
+
+          // Load original task info
+          const taskFilePath = path.join(rootDir, "tasks", `${target}.md`);
+          let originalPrompt = "";
+          let sessionId = target;
+          let originalAgent = "agy";
+          let originalModel: string | undefined = undefined;
+          let originalEffort: string | undefined = undefined;
+
+          const stashed = getStashedQuotaTask(rootDir, target);
+          if (stashed) {
+            originalPrompt = stashed.prompt;
+            sessionId = stashed.session_id || sessionId;
+            originalAgent = stashed.agent || originalAgent;
+            originalModel = stashed.model;
+            originalEffort = stashed.reasoningEffort;
+          }
+
+          if (fs.existsSync(taskFilePath)) {
+            try {
+              const content = fs.readFileSync(taskFilePath, "utf8");
+              const pMatch = content.match(/## Prompt\s*\n([\s\S]*)$/i);
+              if (pMatch && !originalPrompt) originalPrompt = pMatch[1].trim();
+              const sMatch = content.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
+              if (sMatch) sessionId = sMatch[1].trim();
+              const aMatch = content.match(/- \*\*Agent\*\*:\s*([^\r\n]+)/i);
+              if (aMatch && !originalAgent) originalAgent = aMatch[1].trim();
+              const mMatch = content.match(/- \*\*Model\*\*:\s*([^\r\n]+)/i);
+              if (mMatch && !originalModel) originalModel = mMatch[1].trim();
+              const effMatch = content.match(/- \*\*Reasoning Effort\*\*:\s*([^\r\n]+)/i);
+              if (effMatch && !originalEffort) originalEffort = effMatch[1].trim();
+            } catch {}
+          }
+
+          const promptToRun = promptOverride || originalPrompt;
+          if (!promptToRun) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Could not find prompt for task "${target}"` }));
+            return;
+          }
+
+          const agentToUse = agentOverride || originalAgent;
+          const modelToUse = modelOverride || originalModel;
+          const accountToUse = accountOverride || undefined;
+
+          // If continuing session, ensure session queue is unpaused
+          if (mode === "continue" && sessionId) {
+            resumeQueue(rootDir, sessionId);
+          }
+
+          const dispatchRes = dispatchTaskDirect(rootDir, {
+            prompt: promptToRun,
+            title: mode === "continue" ? `Resume ${target}` : `Retry ${target}`,
+            agent: agentToUse,
+            model: modelToUse,
+            reasoning_effort: originalEffort,
+            account: accountToUse,
+            continue_session: mode === "continue",
+            session_id: mode === "continue" ? sessionId : undefined,
+          });
+
+          if (stashed) {
+            removeStashedQuotaTask(rootDir, stashed.taskId);
+          }
+
+          audit(rootDir, {
+            tool: "http_task_retry",
+            taskId: dispatchRes.taskId,
+            state: "dispatched",
+          });
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            success: true,
+            taskId: dispatchRes.taskId,
+            mode,
+            agent: dispatchRes.agentName,
+            model: dispatchRes.modelParam,
+            message: mode === "continue" ? `已成功续跑会话（新任务 ID: ${dispatchRes.taskId}）` : `已重新发起新任务（ID: ${dispatchRes.taskId}）`,
+          }));
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      // API: Task Archive / Delete
+      if (pathname === "/api/recent-tasks/archive" && method === "POST") {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+          const body = await readBody();
+          const taskIds: string[] = Array.isArray(body?.taskIds) ? body.taskIds : (body?.taskId ? [body.taskId] : []);
+          const cleanWorktree = !!body?.cleanWorktree;
+
+          if (taskIds.length === 0) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: "Missing taskIds" }));
+            return;
+          }
+
+          const rootDir = defaultInstance.rootDir;
+          let deletedCount = 0;
+          const cleanedWorktrees: string[] = [];
+
+          for (const tid of taskIds) {
+            if (!isValidTaskId(tid)) continue;
+
+            // Optional worktree cleanup
+            if (cleanWorktree) {
+              const status = readStatus(rootDir, tid);
+              let workDir = status?.workDir;
+              if (!workDir) {
+                const taskPath = path.join(rootDir, "tasks", `${tid}.md`);
+                if (fs.existsSync(taskPath)) {
+                  try {
+                    const text = fs.readFileSync(taskPath, "utf8");
+                    const m = text.match(/- \*\*(?:Worktree Dir|Project Dir)\*\*:\s*([^\r\n]+)/i);
+                    if (m) workDir = m[1].trim();
+                  } catch {}
+                }
+              }
+              if (workDir && fs.existsSync(workDir)) {
+                // Safety check: ensure workDir is not root / or home directory
+                const homeDir = os.homedir();
+                if (workDir !== "/" && workDir !== homeDir && (workDir.includes("worktree") || workDir.includes("/tmp/") || workDir.includes("/temp/"))) {
+                  try {
+                    fs.rmSync(workDir, { recursive: true, force: true });
+                    cleanedWorktrees.push(workDir);
+                  } catch {}
+                }
+              }
+            }
+
+            // Remove status/taskId.json
+            const statusPath = path.join(rootDir, "status", `${tid}.json`);
+            if (fs.existsSync(statusPath)) {
+              try { fs.unlinkSync(statusPath); } catch {}
+            }
+            // Remove tasks/taskId.md
+            const taskPath = path.join(rootDir, "tasks", `${tid}.md`);
+            if (fs.existsSync(taskPath)) {
+              try { fs.unlinkSync(taskPath); } catch {}
+            }
+            // Remove results/taskId.md
+            const resultPath = path.join(rootDir, "results", `${tid}.md`);
+            if (fs.existsSync(resultPath)) {
+              try { fs.unlinkSync(resultPath); } catch {}
+            }
+            // Remove logs/taskId.out and .err
+            const outPath = path.join(rootDir, "logs", `${tid}.out`);
+            if (fs.existsSync(outPath)) {
+              try { fs.unlinkSync(outPath); } catch {}
+            }
+            const errPath = path.join(rootDir, "logs", `${tid}.err`);
+            if (fs.existsSync(errPath)) {
+              try { fs.unlinkSync(errPath); } catch {}
+            }
+            // Remove control files
+            const cancelPath = path.join(rootDir, "control", `${tid}.cancel`);
+            if (fs.existsSync(cancelPath)) {
+              try { fs.unlinkSync(cancelPath); } catch {}
+            }
+
+            // Remove from queue if present
+            cancelQueueItem(rootDir, tid);
+
+            deletedCount++;
+          }
+
+          audit(rootDir, {
+            tool: "http_tasks_archive",
+            state: `deleted_${deletedCount}_tasks`,
+          });
+
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            success: true,
+            deletedCount,
+            cleanedWorktrees,
+            message: `成功归档并清理 ${deletedCount} 条任务记录` + (cleanedWorktrees.length > 0 ? `，并清理了 ${cleanedWorktrees.length} 个 worktree 目录` : ""),
+          }));
         } catch (err: any) {
           res.statusCode = 500;
           res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
