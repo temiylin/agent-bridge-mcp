@@ -127,14 +127,11 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     if (isMcpOrPublic) {
       res.setHeader("Access-Control-Allow-Origin", "*");
     } else if (origin) {
-      // For local dashboard / admin, allow same-host origins
+      // For local dashboard / admin, strictly allow origin whitelist (localhost, 127.0.0.1)
+      // to prevent DNS rebinding attacks from arbitrary sites
       try {
         const originUrl = new URL(origin);
-        if (
-          originUrl.hostname === "localhost" ||
-          originUrl.hostname === "127.0.0.1" ||
-          originUrl.hostname === req.headers.host?.split(":")[0]
-        ) {
+        if (originUrl.hostname === "localhost" || originUrl.hostname === "127.0.0.1") {
           res.setHeader("Access-Control-Allow-Origin", origin);
         }
       } catch {}
@@ -155,20 +152,22 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
     // Helper: Verify authorization for state-mutating or sensitive REST APIs
     // Allowed if:
-    // 1. Request is from localhost (127.0.0.1 / ::1 / local loopback)
-    // 2. OR request provides valid device token via header: Authorization: Bearer <token>, x-device-token: <token>, or x-admin-token: <token>
+    // 1. Request is strictly from local loopback (127.0.0.1 / ::1 / ::ffff:127.0.0.1)
+    // 2. OR request provides valid non-empty device token via header: Authorization: Bearer <token>, x-device-token: <token>, or x-admin-token: <token>
+    // NOTE: fe80:: (IPv6 link-local) is NOT considered localhost; token being empty or "dev_default" does NOT grant authorization.
     const isAuthorizedRequest = (): boolean => {
       const clientIp = req.socket.remoteAddress || "";
       const isLocalhost =
         clientIp === "127.0.0.1" ||
         clientIp === "::1" ||
-        clientIp === "::ffff:127.0.0.1" ||
-        clientIp.startsWith("fe80::");
+        clientIp === "::ffff:127.0.0.1";
 
       if (isLocalhost) return true;
 
       const expectedToken = resolveDeviceToken().token;
-      if (!expectedToken || expectedToken === "dev_default") return true;
+      if (!expectedToken || expectedToken === "dev_default") {
+        return false;
+      }
 
       const authHeader = req.headers["authorization"] || "";
       const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
@@ -722,10 +721,14 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           for (const tid of taskIds) {
             if (!isValidTaskId(tid)) continue;
 
-            // 1. Check if task is running or queued: REFUSE archive if active!
+            // 1. Check if task is running, queued, or paused due to quota: REFUSE archive if active!
             const status = readStatus(rootDir, tid);
             if (status && (status.state === "running" || status.state === "suspected_stalled")) {
               errors.push(`Task "${tid}" is currently running and cannot be archived.`);
+              continue;
+            }
+            if (status && status.state === "paused_quota") {
+              errors.push(`Task "${tid}" is paused due to quota and cannot be archived.`);
               continue;
             }
             if (findItemInQueues(rootDir, tid)) {
@@ -735,9 +738,19 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
             // 2. Optional safe worktree cleanup:
             // ONLY allowed if status.workDir is strictly inside bridge's worktrees root!
-            // NEVER fall back to project directory, NEVER use substring heuristics.
+            // Read repo directory from task metadata if available (or auto-discover from worktree .git pointer).
             if (cleanWorktree && status?.workDir) {
-              const worktreeResult = removeGitWorktree(rootDir, status.workDir, undefined, (lvl, msg) => {
+              let repoDirCandidate: string | undefined = undefined;
+              const taskPath = path.join(rootDir, "tasks", `${tid}.md`);
+              if (fs.existsSync(taskPath)) {
+                try {
+                  const content = fs.readFileSync(taskPath, "utf8");
+                  const dirMatch = content.match(/- \*\*Project Dir\*\*:\s*([^\r\n]+)/i);
+                  if (dirMatch) repoDirCandidate = dirMatch[1].trim();
+                } catch {}
+              }
+
+              const worktreeResult = removeGitWorktree(rootDir, status.workDir, repoDirCandidate, (lvl, msg) => {
                 logger[lvl.toLowerCase() as "info" | "warn" | "error"](msg);
               });
               if (worktreeResult.success) {
@@ -748,38 +761,56 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
             }
 
             // 3. Move files to archive/ directory instead of permanently deleting
-            const safeMove = (src: string, dest: string) => {
-              if (fs.existsSync(src)) {
-                try {
-                  fs.renameSync(src, dest);
-                } catch {
-                  try {
-                    fs.copyFileSync(src, dest);
-                    fs.unlinkSync(src);
-                  } catch {}
+            // If target file already exists in archive, append timestamp to preserve history.
+            let taskFileMoved = false;
+            let moveErrorOccurred = false;
+
+            const safeMove = (src: string, dest: string, fileLabel: string) => {
+              if (!fs.existsSync(src)) return;
+              try {
+                let finalDest = dest;
+                if (fs.existsSync(finalDest)) {
+                  const ext = path.extname(dest);
+                  const base = path.basename(dest, ext);
+                  finalDest = path.join(path.dirname(dest), `${base}_${Date.now()}${ext}`);
                 }
+                try {
+                  fs.renameSync(src, finalDest);
+                } catch {
+                  fs.copyFileSync(src, finalDest);
+                  fs.unlinkSync(src);
+                }
+                taskFileMoved = true;
+              } catch (e: any) {
+                moveErrorOccurred = true;
+                errors.push(`Task "${tid}" failed to archive ${fileLabel}: ${e?.message || String(e)}`);
               }
             };
 
             safeMove(
               path.join(rootDir, "status", `${tid}.json`),
-              path.join(archiveRootDir, "status", `${tid}.json`)
+              path.join(archiveRootDir, "status", `${tid}.json`),
+              "status file"
             );
             safeMove(
               path.join(rootDir, "tasks", `${tid}.md`),
-              path.join(archiveRootDir, "tasks", `${tid}.md`)
+              path.join(archiveRootDir, "tasks", `${tid}.md`),
+              "task markdown"
             );
             safeMove(
               path.join(rootDir, "results", `${tid}.md`),
-              path.join(archiveRootDir, "results", `${tid}.md`)
+              path.join(archiveRootDir, "results", `${tid}.md`),
+              "result markdown"
             );
             safeMove(
               path.join(rootDir, "logs", `${tid}.out`),
-              path.join(archiveRootDir, "logs", `${tid}.out`)
+              path.join(archiveRootDir, "logs", `${tid}.out`),
+              "stdout log"
             );
             safeMove(
               path.join(rootDir, "logs", `${tid}.err`),
-              path.join(archiveRootDir, "logs", `${tid}.err`)
+              path.join(archiveRootDir, "logs", `${tid}.err`),
+              "stderr log"
             );
 
             // Clean any stale control files
@@ -788,7 +819,9 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
               try { fs.unlinkSync(cancelPath); } catch {}
             }
 
-            deletedCount++;
+            if (taskFileMoved && !moveErrorOccurred) {
+              deletedCount++;
+            }
           }
 
           audit(rootDir, {

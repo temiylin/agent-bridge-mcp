@@ -154,6 +154,30 @@ export function setupGitWorktree(options: SetupWorktreeOptions): SetupWorktreeRe
 }
 
 /**
+ * Discovers the main repository directory for a given worktree by reading its .git pointer file.
+ */
+export function findRepoFromWorktree(worktreeDir: string): string | undefined {
+  const gitPath = path.join(worktreeDir, ".git");
+  if (!fs.existsSync(gitPath)) return undefined;
+  try {
+    const stat = fs.lstatSync(gitPath);
+    if (stat.isDirectory()) return worktreeDir;
+    const content = fs.readFileSync(gitPath, "utf8");
+    const m = content.match(/^gitdir:\s*(.+)$/m);
+    if (!m) return undefined;
+    const gitdir = path.resolve(worktreeDir, m[1].trim());
+    const commondirFile = path.join(gitdir, "commondir");
+    if (fs.existsSync(commondirFile)) {
+      const rel = fs.readFileSync(commondirFile, "utf8").trim();
+      const common = path.resolve(gitdir, rel);
+      const mainRepoDir = path.dirname(common);
+      if (fs.existsSync(mainRepoDir)) return mainRepoDir;
+    }
+  } catch {}
+  return undefined;
+}
+
+/**
  * Safely removes a git worktree that is confirmed to reside under the bridge worktrees root.
  * Enforces that workDir:
  * 1. Is an absolute path
@@ -184,11 +208,13 @@ export function removeGitWorktree(
     return { success: true };
   }
 
-  // 1. Try git worktree remove if repoDir is provided and exists
-  if (repoDir && fs.existsSync(repoDir)) {
+  // 1. Resolve repoDir: use provided repoDir or inspect worktree's .git pointer
+  const effectiveRepoDir = (repoDir && fs.existsSync(repoDir)) ? repoDir : findRepoFromWorktree(targetDir);
+
+  if (effectiveRepoDir && fs.existsSync(effectiveRepoDir)) {
     try {
       const res = spawnSync("git", ["worktree", "remove", "--force", targetDir], {
-        cwd: repoDir,
+        cwd: effectiveRepoDir,
         encoding: "utf8",
       });
       if (res.status === 0) {

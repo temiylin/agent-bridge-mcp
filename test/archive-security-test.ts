@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import cp from "node:child_process";
 import { startHttpServer } from "../src/http-server.js";
 import { writeStatus } from "../src/status.js";
-import { resolveWorktreeRoot } from "../src/worktree.js";
+import { resolveWorktreeRoot, setupGitWorktree } from "../src/worktree.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-archive-security-test";
 const TEST_PORT = 38092;
@@ -26,8 +26,8 @@ async function runArchiveSecurityTests() {
   const baseUrl = `http://127.0.0.1:${TEST_PORT}`;
 
   try {
-    // 1. Refuse archive for running / queued tasks
-    console.log("[Test 1] Refuse archive for running task...");
+    // 1. Refuse archive for running / queued / paused_quota tasks
+    console.log("[Test 1a] Refuse archive for running task...");
     writeStatus(TEST_ROOT, "task-running-001", {
       state: "running",
       agent: "codex",
@@ -43,6 +43,23 @@ async function runArchiveSecurityTests() {
     assert.equal(dataRunning.deletedCount, 0, "Running task must not be archived");
     assert.ok(dataRunning.errors && dataRunning.errors.some((e: string) => e.includes("running")), "Error message must mention running state");
     console.log("✓ Assertion passed: Running task archive refused.");
+
+    console.log("[Test 1b] Refuse archive for paused_quota task...");
+    writeStatus(TEST_ROOT, "task-paused-quota-001", {
+      state: "paused_quota",
+      agent: "codex",
+      startedAt: new Date().toISOString(),
+    });
+
+    const resPausedQuota = await fetch(`${baseUrl}/api/recent-tasks/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskIds: ["task-paused-quota-001"] }),
+    });
+    const dataPausedQuota = await resPausedQuota.json();
+    assert.equal(dataPausedQuota.deletedCount, 0, "paused_quota task must not be archived");
+    assert.ok(dataPausedQuota.errors && dataPausedQuota.errors.some((e: string) => e.includes("paused due to quota")), "Error message must mention quota paused");
+    console.log("✓ Assertion passed: paused_quota task archive refused.");
 
     // 2. Refuse worktree cleanup for out-of-bounds directory
     console.log("[Test 2] Refuse worktree cleanup outside bridge worktree root...");
@@ -69,8 +86,8 @@ async function runArchiveSecurityTests() {
     assert.ok(fs.existsSync(importantFile), "Out-of-bounds file must remain intact!");
     console.log("✓ Assertion passed: Out-of-bounds worktree cleanup strictly rejected.");
 
-    // 3. Normal completed task moved to archive/ directory
-    console.log("[Test 3] Verify completed task is safely moved to archive/ directory...");
+    // 3. Normal completed task moved to archive/ directory with collision handling
+    console.log("[Test 3] Verify completed task is safely moved to archive/ directory and collisions get timestamp suffix...");
     const tasksDir = path.join(TEST_ROOT, "tasks");
     fs.mkdirSync(tasksDir, { recursive: true });
     const taskMd = path.join(tasksDir, "task-completed-safe.md");
@@ -83,6 +100,12 @@ async function runArchiveSecurityTests() {
       finishedAt: new Date().toISOString(),
     });
 
+    // Create pre-existing file in archive to force collision
+    const archiveTasksDir = path.join(TEST_ROOT, "archive", "tasks");
+    fs.mkdirSync(archiveTasksDir, { recursive: true });
+    const existingArchived = path.join(archiveTasksDir, "task-completed-safe.md");
+    fs.writeFileSync(existingArchived, "# Old Version\n", "utf8");
+
     const resSafe = await fetch(`${baseUrl}/api/recent-tasks/archive`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -90,9 +113,93 @@ async function runArchiveSecurityTests() {
     });
     const dataSafe = await resSafe.json();
     assert.equal(dataSafe.deletedCount, 1, "Completed task archived");
-    const archivePath = path.join(TEST_ROOT, "archive", "tasks", "task-completed-safe.md");
-    assert.ok(fs.existsSync(archivePath), "Task markdown file should be moved into archive/ directory");
-    console.log("✓ Assertion passed: Completed task moved into archive/ directory instead of being permanently deleted.");
+
+    // Old archived file should still exist
+    assert.equal(fs.readFileSync(existingArchived, "utf8"), "# Old Version\n");
+    // New file with timestamp suffix should exist
+    const archiveFiles = fs.readdirSync(archiveTasksDir);
+    const stampedFile = archiveFiles.find((f) => f.startsWith("task-completed-safe_") && f.endsWith(".md"));
+    assert.ok(stampedFile, "Archived file collision must generate a timestamped file");
+    console.log("✓ Assertion passed: Target file collision preserved with timestamp suffix.");
+
+    // 4. Git Worktree actual removal using repoDir
+    console.log("[Test 4] Git worktree actual removal via git worktree remove...");
+    const gitRepoDir = path.join(TEST_ROOT, "real-git-repo");
+    fs.mkdirSync(gitRepoDir, { recursive: true });
+    cp.execSync("git init", { cwd: gitRepoDir });
+    cp.execSync("git config user.name test && git config user.email test@test.com", { cwd: gitRepoDir });
+    cp.execSync("git commit --allow-empty -m init", { cwd: gitRepoDir });
+
+    const wtResult = setupGitWorktree({
+      repoDir: gitRepoDir,
+      worktreeRoot: path.join(TEST_ROOT, "worktrees"),
+      worktreeName: "feature-branch-test",
+    });
+    assert.ok(fs.existsSync(wtResult.worktreeDir), "Worktree directory should be created");
+
+    // Write task file with Project Dir
+    const wtTaskFile = path.join(tasksDir, "task-with-wt.md");
+    fs.writeFileSync(wtTaskFile, `# Task with Worktree\n- **Project Dir**: ${gitRepoDir}\n\n## Prompt\nhi\n`, "utf8");
+    writeStatus(TEST_ROOT, "task-with-wt", {
+      state: "completed",
+      agent: "codex",
+      workDir: wtResult.worktreeDir,
+      startedAt: new Date(Date.now() - 5000).toISOString(),
+      finishedAt: new Date().toISOString(),
+    });
+
+    const resWt = await fetch(`${baseUrl}/api/recent-tasks/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskIds: ["task-with-wt"], cleanWorktree: true }),
+    });
+    const dataWt = await resWt.json();
+    assert.equal(dataWt.deletedCount, 1, "Task with worktree archived");
+    assert.equal(dataWt.cleanedWorktrees.length, 1, "Worktree reported cleaned");
+    assert.ok(!fs.existsSync(wtResult.worktreeDir), "Worktree directory must be removed by git worktree remove");
+    // Verify git worktree list in repo no longer lists the worktree
+    const wtList = cp.execSync("git worktree list --porcelain", { cwd: gitRepoDir, encoding: "utf8" });
+    assert.ok(!wtList.includes(wtResult.worktreeDir), "git worktree list must no longer show removed worktree");
+    console.log("✓ Assertion passed: Git worktree actually removed via git worktree remove.");
+
+    // 5. CORS Origin Whitelist vs DNS Rebinding
+    console.log("[Test 5] CORS Origin whitelist check (DNS rebinding prevention)...");
+    const resAllowedCors = await fetch(`${baseUrl}/api/system`, {
+      method: "GET",
+      headers: { Origin: "http://localhost:3000" },
+    });
+    assert.equal(resAllowedCors.headers.get("access-control-allow-origin"), "http://localhost:3000", "localhost origin allowed");
+
+    const resForbiddenCors = await fetch(`${baseUrl}/api/system`, {
+      method: "GET",
+      headers: { Origin: "http://attacker.com", Host: "attacker.com" },
+    });
+    assert.equal(resForbiddenCors.headers.get("access-control-allow-origin"), null, "Arbitrary origin must NOT receive access-control-allow-origin");
+    console.log("✓ Assertion passed: CORS strictly whitelisted, DNS rebinding blocked.");
+
+    // 6. /mcp POST behavior on local calls
+    console.log("[Test 6] /mcp POST behavior unchanged for local calls...");
+    const resMcp = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test-client", version: "1.0.0" },
+        },
+      }),
+    });
+    assert.equal(resMcp.status, 200, "/mcp POST must return 200");
+    const mcpData = await resMcp.json();
+    assert.equal(mcpData.result?.serverInfo?.name, "agent-bridge-mcp", "Server info matches");
+    console.log("✓ Assertion passed: /mcp POST works seamlessly for local calls.");
 
   } finally {
     await handle.close();
