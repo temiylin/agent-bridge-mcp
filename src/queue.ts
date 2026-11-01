@@ -47,6 +47,7 @@ export interface QueueCompactItem {
   plan_id?: string;
   step_id?: string;
   pr_url?: string;
+  previous_task_id?: string;
 }
 
 export function isValidQueueId(id: unknown): id is string {
@@ -224,6 +225,7 @@ export function listQueue(
       const itemPlan = (item.options?.plan_id || "").toString().trim();
       const itemStep = (item.options?.step_id || "").toString().trim();
       const itemPrUrl = (item.options?.pr_url || "").toString().trim();
+      const itemPrevTaskId = (item.options?.previous_task_id || item.after_task_id || "").toString().trim();
 
       if (normProj && itemProj.toLowerCase() !== normProj) {
         continue;
@@ -243,6 +245,7 @@ export function listQueue(
         plan_id: itemPlan || undefined,
         step_id: itemStep || undefined,
         pr_url: itemPrUrl || undefined,
+        previous_task_id: itemPrevTaskId || undefined,
       });
     }
   }

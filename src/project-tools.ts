@@ -1,7 +1,12 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
+import { listPlans } from "./plans.js";
+import { listRequirements } from "./requirements.js";
 import {
   ProjectDefinition,
   ServiceConfig,
@@ -506,6 +511,157 @@ export function registerProjectTools(
           {
             type: "text",
             text: JSON.stringify({ success: true, removed: res.removed }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // 5. project_summary
+  server.tool(
+    "project_summary",
+    "Retrieve a unified 360-degree intelligence dashboard of a project: Git status, active execution plans, pending requirements, recent tasks, and open pull requests in one call.",
+    {
+      project_id: z.string().describe("Project identifier (e.g. 'vision_hub', 'trade-core')"),
+      repo_path: z.string().optional().describe("Optional repo_path override"),
+    },
+    async ({ project_id, repo_path }) => {
+      audit(rootDir, { tool: "project_summary", projectId: project_id });
+      const cleanProjectId = project_id.trim();
+      const config = loadProjectsConfig(rootDir);
+      const proj =
+        config.projects[cleanProjectId] ||
+        Object.values(config.projects).find((p) => p.id === cleanProjectId || p.name === cleanProjectId);
+      if (!proj) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Project "${cleanProjectId}" not found.` }],
+        };
+      }
+
+      const cwd = repo_path ? path.resolve(repo_path.trim()) : (getProjectRepoPath(proj) ? path.resolve(getProjectRepoPath(proj)!) : null);
+
+      // 1. Git info
+      let gitInfo: any = null;
+      if (cwd && fs.existsSync(path.join(cwd, ".git"))) {
+        const curBranchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8", timeout: 3000 });
+        const curBranch = curBranchRes.status === 0 ? curBranchRes.stdout.trim() : "unknown";
+
+        const statusRes = spawnSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8", timeout: 5000 });
+        const statusLines = statusRes.status === 0 ? statusRes.stdout.split(/\r?\n/).filter(Boolean) : [];
+        const stagedCount = statusLines.filter((l) => /^[MADRC]/.test(l)).length;
+        const modifiedCount = statusLines.filter((l) => /^.[MD]/.test(l)).length;
+        const untrackedCount = statusLines.filter((l) => /^\?\?/.test(l)).length;
+
+        const logRes = spawnSync("git", ["log", "-n", "3", "--oneline"], { cwd, encoding: "utf8", timeout: 3000 });
+        const recentCommits = logRes.status === 0 ? logRes.stdout.split(/\r?\n/).filter(Boolean) : [];
+
+        gitInfo = {
+          repo_path: cwd,
+          current_branch: curBranch,
+          is_clean: statusLines.length === 0,
+          dirty_files_count: statusLines.length,
+          staged: stagedCount,
+          modified: modifiedCount,
+          untracked: untrackedCount,
+          recent_commits: recentCommits,
+        };
+      }
+
+      // 2. Execution Plans
+      let plansSummary: any = null;
+      try {
+        const allPlans = listPlans(rootDir, { projectId: cleanProjectId });
+        const activePlans = allPlans.filter(
+          (p) => (p.status_summary?.in_progress ?? 0) > 0 || p.completed_steps < p.total_steps
+        );
+        plansSummary = {
+          total_plans: allPlans.length,
+          active_plans_count: activePlans.length,
+          active_plans: activePlans.map((p) => ({
+            id: p.id,
+            title: p.title,
+            version: p.version,
+            progress: `${p.completed_steps}/${p.total_steps}`,
+          })),
+        };
+      } catch {}
+
+      // 3. Requirements
+      let reqsSummary: any = null;
+      try {
+        const allReqs = listRequirements(rootDir, { project: cleanProjectId });
+        const draftReqs = allReqs.filter((r) => r.status === "draft");
+        const dispatchedReqs = allReqs.filter((r) => r.status === "dispatched");
+        reqsSummary = {
+          total_requirements: allReqs.length,
+          draft_count: draftReqs.length,
+          dispatched_count: dispatchedReqs.length,
+          top_drafts: draftReqs.slice(0, 3).map((r) => ({ id: r.id, title: r.title, pr_url: r.pr_url })),
+        };
+      } catch {}
+
+      // 4. Tasks (running & recent)
+      let tasksSummary: any = null;
+      try {
+        const statusDir = path.join(rootDir, "status");
+        if (fs.existsSync(statusDir)) {
+          const statusFiles = fs.readdirSync(statusDir).filter((f) => f.endsWith(".json"));
+          const projectTasks: any[] = [];
+          for (const f of statusFiles) {
+            try {
+              const raw = fs.readFileSync(path.join(statusDir, f), "utf8");
+              const parsed = JSON.parse(raw);
+              if (parsed.projectId === cleanProjectId || parsed.project === cleanProjectId) {
+                projectTasks.push(parsed);
+              }
+            } catch {}
+          }
+          const running = projectTasks.filter((t) => t.state === "running" || t.state === "queued");
+          const recentCompleted = projectTasks
+            .filter((t) => t.state === "completed" || t.state === "failed")
+            .sort((a, b) => new Date(b.finishedAt || b.startedAt || 0).getTime() - new Date(a.finishedAt || a.startedAt || 0).getTime())
+            .slice(0, 3)
+            .map((t) => ({
+              taskId: t.taskId,
+              state: t.state,
+              stage: t.stage,
+              outcome: t.outcome,
+              pr_url: t.pr_url,
+              summary: t.report?.summary,
+            }));
+
+          tasksSummary = {
+            active_tasks_count: running.length,
+            running_task_ids: running.map((t) => t.taskId),
+            recent_completed: recentCompleted,
+          };
+        }
+      } catch {}
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                project: {
+                  id: proj.id,
+                  name: proj.name,
+                  repo: proj.repo,
+                  default_base_branch: proj.default_base_branch,
+                  push_remote: proj.push_remote,
+                  slack_channel: proj.slack_channel,
+                },
+                git: gitInfo,
+                plans: plansSummary,
+                requirements: reqsSummary,
+                tasks: tasksSummary,
+              },
+              null,
+              2
+            ),
           },
         ],
       };

@@ -46,12 +46,14 @@ export function registerQueueTools(
           plan_id: z.string().optional().describe("Optional plan identifier to associate with"),
           step_id: z.string().optional().describe("Optional step identifier within the plan"),
           pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task"),
+          previous_task_id: z.string().optional().describe("Optional previous task ID to inherit context from"),
         })
         .optional()
         .describe("Optional agent/model/project options"),
       plan_id: z.string().optional().describe("Optional plan identifier to associate with"),
       step_id: z.string().optional().describe("Optional step identifier within the plan"),
       pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task"),
+      previous_task_id: z.string().optional().describe("Optional previous task ID to inherit context from"),
       on_complete: z
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
@@ -63,7 +65,7 @@ export function registerQueueTools(
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
       mode: z.enum(["auto", "notify"]).default("auto").describe("'auto' dispatches automatically when turn comes; 'notify' marks ready for manual triggering"),
     },
-    async ({ session_id, after_task_id, prompt, options, on_complete, mode, plan_id, step_id, pr_url }) => {
+    async ({ session_id, after_task_id, prompt, options, on_complete, mode, plan_id, step_id, pr_url, previous_task_id }) => {
       try {
         if (!prompt || prompt.trim().length === 0) {
           return {
@@ -132,11 +134,13 @@ export function registerQueueTools(
         }
 
         const effectivePrUrl = pr_url?.trim() || options?.pr_url?.trim();
+        const effectivePrevTaskId = previous_task_id?.trim() || options?.previous_task_id?.trim() || after_task_id?.trim();
         let mergedOptions: Record<string, any> = {
           ...(options || {}),
           ...(on_complete ? { on_complete } : {}),
           ...(effectivePlanId ? { plan_id: effectivePlanId, step_id: effectiveStepId } : {}),
           ...(effectivePrUrl ? { pr_url: effectivePrUrl } : {}),
+          ...(effectivePrevTaskId ? { previous_task_id: effectivePrevTaskId } : {}),
         };
         // Auto-inherit project_id from plan if not explicitly supplied
         if (!mergedOptions.project_id && effectivePlan?.project_id) {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { generateTaskId, resolveSafePath } from "./validator.js";
 import { audit } from "./audit.js";
-import { writeStatus, readStatus } from "./status.js";
+import { writeStatus, readStatus, formatPreviousTaskContext } from "./status.js";
 import { loadAgents } from "./agents.js";
 import { resolveTaskAgent } from "./routing.js";
 import {
@@ -38,6 +38,7 @@ export interface TaskDispatchParams {
   plan_id?: string;
   step_id?: string;
   pr_url?: string;
+  previous_task_id?: string;
 }
 
 export interface TaskDispatchResult {
@@ -80,9 +81,25 @@ export function dispatchTaskDirect(
     planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
   }
 
+  const cleanPrevTaskId =
+    params.previous_task_id && params.previous_task_id.trim().length > 0
+      ? params.previous_task_id.trim()
+      : undefined;
+  let prevTaskContextPrefix = "";
+  let prevTaskPrUrl: string | undefined;
+  let prevTaskProjectId: string | undefined;
+
+  if (cleanPrevTaskId) {
+    const prevCtx = formatPreviousTaskContext(rootDir, cleanPrevTaskId);
+    prevTaskContextPrefix = prevCtx.prefix;
+    prevTaskPrUrl = prevCtx.prUrl;
+    prevTaskProjectId = prevCtx.projectId;
+  }
+
   const effectiveProjectId =
     (params.project_id && params.project_id.trim()) ||
     (effectivePlan?.project_id && effectivePlan.project_id.trim()) ||
+    prevTaskProjectId ||
     undefined;
 
   const projectResolution = resolveProject(rootDir, {
@@ -150,8 +167,11 @@ export function dispatchTaskDirect(
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
   if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
   if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
-  const cleanPrUrl = params.pr_url && params.pr_url.trim().length > 0 ? params.pr_url.trim() : undefined;
+  const cleanPrUrl =
+    (params.pr_url && params.pr_url.trim().length > 0 ? params.pr_url.trim() : undefined) ||
+    prevTaskPrUrl;
   if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
+  if (cleanPrevTaskId) headerMeta += `- **Previous Task ID**: ${cleanPrevTaskId}\n`;
   if (effectivePlan) {
     headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
     headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
@@ -165,7 +185,8 @@ export function dispatchTaskDirect(
   const reportPromptNote = prompt.includes("[Structured Report Requirement]")
     ? ""
     : buildReportJsonPromptInstruction(taskReportDir);
-  const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${prompt}` : prompt;
+  const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${prompt}` : prompt;
+  const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${promptWithPrev}` : promptWithPrev;
   const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${promptWithPlan}${gitPromptNote}${reportPromptNote}\n`;
 
   fs.writeFileSync(taskFilePath, content, "utf8");
@@ -203,6 +224,9 @@ export function dispatchTaskDirect(
         pr_url: cleanPrUrl,
         pr_urls: [cleanPrUrl],
         pr_open: true,
+      } : {}),
+      ...(cleanPrevTaskId ? {
+        previousTaskId: cleanPrevTaskId,
       } : {}),
     });
   } catch {}
@@ -350,6 +374,8 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     on_complete: item.options?.on_complete,
     plan_id: item.options?.plan_id || item.options?.planId,
     step_id: item.options?.step_id || item.options?.stepId,
+    pr_url: item.options?.pr_url,
+    previous_task_id: item.options?.previous_task_id || item.after_task_id,
   });
 
   // Remove or mark dispatched. The spec says:

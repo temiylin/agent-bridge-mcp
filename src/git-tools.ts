@@ -429,4 +429,165 @@ export function registerGitTools(
       };
     }
   );
+
+  // 6. git_branches
+  server.tool(
+    "git_branches",
+    "List local and remote Git branches, current checked out branch, and tracking upstreams in a repository workspace.",
+    {
+      project_id: z.string().optional().describe("Optional project identifier to locate the workspace repository"),
+      repo_path: z.string().optional().describe("Local git repository path. Defaults to project workspace or current repo"),
+      include_remote: z.boolean().optional().describe("Whether to include remote branches. Default: true"),
+    },
+    async ({ project_id, repo_path, include_remote = true }) => {
+      audit(rootDir, { tool: "git_branches", projectId: project_id });
+      const { cwd, project: activeProject } = resolveRepoAndProject(rootDir, repo_path, project_id);
+      if (!fs.existsSync(path.join(cwd, ".git"))) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Path "${cwd}" is not a Git repository.` }],
+        };
+      }
+
+      // Query current branch
+      const curRes = runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], cwd, 5000);
+      const currentBranch = curRes.exitCode === 0 ? curRes.stdout.trim() : "HEAD";
+
+      // Query branches with upstream and current indicator
+      const branchFormat = "%(refname:short)|%(upstream:short)|%(HEAD)";
+      const branchArgs = ["branch", "--format", branchFormat];
+      if (include_remote) {
+        branchArgs.push("-a");
+      }
+
+      const branchRes = runGitCommand(branchArgs, cwd, 10000);
+      const lines = branchRes.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+      const localBranches: { name: string; upstream?: string; is_current: boolean }[] = [];
+      const remoteBranches: string[] = [];
+
+      for (const line of lines) {
+        const [refname, upstream, headFlag] = line.split("|");
+        if (!refname) continue;
+        const isCurrent = headFlag === "*";
+        if (refname.startsWith("origin/") || refname.startsWith("upstream/") || refname.includes("/")) {
+          if (!remoteBranches.includes(refname)) {
+            remoteBranches.push(refname);
+          }
+        } else {
+          localBranches.push({
+            name: refname,
+            upstream: upstream || undefined,
+            is_current: isCurrent,
+          });
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                project_id: activeProject?.id,
+                repo_path: cwd,
+                current_branch: currentBranch,
+                local_branches: localBranches,
+                ...(include_remote ? { remote_branches: remoteBranches } : {}),
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // 7. git_create_branch
+  server.tool(
+    "git_create_branch",
+    "Safely create a new Git branch from a base branch (or HEAD) and optionally check it out.",
+    {
+      branch: z.string().describe("New branch name (e.g. 'feat/auth-v2', 'fix/issue-89')"),
+      base_branch: z.string().optional().describe("Base branch or commit to branch off from (defaults to project default_base_branch or HEAD)"),
+      checkout: z.boolean().optional().describe("Whether to immediately checkout the new branch. Default: true"),
+      project_id: z.string().optional().describe("Optional project identifier to locate the workspace repository"),
+      repo_path: z.string().optional().describe("Local git repository path. Defaults to project workspace or current repo"),
+    },
+    async ({ branch, base_branch, checkout = true, project_id, repo_path }) => {
+      audit(rootDir, { tool: "git_create_branch", projectId: project_id });
+      const cleanBranch = branch.trim();
+      if (!cleanBranch || cleanBranch.includes("..") || /[\s~^:?*\[\\]/.test(cleanBranch)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Invalid branch name "${cleanBranch}".` }],
+        };
+      }
+
+      const { cwd, project: activeProject } = resolveRepoAndProject(rootDir, repo_path, project_id);
+      if (!fs.existsSync(path.join(cwd, ".git"))) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Path "${cwd}" is not a Git repository.` }],
+        };
+      }
+
+      const effectiveBase = (base_branch && base_branch.trim()) || activeProject?.default_base_branch || "HEAD";
+
+      // Verify base branch / commit exists
+      const revCheck = runGitCommand(["rev-parse", "--verify", effectiveBase], cwd, 5000);
+      if (revCheck.exitCode !== 0) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Base branch "${effectiveBase}" does not exist in "${cwd}".` }],
+        };
+      }
+
+      // Check if branch already exists
+      const existCheck = runGitCommand(["rev-parse", "--verify", cleanBranch], cwd, 5000);
+      if (existCheck.exitCode === 0) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error: Branch "${cleanBranch}" already exists in "${cwd}".` }],
+        };
+      }
+
+      let res;
+      if (checkout) {
+        res = runGitCommand(["checkout", "-b", cleanBranch, effectiveBase], cwd, 15000);
+      } else {
+        res = runGitCommand(["branch", cleanBranch, effectiveBase], cwd, 10000);
+      }
+
+      if (res.exitCode !== 0) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Failed to create branch "${cleanBranch}" (exit ${res.exitCode}):\n${res.stderr || res.stdout}` }],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                project_id: activeProject?.id,
+                repo_path: cwd,
+                branch: cleanBranch,
+                base_branch: effectiveBase,
+                checked_out: checkout,
+                message: `✅ Branch "${cleanBranch}" created successfully from "${effectiveBase}"${checkout ? " and checked out" : ""}.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
 }
