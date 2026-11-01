@@ -30,6 +30,15 @@ export interface CockpitAccount {
   quotas?: Record<string, { remainingFraction?: number; resetTime?: string }>;
 }
 
+export interface QuotaBucketItem {
+  bucketId: string;
+  label: string;
+  window: string;
+  pct: number;
+  reset_time?: string;
+  disabled?: boolean;
+}
+
 export interface PoolAccountOverview {
   email: string;
   pools: string[];
@@ -52,6 +61,7 @@ export interface PoolAccountOverview {
     pct: number;
     reset_time?: string;
   };
+  quota_buckets?: QuotaBucketItem[];
 }
 
 export interface ProfileItem {

@@ -16,6 +16,16 @@ export interface ModelQuotaInfo {
   resetTime?: string | number;
 }
 
+export interface QuotaBucketSummary {
+  bucketId: string;
+  displayName: string;
+  window?: "5h" | "weekly" | string;
+  remainingFraction: number; // 0.0 to 1.0
+  resetTime?: string | number;
+  disabled?: boolean;
+  label?: string; // e.g. "Gemini (5h)", "Claude (Weekly)"
+}
+
 export interface AgentAccountSummary {
   accountId: string;
   email: string;
@@ -27,6 +37,7 @@ export interface AgentAccountSummary {
   remainingFractionSummary?: number; // 0.0 to 1.0
   resetTime?: string | number;
   lastUsed?: number;
+  quotaBuckets?: QuotaBucketSummary[];
 }
 
 export function resolveCockpitConfigPath(customPath?: string): string {
@@ -130,6 +141,7 @@ export function listAccountsFromCockpitStorage(
       quotas: Record<string, ModelQuotaInfo>;
       remainingFractionSummary: number;
       resetTime?: string;
+      quotaBuckets: QuotaBucketSummary[];
     }
   >();
 
@@ -152,14 +164,57 @@ export function listAccountsFromCockpitStorage(
             let minFraction = 1.0;
             let earliestReset: string | undefined = undefined;
 
+            // Extract rich bucket summary if present in quota_summary
+            const quotaBuckets: QuotaBucketSummary[] = [];
+            const qs = parsed.payload?.quota_summary;
+            if (qs && Array.isArray(qs.groups)) {
+              for (const g of qs.groups) {
+                for (const b of g.buckets || []) {
+                  const bId = String(b.bucketId || "");
+                  const isArgon = bId.includes("argon") || String(g.displayName || "").includes("Argon");
+                  const isClaude = bId.includes("3p") || String(g.displayName || "").includes("Claude");
+                  const family = isClaude ? "Claude" : isArgon ? "Gemini 4 Argon" : "Gemini";
+                  const win = b.window === "weekly" ? "Weekly" : "5h";
+                  const label = `${family} (${win})`;
+                  const frac = typeof b.remainingFraction === "number" ? b.remainingFraction : 1.0;
+                  const rTime = b.resetTime ? String(b.resetTime) : undefined;
+                  quotaBuckets.push({
+                    bucketId: bId,
+                    displayName: String(b.displayName || label),
+                    window: b.window || "5h",
+                    remainingFraction: frac,
+                    ...(rTime ? { resetTime: rTime } : {}),
+                    ...(b.disabled ? { disabled: true } : {}),
+                    label,
+                  });
+                  if (frac < minFraction) {
+                    minFraction = frac;
+                    earliestReset = rTime;
+                  }
+                }
+              }
+            }
+
             if (parsed.payload?.models && typeof parsed.payload.models === "object") {
               for (const [mName, mVal] of Object.entries(parsed.payload.models as Record<string, any>)) {
                 if (mVal && mVal.quotaInfo) {
-                  const frac =
+                  // If remainingFraction is undefined but resetTime is set, check if model or bucket has fraction
+                  let frac =
                     typeof mVal.quotaInfo.remainingFraction === "number"
                       ? mVal.quotaInfo.remainingFraction
-                      : 1.0;
+                      : undefined;
                   const rTime = mVal.quotaInfo.resetTime ? String(mVal.quotaInfo.resetTime) : undefined;
+
+                  // If remainingFraction is omitted by Google when quota is 0, map to bucket or 0
+                  if (frac === undefined) {
+                    if (mName.startsWith("gemini-")) {
+                      const gBucket = quotaBuckets.find((b) => b.bucketId === "gemini-weekly" || b.bucketId === "gemini-5h");
+                      frac = gBucket ? gBucket.remainingFraction : 0.0;
+                    } else {
+                      frac = 1.0;
+                    }
+                  }
+
                   quotas[mName] = {
                     remainingFraction: frac,
                     ...(rTime ? { resetTime: rTime } : {}),
@@ -177,6 +232,7 @@ export function listAccountsFromCockpitStorage(
               quotas: Object.keys(quotas).length > 0 ? quotas : { default: { remainingFraction: 1.0 } },
               remainingFractionSummary: Math.round(minFraction * 100) / 100,
               resetTime: earliestReset,
+              quotaBuckets,
             });
           }
         } catch {}
@@ -224,6 +280,7 @@ export function listAccountsFromCockpitStorage(
           remainingFractionSummary: quotaInfo ? quotaInfo.remainingFractionSummary : 1.0,
           resetTime: quotaInfo?.resetTime,
           lastUsed: acc.last_used ? Number(acc.last_used) : undefined,
+          quotaBuckets: quotaInfo?.quotaBuckets || [],
         });
       }
       accountsLoadedFromFile = true;
@@ -270,6 +327,7 @@ export function listAccountsFromCockpitStorage(
                 remainingFractionSummary: quotaInfo ? quotaInfo.remainingFractionSummary : 1.0,
                 resetTime: quotaInfo?.resetTime,
                 lastUsed: parsed.last_used ? Number(parsed.last_used) : undefined,
+                quotaBuckets: quotaInfo?.quotaBuckets || [],
               });
             }
           } catch {}

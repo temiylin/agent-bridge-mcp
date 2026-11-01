@@ -128,57 +128,93 @@ export const QuotaOverviewStrip: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 5-Hour Rolling Window Bar */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-base-content/70 flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-base-content/50" />
-                        <span>5小时额度</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        {shortReset && (
-                          <span className="font-mono text-[10px] text-base-content/40">
-                            重置: {formatTime(shortReset)}
-                          </span>
-                        )}
-                        <span className={`font-mono font-bold ${getTextColor(shortPct)}`}>
-                          {shortPct}%
-                        </span>
-                      </div>
-                    </div>
-                    <progress
-                      className={`progress w-full h-1.5 ${getProgressColor(shortPct)}`}
-                      value={shortPct}
-                      max="100"
-                    ></progress>
-                  </div>
-
-                  {/* Weekly Window Bar (if applicable) */}
-                  {weeklyPct !== null ? (
-                    <div className="space-y-1 border-t border-base-200 pt-1.5">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="text-base-content/70 flex items-center gap-1">
-                          <Calendar className="w-3 h-3 text-purple-400" />
-                          <span>周额度 (Argon/每周)</span>
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {weeklyReset && (
-                            <span className="font-mono text-[10px] text-base-content/40">
-                              重置: {formatTime(weeklyReset)}
+                  {/* Quota Bars: if rich quota_buckets exists, show the exact breakdown (Claude, Gemini, Argon) */}
+                  {acc.quota_buckets && acc.quota_buckets.length > 0 ? (
+                    <div className="space-y-2 mt-1">
+                      {acc.quota_buckets.map((b) => (
+                        <div key={b.bucketId} className="space-y-0.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-base-content/70 flex items-center gap-1">
+                              {b.window === 'weekly' ? (
+                                <Calendar className="w-3 h-3 text-purple-400" />
+                              ) : (
+                                <Clock className="w-3 h-3 text-base-content/50" />
+                              )}
+                              <span>{b.label}</span>
                             </span>
-                          )}
-                          <span className={`font-mono font-bold ${getTextColor(weeklyPct)}`}>
-                            {weeklyPct}%
-                          </span>
+                            <div className="flex items-center gap-2">
+                              {b.reset_time && (
+                                <span className="font-mono text-[10px] text-base-content/40">
+                                  重置: {formatTime(b.reset_time)}
+                                </span>
+                              )}
+                              <span className={`font-mono font-bold ${getTextColor(b.pct)}`}>
+                                {b.pct}%
+                              </span>
+                            </div>
+                          </div>
+                          <progress
+                            className={`progress w-full h-1.5 ${getProgressColor(b.pct)}`}
+                            value={b.pct}
+                            max="100"
+                          ></progress>
                         </div>
-                      </div>
-                      <progress
-                        className={`progress w-full h-1.5 ${getProgressColor(weeklyPct)}`}
-                        value={weeklyPct}
-                        max="100"
-                      ></progress>
+                      ))}
                     </div>
-                  ) : null}
+                  ) : (
+                    /* Fallback to dual 5h & Weekly summary */
+                    <div className="space-y-2 mt-1">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-base-content/70 flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-base-content/50" />
+                            <span>5小时额度</span>
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {shortReset && (
+                              <span className="font-mono text-[10px] text-base-content/40">
+                                重置: {formatTime(shortReset)}
+                              </span>
+                            )}
+                            <span className={`font-mono font-bold ${getTextColor(shortPct)}`}>
+                              {shortPct}%
+                            </span>
+                          </div>
+                        </div>
+                        <progress
+                          className={`progress w-full h-1.5 ${getProgressColor(shortPct)}`}
+                          value={shortPct}
+                          max="100"
+                        ></progress>
+                      </div>
+
+                      {weeklyPct !== null && (
+                        <div className="space-y-0.5 border-t border-base-200 pt-1.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-base-content/70 flex items-center gap-1">
+                              <Calendar className="w-3 h-3 text-purple-400" />
+                              <span>周额度 (Argon/每周)</span>
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {weeklyReset && (
+                                <span className="font-mono text-[10px] text-base-content/40">
+                                  重置: {formatTime(weeklyReset)}
+                                </span>
+                              )}
+                              <span className={`font-mono font-bold ${getTextColor(weeklyPct)}`}>
+                                {weeklyPct}%
+                              </span>
+                            </div>
+                          </div>
+                          <progress
+                            className={`progress w-full h-1.5 ${getProgressColor(weeklyPct)}`}
+                            value={weeklyPct}
+                            max="100"
+                          ></progress>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })

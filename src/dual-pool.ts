@@ -506,6 +506,14 @@ export interface AccountOverviewRow {
     pct: number;
     reset_time?: string | number;
   };
+  quota_buckets?: Array<{
+    bucketId: string;
+    label: string;
+    window: string;
+    pct: number;
+    reset_time?: string | number;
+    disabled?: boolean;
+  }>;
 }
 
 /** One row per account email across both pools. */
@@ -543,8 +551,40 @@ export function queryAccountOverview(
     r.quota_remaining = (c.remainingFractionSummary ?? 1).toFixed(2);
     if (c.resetTime) r.reset_time = c.resetTime;
 
-    // Split quotas into 5-hour rolling window vs multi-day / weekly window
-    if (c.quotas && typeof c.quotas === "object") {
+    // Rich quota buckets (directly matching Cockpit-Tools UI: Claude 5h/Weekly, Gemini 5h/Weekly, Argon)
+    if (c.quotaBuckets && c.quotaBuckets.length > 0) {
+      r.quota_buckets = c.quotaBuckets.map((b) => ({
+        bucketId: b.bucketId,
+        label: b.label || b.displayName,
+        window: b.window || "5h",
+        pct: Math.max(0, Math.min(100, Math.round(b.remainingFraction * 100))),
+        reset_time: b.resetTime,
+        disabled: b.disabled,
+      }));
+
+      // Summarize 5h and Weekly from official quota buckets
+      const b5h = c.quotaBuckets.filter((b) => b.window === "5h");
+      const bWeekly = c.quotaBuckets.filter((b) => b.window === "weekly");
+
+      if (b5h.length > 0) {
+        const min5h = Math.min(...b5h.map((b) => b.remainingFraction));
+        const earliest5h = b5h.find((b) => b.remainingFraction === min5h)?.resetTime || b5h[0].resetTime;
+        r.quota_5h = {
+          fraction: min5h,
+          pct: Math.max(0, Math.min(100, Math.round(min5h * 100))),
+          reset_time: earliest5h,
+        };
+      }
+      if (bWeekly.length > 0) {
+        const minW = Math.min(...bWeekly.map((b) => b.remainingFraction));
+        const earliestW = bWeekly.find((b) => b.remainingFraction === minW)?.resetTime || bWeekly[0].resetTime;
+        r.quota_weekly = {
+          fraction: minW,
+          pct: Math.max(0, Math.min(100, Math.round(minW * 100))),
+          reset_time: earliestW,
+        };
+      }
+    } else if (c.quotas && typeof c.quotas === "object") {
       let min5h = 1.0;
       let reset5h: string | number | undefined;
       let has5h = false;
@@ -560,7 +600,6 @@ export function queryAccountOverview(
         const diffHours = (resetMs - now) / (3600 * 1000);
         const frac = typeof q.remainingFraction === "number" ? q.remainingFraction : 1.0;
 
-        // Models with longer reset cycles (e.g. gemini-4-argon or resets > 14 hours)
         if (mName.includes("argon") || diffHours > 14) {
           hasWeekly = true;
           if (frac < minWeekly) minWeekly = frac;
@@ -569,7 +608,6 @@ export function queryAccountOverview(
           }
         }
 
-        // Standard rolling models (e.g. Gemini 2.5 / 3.x, or resets <= 14 hours)
         if (!mName.includes("argon") && (diffHours <= 14 || mName.startsWith("gemini-") || mName.startsWith("claude-"))) {
           has5h = true;
           if (frac < min5h) min5h = frac;
@@ -577,20 +615,6 @@ export function queryAccountOverview(
             reset5h = q.resetTime;
           }
         }
-      }
-
-      // Important: If weekly quota is depleted or lower, 5-hour quota is capped by weekly quota!
-      // An account cannot have a "full" usable quota if its weekly quota is exhausted.
-      if (hasWeekly && minWeekly < min5h) {
-        min5h = minWeekly;
-        if (!reset5h || (resetWeekly && new Date(resetWeekly).getTime() > new Date(reset5h).getTime())) {
-          reset5h = resetWeekly;
-        }
-      }
-
-      // Also ensure min5h is bounded by cockpit's remainingFractionSummary
-      if (typeof c.remainingFractionSummary === "number" && c.remainingFractionSummary < min5h) {
-        min5h = c.remainingFractionSummary;
       }
 
       if (has5h) {
