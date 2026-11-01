@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import cp from "node:child_process";
+import http from "node:http";
 import { startHttpServer } from "../src/http-server.js";
 import { writeStatus } from "../src/status.js";
 import { resolveWorktreeRoot, setupGitWorktree } from "../src/worktree.js";
@@ -162,22 +163,74 @@ async function runArchiveSecurityTests() {
     assert.ok(!wtList.includes(wtResult.worktreeDir), "git worktree list must no longer show removed worktree");
     console.log("✓ Assertion passed: Git worktree actually removed via git worktree remove.");
 
-    // 5. CORS Origin Whitelist vs DNS Rebinding
-    console.log("[Test 5] CORS Origin whitelist check (DNS rebinding prevention)...");
-    const resAllowedCors = await fetch(`${baseUrl}/api/system`, {
+    // 5. Host & Origin Validation and Anti-DNS Rebinding
+    console.log("[Test 5] Malicious Origin, Invalid Host, Content-Type, and Origin-less curl checks...");
+
+    // 5a. Invalid Host header must return 403 (use node:http to set arbitrary Host header)
+    const statusBadHost = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        hostname: "127.0.0.1",
+        port: TEST_PORT,
+        path: "/api/system",
+        method: "GET",
+        headers: { host: "attacker.com:38080" },
+      }, (res: any) => {
+        resolve(res.statusCode);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(statusBadHost, 403, "Invalid Host header must return 403");
+    console.log("✓ Assertion passed: Invalid Host returns 403.");
+
+    // 5b. Malicious Origin on write endpoints must return 403 (even if loopback IP)
+    const resMaliciousOriginApi = await fetch(`${baseUrl}/api/recent-tasks/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://malicious-site.com",
+      },
+      body: JSON.stringify({ taskId: "task_123" }),
+    });
+    assert.equal(resMaliciousOriginApi.status, 403, "Malicious Origin on /api/* write must return 403");
+
+    const resMaliciousOriginMcp = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://malicious-site.com",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    assert.equal(resMaliciousOriginMcp.status, 403, "Malicious Origin on /mcp POST must return 403");
+    console.log("✓ Assertion passed: Malicious Origin on write / /mcp POST returns 403.");
+
+    // 5c. text/plain content type on write endpoints must return 415
+    const resBadContentType = await fetch(`${baseUrl}/api/recent-tasks/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+      },
+      body: "taskId=task_123",
+    });
+    assert.equal(resBadContentType.status, 415, "Non-JSON Content-Type must return 415");
+    console.log("✓ Assertion passed: Non-JSON Content-Type returns 415.");
+
+    // 5d. Origin-less curl requests return 200
+    const resNoOrigin = await fetch(`${baseUrl}/api/recent-tasks`, {
+      method: "GET",
+    });
+    assert.equal(resNoOrigin.status, 200, "Origin-less GET request returns 200");
+
+    const resAllowedOrigin = await fetch(`${baseUrl}/api/system`, {
       method: "GET",
       headers: { Origin: "http://localhost:3000" },
     });
-    assert.equal(resAllowedCors.headers.get("access-control-allow-origin"), "http://localhost:3000", "localhost origin allowed");
+    assert.equal(resAllowedOrigin.status, 200, "Whitelisted Origin returns 200");
+    assert.equal(resAllowedOrigin.headers.get("access-control-allow-origin"), "http://localhost:3000");
+    console.log("✓ Assertion passed: Whitelisted Origin and Origin-less requests work normally.");
 
-    const resForbiddenCors = await fetch(`${baseUrl}/api/system`, {
-      method: "GET",
-      headers: { Origin: "http://attacker.com", Host: "attacker.com" },
-    });
-    assert.equal(resForbiddenCors.headers.get("access-control-allow-origin"), null, "Arbitrary origin must NOT receive access-control-allow-origin");
-    console.log("✓ Assertion passed: CORS strictly whitelisted, DNS rebinding blocked.");
-
-    // 6. /mcp POST behavior on local calls
+    // 6. /mcp POST behavior on local calls (without Origin / with allowed Origin)
     console.log("[Test 6] /mcp POST behavior unchanged for local calls...");
     const resMcp = await fetch(`${baseUrl}/mcp`, {
       method: "POST",

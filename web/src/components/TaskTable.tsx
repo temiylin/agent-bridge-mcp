@@ -724,14 +724,21 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                   <p className="text-warning-content text-[11px]">
                     默认归档会将任务状态、日志和结果移至 archive 目录中安全保存。
                   </p>
-                  <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-rose-400">
+                  <label className="flex items-start gap-2 cursor-pointer text-xs font-semibold text-rose-400">
                     <input
                       type="checkbox"
-                      className="checkbox checkbox-xs checkbox-error"
+                      className="checkbox checkbox-xs checkbox-error mt-0.5"
                       checked={modalCleanWorktree}
                       onChange={(e) => setModalCleanWorktree(e.target.checked)}
                     />
-                    <span>同时清理关联的 Git Worktree 目录 (通过 git worktree remove)</span>
+                    <div className="space-y-0.5">
+                      <span>同时清理关联的 Git Worktree 目录 (通过 git worktree remove)</span>
+                      {modalCleanWorktree && (
+                        <p className="text-[11px] text-error font-bold block animate-pulse">
+                          ⚠ 会强制删除 worktree 中未提交的改动！
+                        </p>
+                      )}
+                    </div>
                   </label>
                 </div>
               )}

@@ -150,6 +150,52 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       return;
     }
 
+    // Host header validation: strictly allow only localhost, 127.0.0.1, or [::1] (with optional port)
+    // Return 403 to prevent DNS rebinding attacks from public host headers
+    const hostHeader = (req.headers["host"] || "").trim();
+    const isAllowedHost = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(hostHeader);
+    if (!isAllowedHost) {
+      res.statusCode = 403;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ success: false, error: "Forbidden: Invalid Host header" }));
+      return;
+    }
+
+    // Origin check for state-mutating API routes and /mcp POST
+    // If request has Origin header, verify that Origin's hostname is localhost or 127.0.0.1 or [::1].
+    // Requests without Origin (e.g. CLI curl, tools, background jobs) are allowed through.
+    const isWriteOrMcpPost =
+      (pathname.startsWith("/api/") && (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH")) ||
+      (pathname === "/mcp" && method === "POST");
+
+    if (isWriteOrMcpPost && origin) {
+      let isAllowedOrigin = false;
+      try {
+        const originUrl = new URL(origin);
+        const oHost = originUrl.hostname.toLowerCase();
+        isAllowedOrigin = oHost === "localhost" || oHost === "127.0.0.1" || oHost === "[::1]" || oHost === "::1";
+      } catch {}
+
+      if (!isAllowedOrigin) {
+        res.statusCode = 403;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ success: false, error: "Forbidden: Cross-site request rejected" }));
+        return;
+      }
+    }
+
+    // Content-Type validation for write requests:
+    // All /api/* write requests (POST/PUT/DELETE/PATCH) and /mcp POST must require application/json.
+    if (isWriteOrMcpPost) {
+      const contentType = req.headers["content-type"] || "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        res.statusCode = 415;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ success: false, error: "Unsupported Media Type: Content-Type must be application/json" }));
+        return;
+      }
+    }
+
     // Helper: Verify authorization for state-mutating or sensitive REST APIs
     // Allowed if:
     // 1. Request is strictly from local loopback (127.0.0.1 / ::1 / ::ffff:127.0.0.1)

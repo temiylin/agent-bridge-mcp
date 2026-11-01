@@ -192,8 +192,22 @@ export function removeGitWorktree(
   repoDir?: string,
   logger?: (level: "INFO" | "WARN" | "ERROR", msg: string) => void
 ): { success: boolean; error?: string } {
-  const effectiveRoot = path.resolve(resolveWorktreeRoot(bridgeRoot));
-  const targetDir = path.resolve(worktreeDir);
+  // Use realpath to resolve canonical paths and prevent symlink traversal
+  const rawRoot = path.resolve(resolveWorktreeRoot(bridgeRoot));
+  let effectiveRoot = rawRoot;
+  try {
+    if (fs.existsSync(rawRoot)) {
+      effectiveRoot = fs.realpathSync(rawRoot);
+    }
+  } catch {}
+
+  const rawTarget = path.resolve(worktreeDir);
+  let targetDir = rawTarget;
+  try {
+    if (fs.existsSync(rawTarget)) {
+      targetDir = fs.realpathSync(rawTarget);
+    }
+  } catch {}
 
   // Strict containment check: targetDir must be a subdirectory of effectiveRoot
   const rel = path.relative(effectiveRoot, targetDir);
@@ -229,10 +243,27 @@ export function removeGitWorktree(
     }
   }
 
-  // 2. Safe removal strictly inside effectiveRoot
+  // 2. Safe removal strictly inside effectiveRoot, followed by git worktree prune in repo
   try {
     fs.rmSync(targetDir, { recursive: true, force: true });
     if (logger) logger("INFO", `Safely removed worktree directory at ${targetDir}`);
+
+    if (effectiveRepoDir && fs.existsSync(effectiveRepoDir)) {
+      try {
+        const pruneRes = spawnSync("git", ["worktree", "prune"], {
+          cwd: effectiveRepoDir,
+          encoding: "utf8",
+        });
+        if (pruneRes.status === 0) {
+          if (logger) logger("INFO", `Pruned git worktrees in ${effectiveRepoDir}`);
+        } else if (logger) {
+          logger("WARN", `git worktree prune warning: ${pruneRes.stderr || pruneRes.stdout || "unknown"}`);
+        }
+      } catch (e: any) {
+        if (logger) logger("WARN", `git worktree prune exception: ${e?.message}`);
+      }
+    }
+
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
