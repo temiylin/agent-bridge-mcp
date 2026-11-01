@@ -35,7 +35,12 @@ Core Capabilities & Calling Guidelines:
    - Native agy-sdk stream-json runner enables direct NDJSON processing without Python wrappers.
    - Pool profiles (~/agent-bridge/agy-profiles/<alias>) provide complete account isolation with Cockpit quota tracking.
 
-5. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
+5. PR Linkage & Workflow Integration:
+   - Pass pr_url to send_task or enqueue_task to associate an existing PR with a task upfront (automatically reflected in plan steps).
+   - Pass task_id to pr_create to automatically attach newly opened PRs to the corresponding task.
+   - Call attach_pr_to_task({ task_id, pr_url }) anytime to link PRs to existing tasks and execution plan steps.
+
+6. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
 
 export const HELP_TOPICS = [
   "overview",

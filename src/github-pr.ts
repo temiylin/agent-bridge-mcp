@@ -7,6 +7,7 @@ import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { isBlockedCredentialPath } from "./local-fs.js";
 import { resolveProject, getProjectRepoPath } from "./project-router.js";
+import { attachPrToTask } from "./status.js";
 
 function resolveGhPath(): string | null {
   const isWin = process.platform === "win32";
@@ -354,9 +355,10 @@ export function registerGitHubPrTools(
       draft: z.boolean().optional().describe("Whether to create the PR as a draft. Default: false."),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
+      task_id: z.string().optional().describe("Optional task ID to automatically attach this newly created PR to."),
     },
-    async ({ project_id, title, body = "", base, head, draft, repo, repo_path }) => {
-      audit(rootDir, { tool: "pr_create" });
+    async ({ project_id, title, body = "", base, head, draft, repo, repo_path, task_id }) => {
+      audit(rootDir, { tool: "pr_create", ...(task_id ? { taskId: task_id.trim() } : {}) });
       const projRes = resolveProject(rootDir, { projectId: project_id, projectDir: repo_path, repo });
       const proj = projRes.project;
       const cwd = resolveCwd(rootDir, repo_path || getProjectRepoPath(proj));
@@ -386,6 +388,17 @@ export function registerGitHubPrTools(
       }
 
       const prUrl = res.stdout.trim();
+      let attachedToTask = false;
+      if (task_id && task_id.trim()) {
+        try {
+          attachPrToTask(rootDir, task_id.trim(), prUrl);
+          attachedToTask = true;
+          logger.info(`pr_create: automatically attached PR ${prUrl} to task ${task_id.trim()}`);
+        } catch (err: any) {
+          logger.warn(`pr_create: failed to auto-attach PR ${prUrl} to task ${task_id.trim()}: ${err?.message || String(err)}`);
+        }
+      }
+
       return {
         content: [
           {
@@ -395,7 +408,8 @@ export function registerGitHubPrTools(
                 success: true,
                 title: title.trim(),
                 url: prUrl,
-                message: `✅ Pull Request created successfully: ${prUrl}`,
+                ...(task_id ? { task_id: task_id.trim(), attached_to_task: attachedToTask } : {}),
+                message: `✅ Pull Request created successfully: ${prUrl}${attachedToTask && task_id ? ` (attached to task ${task_id.trim()})` : ""}`,
               },
               null,
               2
@@ -403,6 +417,54 @@ export function registerGitHubPrTools(
           },
         ],
       };
+    }
+  );
+
+  // 5b. attach_pr_to_task
+  server.tool(
+    "attach_pr_to_task",
+    "Attach or append a GitHub Pull Request URL to an existing task and its execution plan step (if any). Updates task status and marks review stage.",
+    {
+      task_id: z.string().describe("Task ID to attach the PR to"),
+      pr_url: z.string().describe("GitHub PR URL (e.g. https://github.com/owner/repo/pull/123)"),
+      plan_id: z.string().optional().describe("Optional plan ID if task is not already tagged"),
+      step_id: z.string().optional().describe("Optional step ID within the plan"),
+    },
+    async ({ task_id, pr_url, plan_id, step_id }) => {
+      audit(rootDir, { tool: "attach_pr_to_task", taskId: task_id.trim() });
+      try {
+        const cleanTaskId = task_id.trim();
+        const cleanPrUrl = pr_url.trim();
+        const res = attachPrToTask(rootDir, cleanTaskId, cleanPrUrl, { planId: plan_id, stepId: step_id });
+        logger.info(`attach_pr_to_task: attached PR ${cleanPrUrl} to task ${cleanTaskId} (planUpdated=${res.planUpdated})`);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  task_id: cleanTaskId,
+                  pr_url: cleanPrUrl,
+                  pr_urls: res.status.pr_urls || [cleanPrUrl],
+                  stage: res.status.stage,
+                  plan_updated: res.planUpdated || false,
+                  message: `✅ PR ${cleanPrUrl} successfully attached to task ${cleanTaskId}${res.planUpdated ? " and execution plan step" : ""}.`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        logger.error(`attach_pr_to_task error: ${err?.message || String(err)}`);
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Error attaching PR to task: ${err?.message || String(err)}` }],
+        };
+      }
     }
   );
 

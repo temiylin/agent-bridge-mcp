@@ -140,6 +140,7 @@ async function runTests() {
     "pool_bind_email",
     "pool_remove_profile",
     "pool_set_custom_enabled",
+    "attach_pr_to_task",
     "add_project",
     "list_projects",
     "update_project",

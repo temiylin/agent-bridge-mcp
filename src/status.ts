@@ -8,6 +8,7 @@ import {
   type ReportSource,
   type TaskOutcome,
 } from "./task-stage.js";
+import { setPlanStepStatus } from "./plans.js";
 
 export type TaskState = "queued" | "running" | "suspected_stalled" | "completed" | "failed" | "cancelled" | "paused_quota";
 
@@ -52,6 +53,7 @@ export interface TaskStatusInfo {
   report_source?: ReportSource;
   outcome?: TaskOutcome;
   pr_url?: string | null;
+  pr_urls?: string[];
   question?: string | null;
   pr_open?: boolean;
   hasFollowUp?: boolean;
@@ -166,6 +168,7 @@ export function writeStatus(
     ...(info.report_source ? { report_source: info.report_source } : {}),
     ...(info.outcome !== undefined ? { outcome: info.outcome } : (info.report?.outcome ? { outcome: info.report.outcome } : {})),
     ...(info.pr_url !== undefined ? { pr_url: info.pr_url } : (info.report?.pr_url ? { pr_url: info.report.pr_url } : {})),
+    ...(info.pr_urls && info.pr_urls.length > 0 ? { pr_urls: info.pr_urls } : {}),
     ...(info.question !== undefined ? { question: info.question } : (info.report?.question ? { question: info.report.question } : {})),
     ...(info.pr_open !== undefined ? { pr_open: info.pr_open } : {}),
     ...(info.hasFollowUp !== undefined ? { hasFollowUp: info.hasFollowUp } : {}),
@@ -212,4 +215,94 @@ export function readStatus(root: string, taskId: string): TaskStatusInfo | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * Attach or append a GitHub Pull Request URL to an existing task and its execution plan step (if any).
+ */
+export function attachPrToTask(
+  root: string,
+  taskId: string,
+  prUrl: string,
+  options?: { planId?: string; stepId?: string }
+): { success: boolean; status: TaskStatusInfo; planUpdated?: boolean } {
+  const cleanPrUrl = prUrl.trim();
+  if (!cleanPrUrl) {
+    throw new Error("prUrl must be a non-empty string");
+  }
+
+  const existingStatus = readStatus(root, taskId);
+  const taskFilePath = path.join(root, "tasks", `${taskId}.md`);
+  let taskFileContent = fs.existsSync(taskFilePath) ? fs.readFileSync(taskFilePath, "utf8") : "";
+
+  if (!existingStatus && !taskFileContent) {
+    throw new Error(`Task "${taskId}" not found.`);
+  }
+
+  let planId = options?.planId?.trim() || existingStatus?.plan_id;
+  let stepId = options?.stepId?.trim() || existingStatus?.step_id;
+
+  if ((!planId || !stepId) && taskFileContent) {
+    const planMatch = taskFileContent.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/im);
+    const stepMatch = taskFileContent.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/im);
+    if (planMatch && planMatch[1]) planId = planMatch[1].trim();
+    if (stepMatch && stepMatch[1]) stepId = stepMatch[1].trim();
+  }
+
+  const existingPrUrls: string[] = Array.isArray(existingStatus?.pr_urls)
+    ? [...existingStatus!.pr_urls]
+    : existingStatus?.pr_url
+    ? [existingStatus.pr_url]
+    : [];
+  if (!existingPrUrls.includes(cleanPrUrl)) {
+    existingPrUrls.push(cleanPrUrl);
+  }
+
+  const updatedStatusInput: any = {
+    ...(existingStatus || { state: "queued" }),
+    pr_url: cleanPrUrl,
+    pr_urls: existingPrUrls,
+    pr_open: true,
+  };
+
+  if (planId) updatedStatusInput.plan_id = planId;
+  if (stepId) updatedStatusInput.step_id = stepId;
+
+  if (updatedStatusInput.report) {
+    updatedStatusInput.report = {
+      ...updatedStatusInput.report,
+      pr_url: cleanPrUrl,
+    };
+  }
+
+  writeStatus(root, taskId, updatedStatusInput);
+  const writtenStatus = readStatus(root, taskId)!;
+
+  // Append - **PR URL**: ... to task file header if not already present
+  if (taskFileContent && !taskFileContent.includes(`- **PR URL**: ${cleanPrUrl}`)) {
+    const headerEndIdx = taskFileContent.indexOf("\n---\n");
+    if (headerEndIdx !== -1) {
+      const newContent =
+        taskFileContent.slice(0, headerEndIdx) +
+        `\n- **PR URL**: ${cleanPrUrl}` +
+        taskFileContent.slice(headerEndIdx);
+      fs.writeFileSync(taskFilePath, newContent, "utf8");
+    }
+  }
+
+  let planUpdated = false;
+  if (planId && stepId) {
+    try {
+      setPlanStepStatus(root, planId, stepId, undefined, { taskId, prUrl: cleanPrUrl });
+      planUpdated = true;
+    } catch {
+      // Non-fatal if plan update fails
+    }
+  }
+
+  return {
+    success: true,
+    status: writtenStatus,
+    planUpdated,
+  };
 }
