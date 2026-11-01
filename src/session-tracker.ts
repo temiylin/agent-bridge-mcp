@@ -86,8 +86,8 @@ export class TaskSessionTracker {
   constructor(opts: TaskSessionTrackerOptions) {
     this.taskId = opts.taskId;
     this.agentName = opts.agentName;
-    this.isAgy = opts.command?.includes("agy") || opts.agentName === "agy";
-    this.isCodex = opts.command?.includes("codex") || opts.agentName === "codex";
+    this.isAgy = Boolean(opts.command?.includes("agy") || opts.agentName === "agy" || opts.agentName === "agy-sdk");
+    this.isCodex = Boolean(opts.command?.includes("codex") || opts.agentName === "codex");
     this.workDir = opts.workDir;
     this.prompt = opts.prompt;
     this.startedAtMs = opts.startedAtMs || Date.now();
@@ -351,5 +351,32 @@ export class TaskSessionTracker {
 
   public getBoundConversationId(): string | undefined {
     return this.boundConversationId;
+  }
+
+  /**
+   * Directly records a structured SDK / stream-json event (e.g. `sdk_init`, `sdk_thinking`,
+   * `sdk_tool:<name>`, `sdk_response`) without waiting for filesystem polling.
+   */
+  public recordSdkEvent(event: {
+    conversationId?: string;
+    source: string;
+    timestampMs?: number;
+  }): ActivityCheckResult {
+    const now = event.timestampMs ?? Date.now();
+    if (event.conversationId && this.isAgy && !this.boundConversationId) {
+      this.bindAgyConversation(event.conversationId);
+    }
+    this.lastActivityTime = now;
+    if (event.source) {
+      this.lastActivitySource = event.source;
+    }
+    return {
+      hasActivity: true,
+      activity: "active",
+      lastActivityTime: this.lastActivityTime,
+      last_activity_at: new Date(this.lastActivityTime).toISOString(),
+      idle_seconds: 0,
+      activity_source: this.lastActivitySource,
+    };
   }
 }

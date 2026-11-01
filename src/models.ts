@@ -37,6 +37,7 @@ export interface AgentModelsReport {
 /** Built-in per-agent defaults; override with "default_model" in agents.json. */
 export const BUILTIN_DEFAULT_MODELS: Record<string, string> = {
   agy: "gemini-3.8-flash-low",
+  "agy-sdk": "gemini-3.8-flash-low",
 };
 
 /** Reads agents.json default_model for an agent (raw read: loadAgents drops unknown keys). */
@@ -319,12 +320,13 @@ export async function getAgentModelReports(
 
   for (const [name, config] of Object.entries(registry)) {
     if (name !== "codex" && name !== "agy" && (!target || target === name.toLowerCase())) {
+      const isAgyVariant = name === "agy-sdk" || String(config?.command || "").includes("agy");
       reports[name] = {
         agent: name,
         command: config.command,
         installed: true,
-        supportedReasoningEfforts: ["low", "medium", "high"],
-        models: [],
+        supportedReasoningEfforts: isAgyVariant ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high"],
+        models: isAgyVariant ? (reports.agy?.models ?? getAgyModels()) : [],
       };
     }
   }

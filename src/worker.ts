@@ -15,6 +15,7 @@ import {
   getProcessTreeCpuTime,
 } from "./task-reconcile.js";
 import { TaskSessionTracker } from "./session-tracker.js";
+import { AgySdkStreamParser } from "./agy-sdk-stream.js";
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
@@ -451,9 +452,18 @@ export async function processTaskFile(
 }
 
 function agentConfigCommandIsAgy(registry: AgentRegistry | null, agentName: string): boolean {
-  if (agentName === "agy") return true;
+  if (agentName === "agy" || agentName === "agy-sdk") return true;
   const cmd = registry?.[agentName]?.command || "";
   return cmd.includes("agy");
+}
+
+function isAgySdkStreamAgent(agentName: string, _command: string, args: string[]): boolean {
+  if (agentName === "agy-sdk") return true;
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--output-format" || args[i] === "-o") && args[i + 1] === "stream-json") return true;
+    if (args[i] === "--output-format=stream-json") return true;
+  }
+  return false;
 }
 
 async function executeTaskFile(
@@ -805,6 +815,17 @@ async function executeTaskFile(
   const agentConfig: AgentConfig = registry[agentName];
   const command = agentConfig.command;
   const args = [...agentConfig.args];
+  const isAgyFamily = command.includes("agy") || agentName === "agy" || agentName === "agy-sdk";
+
+  if (agentName === "agy-sdk") {
+    const hasOutputFormat = args.some(
+      (a) => a === "--output-format" || a === "-o" || a.startsWith("--output-format=")
+    );
+    if (!hasOutputFormat) {
+      args.push("--output-format", "stream-json");
+    }
+  }
+  const useSdkStreamParser = isAgySdkStreamAgent(agentName, command, args);
 
   if (targetSessionToResume || continueSession) {
     if (command.includes("codex") || agentName === "codex") {
@@ -822,7 +843,7 @@ async function executeTaskFile(
           args.unshift("resume", "--last");
         }
       }
-    } else if (command.includes("agy") || agentName === "agy") {
+    } else if (isAgyFamily) {
       if (targetSessionToResume) {
         args.push("--conversation", targetSessionToResume);
       } else if (continueSession) {
@@ -834,7 +855,7 @@ async function executeTaskFile(
   // agy agent requirement: use --print mode for non-interactive runs
   // Prompt is attached directly to the flag (--print=<prompt>) or passed as a flag argument
   // to prevent consuming subsequent options like --dangerously-skip-permissions, --model, etc.
-  if (command.includes("agy") || agentName === "agy") {
+  if (isAgyFamily) {
     const hasPrintFlag = args.some(
       (a) => a === "--print" || a === "-p" || a.startsWith("--print=") || a.startsWith("-p=")
     );
@@ -847,7 +868,7 @@ async function executeTaskFile(
   if (model) {
     if (command.includes("codex") || agentName === "codex") {
       args.push("-m", model);
-    } else if (command.includes("agy") || agentName === "agy") {
+    } else if (isAgyFamily) {
       args.push("--model", model);
     } else {
       args.push("--model", model);
@@ -857,7 +878,7 @@ async function executeTaskFile(
   // Dynamically inject reasoning effort if specified AND supported by agent/model capability
   if (reasoningEffort) {
     const isCodex = command.includes("codex") || agentName === "codex";
-    const isAgy = command.includes("agy") || agentName === "agy";
+    const isAgy = isAgyFamily;
     const supportsEffort = isCodex || agentSupportsEffort(agentConfig, model);
 
     if (isCodex) {
@@ -874,7 +895,7 @@ async function executeTaskFile(
     }
   }
 
-  if (agentConfig.input === "arg" && !command.includes("agy") && agentName !== "agy") {
+  if (agentConfig.input === "arg" && !isAgyFamily) {
     args.push(prompt);
   }
 
@@ -886,12 +907,18 @@ async function executeTaskFile(
   let seenCancelRequested = false;
   let exitCode: number | null = null;
 
-  // Prepare incremental stdout file in logs/<task_id>.out
+  // Prepare incremental stdout file in logs/<task_id>.out (and .events.jsonl for agy-sdk)
   const taskLogsDir = path.join(currentRoot, "logs");
   const taskOutFilePath = path.join(taskLogsDir, `${taskId}.out`);
+  const taskEventsFilePath = path.join(taskLogsDir, `${taskId}.events.jsonl`);
+  let sdkParser: AgySdkStreamParser | null = null as AgySdkStreamParser | null;
+  let sessionTrackerRef: TaskSessionTracker | null = null as TaskSessionTracker | null;
   try {
     if (!fs.existsSync(taskLogsDir)) fs.mkdirSync(taskLogsDir, { recursive: true });
     fs.writeFileSync(taskOutFilePath, "", "utf8");
+    if (useSdkStreamParser) {
+      fs.writeFileSync(taskEventsFilePath, "", "utf8");
+    }
   } catch {}
 
   let effectiveWorkingDir = projectDir && fs.existsSync(projectDir) ? projectDir : undefined;
@@ -1126,6 +1153,45 @@ async function executeTaskFile(
         profileHome: poolProfile?.home,
         startedAtMs: new Date(startedAt).getTime(),
       });
+      sessionTrackerRef = sessionTracker;
+
+      if (useSdkStreamParser) {
+        sdkParser = new AgySdkStreamParser({
+          onEvent: (_ev, rawLine) => {
+            try {
+              fs.appendFileSync(taskEventsFilePath, `${rawLine}\n`, "utf8");
+            } catch {}
+          },
+          onActivity: (update) => {
+            if (isCancelled || seenCancelRequested) return;
+            const act = sessionTracker.recordSdkEvent({
+              conversationId: update.conversationId,
+              source: update.source,
+            });
+            try {
+              writeStatus(currentRoot, taskId, {
+                state: stallFlagged ? "suspected_stalled" : "running",
+                agent: agentName,
+                model,
+                reasoningEffort,
+                account: effectiveAccountAlias,
+                startedAt,
+                ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+                ...(update.conversationId ? { sessionId: update.conversationId } : {}),
+                pid: child?.pid,
+                workerPid: process.pid,
+                logPath: taskOutFilePath,
+                workDir: effectiveWorkingDir,
+                lastActivityAt: act.last_activity_at,
+                activity: act.activity,
+                last_activity_at: act.last_activity_at,
+                idle_seconds: act.idle_seconds,
+                activity_source: act.activity_source,
+              });
+            } catch {}
+          },
+        });
+      }
 
       // Record child/worker pid, log path and work dir so status readers can detect ghosts.
       try {
@@ -1338,18 +1404,35 @@ async function executeTaskFile(
         lastOutputTime = Date.now();
         stuckWarned = false;
         clearStall();
-        const text = chunk.toString("utf8");
-        stdoutData += text;
-        try {
-          fs.appendFileSync(taskOutFilePath, text, "utf8");
-        } catch {}
-        const extracted = extractSessionIdFromOutput(text);
-        sessionTracker.checkActivity({
-          extractedSessionId: extracted,
-          stdoutLen: stdoutData.length,
-          stderrLen: stderrData.length,
-          stuckThresholdMs,
-        });
+        const rawText = chunk.toString("utf8");
+        if (sdkParser) {
+          const readable = sdkParser.feedChunk(rawText);
+          if (readable) {
+            stdoutData += readable;
+            try {
+              fs.appendFileSync(taskOutFilePath, readable, "utf8");
+            } catch {}
+          }
+          const sdkConvId = sdkParser.getConversationId() ?? undefined;
+          sessionTracker.checkActivity({
+            extractedSessionId: sdkConvId,
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
+        } else {
+          stdoutData += rawText;
+          try {
+            fs.appendFileSync(taskOutFilePath, rawText, "utf8");
+          } catch {}
+          const extracted = extractSessionIdFromOutput(rawText);
+          sessionTracker.checkActivity({
+            extractedSessionId: extracted,
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
+        }
       });
 
       child.stderr?.on("data", (chunk) => {
@@ -1385,6 +1468,15 @@ async function executeTaskFile(
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
         if (stuckCheckInterval) clearInterval(stuckCheckInterval);
         if (stallCheckInterval) clearInterval(stallCheckInterval);
+        if (sdkParser) {
+          const trailing = sdkParser.flush();
+          if (trailing) {
+            stdoutData += trailing;
+            try {
+              fs.appendFileSync(taskOutFilePath, trailing, "utf8");
+            } catch {}
+          }
+        }
         exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
@@ -1419,9 +1511,23 @@ async function executeTaskFile(
 
   // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
   // Quota exhaustion takes precedence over agy early-exit fail-fast so sessions can be resumed after account switch.
-  const isAgy = command.includes("agy") || agentName === "agy";
+  const isAgy = isAgyFamily;
+  if (sdkParser) {
+    const sdkClean = sdkParser.getCleanOutput();
+    if (sdkClean && sdkClean.trim().length > 0) {
+      stdoutData = sdkClean;
+    }
+    const sdkErrors = sdkParser.getErrorMessages();
+    if (sdkErrors.length > 0 && !stderrData.includes(sdkErrors[0])) {
+      stderrData = (stderrData ? `${stderrData}\n` : "") + sdkErrors.join("\n");
+    }
+    const sdkResult = sdkParser.getResultPayload();
+    if ((sdkResult?.status === "ERROR" || sdkResult?.finished_reason === "error") && (exitCode === 0 || exitCode === null)) {
+      exitCode = 1;
+    }
+  }
   const failureKind = exitCode !== 0 && !wasCancelled && !isTimeout
-    ? classifyAgentFailure(exitCode, stdoutData, stderrData)
+    ? (sdkParser?.isQuotaError() ? "quota" : classifyAgentFailure(exitCode, stdoutData, stderrData))
     : "other";
   const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
   if (wasCancelled) {
@@ -1486,7 +1592,10 @@ async function executeTaskFile(
     reason = `exited with code ${exitCode}${errText ? `: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-5).join("\n").slice(-500)}` : ""}`;
   }
 
-  const extractedSessionId = extractSessionIdFromOutput(stdoutData);
+  const extractedSessionId =
+    sdkParser?.getConversationId() ||
+    sessionTrackerRef?.getBoundConversationId() ||
+    extractSessionIdFromOutput(stdoutData);
   const finalSessionId = extractedSessionId || targetSessionToResume;
   if (finalSessionId) {
     recordSession(currentRoot, taskId, finalSessionId, effectiveAccountAlias);
@@ -1530,7 +1639,7 @@ async function executeTaskFile(
     activity: "idle",
     last_activity_at: finishedAt,
     idle_seconds: 0,
-    activity_source: state === "cancelled" ? "cancelled" : "none",
+    activity_source: state === "cancelled" ? "cancelled" : (sdkParser?.hasStructuredEvents() ? sdkParser.getLastActivitySource() : "none"),
     ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
   });
 

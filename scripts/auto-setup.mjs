@@ -100,9 +100,14 @@ async function main() {
         args: ["--dangerously-skip-permissions"],
         input: "stdin",
       },
+      "agy-sdk": {
+        command: "agy",
+        args: ["--dangerously-skip-permissions", "--output-format", "stream-json"],
+        input: "stdin",
+      },
     };
     fs.writeFileSync(agentsJsonFile, JSON.stringify(defaultAgents, null, 2), "utf8");
-    console.log("✅ 已自动配置默认本地执行代理: codex 与 agy\n");
+    console.log("✅ 已自动配置默认本地执行代理: codex、agy 与 agy-sdk\n");
   }
 
   // 确保 ~/agent-bridge/routing.json 存在基础调度配置文件（留空由用户在网页端自主设置）
