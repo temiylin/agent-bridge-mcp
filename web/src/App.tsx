@@ -11,6 +11,7 @@ import type { TaskItem } from './types';
 export const App: React.FC = () => {
   const {
     loadConfig,
+    loadProjects,
     loadSystemStats,
     loadTasks,
     loadPool,
@@ -26,6 +27,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadConfig();
+    loadProjects();
     loadSystemStats();
     loadTasks();
     loadPool();

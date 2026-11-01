@@ -14,6 +14,7 @@ import {
 } from "./queue.js";
 import { resolveSessionId } from "./sessions.js";
 import { readStatus } from "./status.js";
+import { resolveProject } from "./project-router.js";
 
 export function registerQueueTools(
   server: McpServer,
@@ -38,9 +39,12 @@ export function registerQueueTools(
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
           account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
+          project_id: z.string().optional().describe("Optional project ID to inherit project defaults"),
+          project_dir: z.string().optional().describe("Optional project working directory"),
+          timeout_seconds: z.number().int().positive().optional(),
         })
         .optional()
-        .describe("Optional agent/model options"),
+        .describe("Optional agent/model/project options"),
       on_complete: z
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
@@ -81,10 +85,17 @@ export function registerQueueTools(
           };
         }
 
-        const mergedOptions = {
+        let mergedOptions: Record<string, any> = {
           ...(options || {}),
           ...(on_complete ? { on_complete } : {}),
         };
+        if (mergedOptions.project_id) {
+          const projRes = resolveProject(rootDir, { projectId: mergedOptions.project_id });
+          if (projRes.project) {
+            mergedOptions.project = projRes.project.id;
+            mergedOptions.projectName = projRes.project.name;
+          }
+        }
 
         const res = enqueueTask(rootDir, {
           session_id: effectiveSessionId,

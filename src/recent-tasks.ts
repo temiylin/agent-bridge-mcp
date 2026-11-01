@@ -12,6 +12,8 @@ export interface RecentTaskItem {
   status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota" | "cancelled";
   session_id?: string;
   project?: string;
+  project_id?: string;
+  project_name?: string;
   agent?: string;
   model?: string;
   account?: string;
@@ -130,7 +132,9 @@ export function queryRecentTasks(
 
         // Read metadata from tasks/<taskId>.md
         let sessionId = statusObj.sessionId;
-        let project: string | undefined = undefined;
+        let projectId: string | undefined = statusObj.projectId;
+        let projectName: string | undefined = statusObj.projectName;
+        let project: string | undefined = projectName || projectId;
         let prUrl: string | undefined = undefined;
         let createdAt: string | undefined = undefined;
         let taskAgent: string | undefined = statusObj.agent;
@@ -145,8 +149,11 @@ export function queryRecentTasks(
               const sMatch = taskContent.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
               if (sMatch) sessionId = sMatch[1].trim();
             }
+            const idMatch = taskContent.match(/- \*\*Project ID\*\*:\s*([^\r\n]+)/i);
+            if (idMatch && !projectId) projectId = idMatch[1].trim();
             const pMatch = taskContent.match(/- \*\*Project(?:\s*Name)?\*\*:\s*([^\r\n]+)/i);
-            if (pMatch) project = pMatch[1].trim();
+            if (pMatch && !projectName) projectName = pMatch[1].trim();
+            if (!project) project = projectName || projectId;
             const cMatch = taskContent.match(/- \*\*Created At\*\*:\s*([^\r\n]+)/i);
             if (cMatch) createdAt = cMatch[1].trim();
             if (!taskAgent) {
@@ -231,13 +238,22 @@ export function queryRecentTasks(
         // Apply filters
         if (filter?.status && mappedStatus !== filter.status) continue;
         if (filter?.session_id && sessionId !== filter.session_id) continue;
-        if (filter?.project && project !== filter.project) continue;
+        if (filter?.project) {
+          const fp = filter.project.trim().toLowerCase();
+          const matchProj =
+            (project && project.toLowerCase() === fp) ||
+            (projectId && projectId.toLowerCase() === fp) ||
+            (projectName && projectName.toLowerCase() === fp);
+          if (!matchProj) continue;
+        }
 
         items.push({
           taskId,
           status: mappedStatus,
           session_id: sessionId,
           project,
+          ...(projectId ? { project_id: projectId } : {}),
+          ...(projectName ? { project_name: projectName } : {}),
           agent: taskAgent,
           model: taskModel,
           account: taskAccount,
@@ -266,8 +282,17 @@ export function queryRecentTasks(
       let itemStatus: RecentTaskItem["status"] = q.paused ? "paused" : "queued";
       if (filter?.status && itemStatus !== filter.status) continue;
 
-      const project = item.options?.project || item.options?.projectName;
-      if (filter?.project && project !== filter.project) continue;
+      const projectId = item.options?.project_id || item.options?.project;
+      const projectName = item.options?.projectName || projectId;
+      const project = projectName || projectId;
+      if (filter?.project) {
+        const fp = filter.project.trim().toLowerCase();
+        const matchProj =
+          (project && String(project).toLowerCase() === fp) ||
+          (projectId && String(projectId).toLowerCase() === fp) ||
+          (projectName && String(projectName).toLowerCase() === fp);
+        if (!matchProj) continue;
+      }
 
       const lastLogLine = item.prompt ? `[queued prompt] ${item.prompt.slice(0, 80).replace(/\r?\n/g, " ")}` : undefined;
 
@@ -276,6 +301,8 @@ export function queryRecentTasks(
         status: itemStatus,
         session_id: q.session_id,
         project,
+        ...(projectId ? { project_id: projectId } : {}),
+        ...(projectName ? { project_name: projectName } : {}),
         agent: item.options?.agent,
         model: item.options?.model,
         account: item.options?.account,

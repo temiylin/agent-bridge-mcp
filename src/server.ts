@@ -33,7 +33,13 @@ import { registerAccountResumeTools } from "./account-resume-tools.js";
 import { registerAccountPoolTools } from "./account-pool-tools.js";
 import { setTaskWebhook, WebhookEvent } from "./webhook.js";
 import { resolveTaskAgent } from "./routing.js";
-import { resolveProject } from "./project-router.js";
+import {
+  resolveProject,
+  getProjectRepoPath,
+  validateGitRepoPath,
+  buildProjectGitRulesPromptNote,
+} from "./project-router.js";
+import { registerProjectTools } from "./project-tools.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -167,6 +173,43 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           };
         }
 
+        // Resolve project early so project-level defaults (agent, model, account, timeout, repo_path, base_branch, callback) apply
+        const projectResolution = resolveProject(rootDir, {
+          projectId: project_id,
+          projectDir: project_dir,
+        });
+
+        if (project_id && project_id.trim() && !projectResolution.matched && !projectResolution.conflict) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Error: Unknown project_id "${project_id.trim()}". Use list_projects or add_project to register it first.`,
+              },
+            ],
+          };
+        }
+
+        const matchedProject = projectResolution.project;
+        const configuredRepoPath = getProjectRepoPath(matchedProject);
+
+        // If project_id matched a registered project with a repo_path, re-verify the path still exists and is a git repo
+        if (matchedProject && !project_dir && configuredRepoPath) {
+          const pathCheck = validateGitRepoPath(configuredRepoPath);
+          if (!pathCheck.valid) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Project "${matchedProject.id}" repository path is invalid or has moved: ${pathCheck.error}`,
+                },
+              ],
+            };
+          }
+        }
+
         // Validate agents.json registry existence and format
         let registry: ReturnType<typeof loadAgents>;
         try {
@@ -184,50 +227,59 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           };
         }
 
-        // Resolve agent: explicit or smart routing
+        // Resolve agent: explicit -> project default_agent -> smart routing
         let agentName = "";
         let routingReason = "";
-        if (agent && typeof agent === "string" && agent.trim().length > 0 && agent.trim().toLowerCase() !== "auto") {
-          const trimmedAgent = agent.trim();
-          if (!(trimmedAgent in registry)) {
+        const effectiveAgentArg =
+          agent && typeof agent === "string" && agent.trim().length > 0 && agent.trim().toLowerCase() !== "auto"
+            ? agent.trim()
+            : matchedProject?.default_agent && matchedProject.default_agent.toLowerCase() !== "auto"
+              ? matchedProject.default_agent.trim()
+              : "";
+
+        if (effectiveAgentArg) {
+          if (!(effectiveAgentArg in registry)) {
             const available = Object.keys(registry).join(", ") || "(none)";
             return {
               isError: true,
               content: [
                 {
                   type: "text",
-                  text: `Error: Agent "${trimmedAgent}" is not registered in agents.json. Available agents: [${available}]`,
+                  text: `Error: Agent "${effectiveAgentArg}" is not registered in agents.json. Available agents: [${available}]`,
                 },
               ],
             };
           }
-          agentName = trimmedAgent;
-          routingReason = "explicitly specified";
+          agentName = effectiveAgentArg;
+          routingReason = agent && agent.trim() ? "explicitly specified" : `project "${matchedProject?.id}" default_agent`;
         } else {
           const resolved = resolveTaskAgent(rootDir, prompt);
           agentName = resolved.agent;
           routingReason = resolved.reason;
         }
 
-        // Validate model if provided
+        // Validate model if provided (or fallback to project default_model)
         let modelParam = "";
-        if (model !== undefined && model !== null) {
-          if (typeof model !== "string" || !/^[a-zA-Z0-9_.:/-]{1,128}$/.test(model.trim())) {
+        const rawModelInput = model !== undefined && model !== null && String(model).trim() !== ""
+          ? model
+          : matchedProject?.default_model;
+        if (rawModelInput !== undefined && rawModelInput !== null) {
+          if (typeof rawModelInput !== "string" || !/^[a-zA-Z0-9_.:/-]{1,128}$/.test(rawModelInput.trim())) {
             return {
               isError: true,
               content: [
                 {
                   type: "text",
-                  text: `Error: Invalid model "${model}". Model identifier must be 1-128 characters containing only letters, numbers, hyphens, underscores, dots, colons, or slashes.`,
+                  text: `Error: Invalid model "${rawModelInput}". Model identifier must be 1-128 characters containing only letters, numbers, hyphens, underscores, dots, colons, or slashes.`,
                 },
               ],
             };
           }
-          modelParam = model.trim();
+          modelParam = rawModelInput.trim();
         }
 
         // Reject models the agent does not offer (same catalog as list_models).
-        let modelSource = modelParam ? "explicit" : "";
+        let modelSource = model ? "explicit" : modelParam ? "project_default" : "";
         if (modelParam && process.env.AGENT_BRIDGE_SKIP_MODEL_VALIDATION !== "1") {
           const validIds = await withTimeout(getValidModelIds(rootDir, agentName).catch(() => null), 12000, null);
           if (validIds && validIds.length > 0 && !validIds.includes(modelParam)) {
@@ -274,31 +326,32 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const createdAt = new Date().toISOString();
         const taskTitle = title && title.trim().length > 0 ? title.trim() : `Task ${taskId}`;
 
-        // Project Resolution & Slack Channel lookup
-        const projectResolution = resolveProject(rootDir, {
-          projectId: project_id,
-          projectDir: project_dir,
-        });
-
         if (projectResolution.conflict) {
           logger.warn(`Project routing conflict for task ${taskId}: ${projectResolution.reason}`);
         } else if (projectResolution.matched) {
-          logger.info(`Task ${taskId} routed to project "${projectResolution.project?.name}" (${projectResolution.reason}) -> Slack: ${projectResolution.channelId || "(no channel)"}`);
+          logger.info(`Task ${taskId} routed to project "${matchedProject?.name}" (${projectResolution.reason}) -> Slack: ${projectResolution.channelId || "(no channel)"}`);
         }
 
+        const effectiveAccount =
+          account && account.trim()
+            ? account.trim()
+            : matchedProject?.default_account
+              ? matchedProject.default_account.trim()
+              : undefined;
+
         let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
-        if (projectResolution.project?.id) headerMeta += `- **Project ID**: ${projectResolution.project.id}\n`;
-        if (projectResolution.project?.name) headerMeta += `- **Project Name**: ${projectResolution.project.name}\n`;
-        if (projectResolution.project?.repo) headerMeta += `- **Project Repo**: ${projectResolution.project.repo}\n`;
-        if (projectResolution.project?.slack_webhook_env) headerMeta += `- **Slack Webhook Env**: ${projectResolution.project.slack_webhook_env}\n`;
-        const effectiveProjectDir = project_dir || projectResolution.project?.paths?.[0];
+        if (matchedProject?.id) headerMeta += `- **Project ID**: ${matchedProject.id}\n`;
+        if (matchedProject?.name) headerMeta += `- **Project Name**: ${matchedProject.name}\n`;
+        if (matchedProject?.repo) headerMeta += `- **Project Repo**: ${matchedProject.repo}\n`;
+        if (matchedProject?.slack_webhook_env) headerMeta += `- **Slack Webhook Env**: ${matchedProject.slack_webhook_env}\n`;
+        const effectiveProjectDir = project_dir || configuredRepoPath;
         if (effectiveProjectDir) headerMeta += `- **Project Dir**: ${effectiveProjectDir}\n`;
         if (projectResolution.channelId) headerMeta += `- **Slack Channel**: ${projectResolution.channelId}\n`;
         if (projectResolution.conflict) headerMeta += `- **Routing Conflict**: true\n`;
 
         // Callback URL & Headers configuration (per-task or per-project fallback)
-        const effectiveCallbackUrl = callback_url || projectResolution.project?.callback_url;
-        const effectiveCallbackHeaders = callback_headers || projectResolution.project?.callback_headers;
+        const effectiveCallbackUrl = callback_url || matchedProject?.callback_url;
+        const effectiveCallbackHeaders = callback_headers || matchedProject?.callback_headers;
         if (effectiveCallbackUrl) headerMeta += `- **Callback URL**: ${effectiveCallbackUrl}\n`;
         if (effectiveCallbackHeaders) headerMeta += `- **Callback Headers**: ${JSON.stringify(effectiveCallbackHeaders)}\n`;
 
@@ -307,23 +360,29 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           headerMeta += `- **On Success**: ${JSON.stringify(on_success)}\n`;
         }
 
-        // Worktree configuration
+        // Worktree configuration (base_branch falls back to project default_base_branch)
+        const effectiveBaseBranch = worktree?.base_branch?.trim() || matchedProject?.default_base_branch;
         if (worktree && worktree.name) {
           headerMeta += `- **Worktree Name**: ${worktree.name.trim()}\n`;
-          if (worktree.base_branch) headerMeta += `- **Worktree Base Branch**: ${worktree.base_branch.trim()}\n`;
+          if (effectiveBaseBranch) headerMeta += `- **Worktree Base Branch**: ${effectiveBaseBranch}\n`;
         }
         if (modelParam) headerMeta += `- **Model**: ${modelParam}\n`;
         if (effortParam) headerMeta += `- **Reasoning Effort**: ${effortParam}\n`;
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
-        if (account && account.trim()) headerMeta += `- **Account**: ${account.trim()}\n`;
+        if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
 
         // Parse notification settings (boolean or nested object)
         let notifyEnabled: boolean | undefined;
         let notifyChannel: string | undefined;
         let notifySound: boolean | string | undefined;
         let notifyOn: string[] | undefined;
-        let hardTimeoutSec = timeout_seconds && timeout_seconds > 0 ? timeout_seconds : undefined;
+        let hardTimeoutSec =
+          timeout_seconds && timeout_seconds > 0
+            ? timeout_seconds
+            : matchedProject?.default_timeout_seconds && matchedProject.default_timeout_seconds > 0
+              ? matchedProject.default_timeout_seconds
+              : undefined;
         let notifyOverdueSec: number | undefined;
 
         if (typeof notify === "boolean") {
@@ -347,6 +406,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
 
         headerMeta += `- **Created At**: ${createdAt}\n`;
 
+        // Append non-intrusive git branch/remote rules note into prompt when project defines them
+        const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
+        const finalPrompt = `${prompt}${gitPromptNote}`;
+
         const content = `# ${taskTitle}
 
 ${headerMeta}
@@ -354,7 +417,7 @@ ${headerMeta}
 
 ## Prompt
 
-${prompt}
+${finalPrompt}
 `;
 
         fs.writeFileSync(taskFilePath, content, "utf8");
@@ -370,10 +433,12 @@ ${prompt}
         try {
           writeStatus(rootDir, taskId, {
             state: "queued",
+            projectId: matchedProject?.id,
+            projectName: matchedProject?.name,
             agent: agentName,
             model: modelParam || undefined,
             reasoningEffort: effortParam || undefined,
-            account: account && account.trim() ? account.trim() : undefined,
+            account: effectiveAccount,
             startedAt: createdAt,
           });
         } catch {}
@@ -609,6 +674,7 @@ ${prompt}
   registerWebhookTools(server, rootDir, logger);
   registerAccountResumeTools(server, rootDir, logger);
   registerAccountPoolTools(server, rootDir, logger);
+  registerProjectTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

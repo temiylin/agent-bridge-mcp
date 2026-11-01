@@ -3,6 +3,8 @@ export interface TaskItem {
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'paused_quota' | 'queued' | string;
   session_id?: string;
   project?: string;
+  project_id?: string;
+  project_name?: string;
   agent?: string;
   model?: string;
   account?: string;
@@ -15,6 +17,45 @@ export interface TaskItem {
   last_log_line?: string;
   state?: string;
   reason?: string;
+}
+
+export interface ProjectConfigItem {
+  id: string;
+  name: string;
+  repo_path?: string;
+  paths?: string[];
+  path_valid?: boolean;
+  path_error?: string;
+  repo?: string;
+  default_base_branch?: string;
+  push_remote?: string;
+  forbidden_remotes?: string[];
+  worktree_root?: string;
+  symlink_dirs?: string[];
+  default_agent?: string;
+  default_model?: string;
+  default_account?: string;
+  default_timeout_seconds?: number;
+  callback_url?: string;
+  callback_headers?: Record<string, string>;
+  slack_webhook_env?: string;
+  verify_pr?: {
+    test_commands?: string[];
+    timeout_seconds?: number;
+  };
+  merge_deploy?: {
+    checkout_path?: string;
+    target_branch?: string;
+    remote?: string;
+    services?: string[];
+  };
+  services?: Record<string, {
+    name?: string;
+    command: string;
+    port?: number;
+    health_url?: string;
+    changed_paths?: string[];
+  }>;
 }
 
 export interface CockpitAccount {

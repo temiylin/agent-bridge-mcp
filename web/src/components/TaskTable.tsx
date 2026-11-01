@@ -37,8 +37,11 @@ export const TaskTable: React.FC<TaskTableProps> = ({
   const { t } = useTranslation();
   const {
     tasks,
+    projects,
     filterStatus,
     setFilterStatus,
+    filterProject,
+    setFilterProject,
     selectedTaskIds,
     toggleSelectTask,
     toggleSelectFilteredTasks,
@@ -146,6 +149,18 @@ export const TaskTable: React.FC<TaskTableProps> = ({
               <option value="queued">{t('filterQueued')}</option>
               <option value="requirements">{t('filterRequirements')}</option>
               <option value="queue">{t('filterQueue')}</option>
+            </select>
+            <select
+              className="select select-sm select-bordered font-medium text-xs sm:text-sm"
+              value={filterProject}
+              onChange={(e) => setFilterProject(e.target.value)}
+            >
+              <option value="all">{t('filterAllProjects')}</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  📁 {p.name || p.id}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -298,15 +313,20 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                         )}
                       </td>
                       <td className="text-xs">
-                        {task.session_id ? (
-                          <span className="font-mono text-[11px] text-base-content/70" title={task.session_id}>
-                            {task.session_id.slice(0, 14)}...
-                          </span>
-                        ) : task.project ? (
-                          <span className="badge badge-sm badge-ghost">{task.project}</span>
-                        ) : (
-                          <span className="text-base-content/30">-</span>
-                        )}
+                        <div className="flex flex-col gap-1 items-start">
+                          {(task.project_name || task.project) && (
+                            <span className="badge badge-xs badge-primary badge-outline font-mono truncate max-w-[120px]" title={task.project_id || task.project}>
+                              {task.project_name || task.project}
+                            </span>
+                          )}
+                          {task.session_id ? (
+                            <span className="font-mono text-[11px] text-base-content/70" title={task.session_id}>
+                              {task.session_id.slice(0, 14)}...
+                            </span>
+                          ) : !task.project_name && !task.project ? (
+                            <span className="text-base-content/30">-</span>
+                          ) : null}
+                        </div>
                       </td>
                       <td>
                         <span className={`badge badge-sm ${badgeClass} font-medium text-[11px] whitespace-nowrap px-2.5 py-1`}>

@@ -140,6 +140,10 @@ async function runTests() {
     "pool_bind_email",
     "pool_remove_profile",
     "pool_set_custom_enabled",
+    "add_project",
+    "list_projects",
+    "update_project",
+    "remove_project",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

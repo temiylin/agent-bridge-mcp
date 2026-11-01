@@ -6,6 +6,7 @@ import { z } from "zod";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { isBlockedCredentialPath } from "./local-fs.js";
+import { resolveProject, getProjectRepoPath } from "./project-router.js";
 
 function resolveGhPath(): string | null {
   const isWin = process.platform === "win32";
@@ -345,21 +346,26 @@ export function registerGitHubPrTools(
     "pr_create",
     "Push local branch (if needed) and create a Pull Request on GitHub with a title and Markdown description.",
     {
+      project_id: z.string().optional().describe("Optional project ID to resolve repo_path, default_base_branch, and GitHub repo slug."),
       title: z.string().describe("Pull request title"),
       body: z.string().optional().describe("Pull request body description in Markdown"),
-      base: z.string().optional().describe("Target base branch, e.g. 'develop' or 'main' (defaults to default branch)"),
+      base: z.string().optional().describe("Target base branch, e.g. 'develop' or 'main' (defaults to project default_base_branch)"),
       head: z.string().optional().describe("Head branch containing commits (defaults to current branch)"),
       draft: z.boolean().optional().describe("Whether to create the PR as a draft. Default: false."),
       repo: z.string().optional().describe("GitHub repository in 'owner/repo' format (e.g. 'owner/repo')."),
       repo_path: z.string().optional().describe("Path to local repository workspace. Defaults to project workspace."),
     },
-    async ({ title, body = "", base, head, draft, repo, repo_path }) => {
+    async ({ project_id, title, body = "", base, head, draft, repo, repo_path }) => {
       audit(rootDir, { tool: "pr_create" });
-      const cwd = resolveCwd(rootDir, repo_path);
+      const projRes = resolveProject(rootDir, { projectId: project_id, projectDir: repo_path, repo });
+      const proj = projRes.project;
+      const cwd = resolveCwd(rootDir, repo_path || getProjectRepoPath(proj));
+      const effectiveBase = (base && base.trim()) || proj?.default_base_branch;
+      const effectiveRepo = (repo && repo.trim()) || proj?.repo;
 
       const args = ["pr", "create", "--title", title.trim(), "--body", body.trim()];
-      if (base && base.trim()) {
-        args.push("--base", base.trim());
+      if (effectiveBase) {
+        args.push("--base", effectiveBase);
       }
       if (head && head.trim()) {
         args.push("--head", head.trim());
@@ -367,8 +373,8 @@ export function registerGitHubPrTools(
       if (draft) {
         args.push("--draft");
       }
-      if (repo && repo.trim()) {
-        args.push("--repo", repo.trim());
+      if (effectiveRepo) {
+        args.push("--repo", effectiveRepo);
       }
 
       const res = runGhCommand(args, cwd, 60000);

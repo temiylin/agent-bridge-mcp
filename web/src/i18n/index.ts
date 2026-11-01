@@ -50,6 +50,7 @@ const resources = {
       filterQueued: '排队中 (queued)',
       filterRequirements: '📋 需求暂存草稿 (Requirements)',
       filterQueue: '⏳ 会话排队序列 (Queue Details)',
+      filterAllProjects: '📁 全部项目',
 
       // Table Headers
       thTaskId: '任务 ID',
@@ -84,6 +85,7 @@ const resources = {
 
       // Settings
       settingsTitle: '系统设置与环境管理',
+      tabProjects: '📁 项目管理',
       tabRouting: '🎯 调度偏好与场景规则',
       tabAgents: '🤖 本地 Agent 注册',
       tabPool: '👥 agy 账号池管理',
@@ -137,6 +139,7 @@ const resources = {
       filterQueued: 'Queued',
       filterRequirements: '📋 Requirements Backlog',
       filterQueue: '⏳ Auto Queue Sessions',
+      filterAllProjects: '📁 All Projects',
 
       // Table Headers
       thTaskId: 'Task ID',
@@ -171,6 +174,7 @@ const resources = {
 
       // Settings
       settingsTitle: 'System Settings & Profiles',
+      tabProjects: '📁 Projects',
       tabRouting: '🎯 Routing Rules',
       tabAgents: '🤖 Local Agents',
       tabPool: '👥 agy Account Pool',

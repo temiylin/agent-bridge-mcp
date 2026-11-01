@@ -8,6 +8,7 @@ import type {
   ProfileItem,
   RequirementItem,
   QueueSession,
+  ProjectConfigItem,
 } from '../types';
 
 interface AppStore {
@@ -15,6 +16,14 @@ interface AppStore {
   config: BridgeConfig | null;
   loadConfig: () => Promise<void>;
   saveConfig: (cfg: Partial<BridgeConfig>) => Promise<boolean>;
+
+  // Projects
+  projects: ProjectConfigItem[];
+  filterProject: string;
+  setFilterProject: (proj: string) => void;
+  loadProjects: () => Promise<void>;
+  saveProject: (action: 'add' | 'update', payload: Record<string, any>) => Promise<{ success: boolean; error?: string }>;
+  deleteProject: (projectId: string) => Promise<{ success: boolean; error?: string }>;
 
   // System Stats
   systemStats: SystemStats | null;
@@ -63,6 +72,8 @@ interface AppStore {
 
 export const useAppStore = create<AppStore>((set, get) => ({
   config: null,
+  projects: [],
+  filterProject: 'all',
   systemStats: null,
   tasks: [],
   allTasks: [],
@@ -89,6 +100,61 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setFilterStatus: (st: string) => {
     set({ filterStatus: st });
     get().loadTasks();
+  },
+
+  setFilterProject: (proj: string) => {
+    set({ filterProject: proj });
+    get().loadTasks();
+  },
+
+  loadProjects: async () => {
+    try {
+      const res = await fetch('/api/projects');
+      if (res.ok) {
+        const data = await res.json();
+        set({ projects: data.projects || [] });
+      }
+    } catch (e) {
+      console.error('Failed to load projects:', e);
+    }
+  },
+
+  saveProject: async (action: 'add' | 'update', payload: Record<string, any>) => {
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        get().showToast(action === 'add' ? '项目创建成功！' : '项目更新成功！');
+        get().loadProjects();
+        return { success: true };
+      }
+      return { success: false, error: data.error || '操作失败' };
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) };
+    }
+  },
+
+  deleteProject: async (projectId: string) => {
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove', project_id: projectId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        get().showToast(`项目 ${projectId} 已删除`);
+        get().loadProjects();
+        return { success: true };
+      }
+      return { success: false, error: data.error || '删除失败' };
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) };
+    }
   },
 
   toggleSelectTask: (tid: string) => {
@@ -174,7 +240,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     try {
-      const res = await fetch('/api/recent-tasks');
+      const projectFilter = get().filterProject;
+      const url =
+        projectFilter && projectFilter !== 'all'
+          ? `/api/recent-tasks?project=${encodeURIComponent(projectFilter)}`
+          : '/api/recent-tasks';
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         const all: TaskItem[] = data.tasks || [];

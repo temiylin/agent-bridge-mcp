@@ -54,6 +54,13 @@ import { resolveDeviceToken } from "./token.js";
 import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
 import { fileURLToPath } from "node:url";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
+import {
+  loadProjectsConfig,
+  sanitizeProjectForClient,
+  getProjectRepoPath,
+  validateGitRepoPath,
+} from "./project-router.js";
+import { addProject, updateProject, removeProject } from "./project-tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -345,6 +352,76 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           res.setHeader("Content-Type", "application/json; charset=utf-8");
           res.statusCode = 200;
           res.end(JSON.stringify({ success: true, message: "Configuration saved successfully" }));
+          return;
+        }
+      }
+
+      if (pathname === "/api/projects") {
+        if (method === "GET") {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          try {
+            const cfg = loadProjectsConfig(defaultInstance.rootDir);
+            const projects = Object.values(cfg.projects).map((p) => {
+              const sanitized = sanitizeProjectForClient(p);
+              const repoPath = getProjectRepoPath(p);
+              const pathCheck = repoPath ? validateGitRepoPath(repoPath) : { valid: false, error: "No repo_path configured" };
+              return {
+                ...sanitized,
+                repo_path: repoPath,
+                path_valid: pathCheck.valid,
+                path_error: pathCheck.valid ? undefined : pathCheck.error,
+              };
+            });
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, projects }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+
+        if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          try {
+            const body = await readBody();
+            if (!body || typeof body !== "object") {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, error: "Invalid JSON body" }));
+              return;
+            }
+            const action = body.action || "add";
+            if (action === "add") {
+              const result = addProject(defaultInstance.rootDir, body);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+            if (action === "update") {
+              const result = updateProject(defaultInstance.rootDir, body);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+            if (action === "remove" || action === "delete") {
+              const projectId = body.project_id || body.id;
+              const result = removeProject(defaultInstance.rootDir, projectId);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Unsupported action: ${action}` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
           return;
         }
       }

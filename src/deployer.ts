@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveBridgeRoot } from "./config.js";
-import { loadProjectsConfig } from "./project-router.js";
+import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
 import { restartService, RestartServiceResult } from "./service-manager.js";
 import { BridgeLogger } from "./logger.js";
 
@@ -58,7 +58,7 @@ export async function mergeAndDeploy(
     };
   }
 
-  const checkoutDir = proj.merge_deploy?.checkout_path || proj.paths?.[0];
+  const checkoutDir = proj.merge_deploy?.checkout_path || getProjectRepoPath(proj);
   if (!checkoutDir || !fs.existsSync(checkoutDir)) {
     return {
       success: false,
@@ -119,11 +119,12 @@ export async function mergeAndDeploy(
   }
 
   // 3. Fast-forward configured checkout
-  const targetBranch = proj.merge_deploy?.target_branch || "develop";
+  const targetBranch = proj.merge_deploy?.target_branch || proj.default_base_branch || "develop";
+  const remoteName = proj.merge_deploy?.remote || proj.push_remote || "origin";
   logger?.info(`merge_and_deploy: Fast-forwarding branch ${targetBranch} in ${checkoutDir}`);
   let fastForwarded = false;
 
-  const pullRes = spawnSync("git", ["pull", "--ff-only", proj.merge_deploy?.remote || "origin", targetBranch], {
+  const pullRes = spawnSync("git", ["pull", "--ff-only", remoteName, targetBranch], {
     cwd: checkoutDir,
     encoding: "utf8",
     shell: false,

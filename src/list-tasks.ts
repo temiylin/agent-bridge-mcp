@@ -8,6 +8,8 @@ import { BridgeLogger } from "./logger.js";
 export interface TaskSummaryItem {
   taskId: string;
   state: string;
+  projectId?: string;
+  projectName?: string;
   agent?: string;
   model?: string;
   reasoningEffort?: string;
@@ -26,15 +28,18 @@ export function registerListTasksTool(
     "List recent task execution summaries without returning prompt, result, or log bodies.",
     {
       limit: z.number().int().optional().describe("Maximum number of tasks to return (1-50, default 20)"),
+      project_id: z.string().optional().describe("Optional project ID or name to filter tasks by"),
     },
     { readOnlyHint: true, destructiveHint: false },
-    async ({ limit }) => {
+    async ({ limit, project_id }) => {
       audit(rootDir, { tool: "list_tasks_summary" });
 
       const rawLimit = typeof limit === "number" && !Number.isNaN(limit) ? limit : 20;
       const effectiveLimit = Math.max(1, Math.min(50, Math.floor(rawLimit)));
+      const filterProj = project_id?.trim().toLowerCase();
 
       const statusDir = path.join(rootDir, "status");
+      const tasksDir = path.join(rootDir, "tasks");
       const items: TaskSummaryItem[] = [];
 
       try {
@@ -49,10 +54,35 @@ export function registerListTasksTool(
               const content = fs.readFileSync(filePath, "utf8");
               const parsed = JSON.parse(content);
               if (parsed && typeof parsed === "object") {
+                const taskId = typeof parsed.taskId === "string" ? parsed.taskId : file.replace(/\.json$/, "");
                 const item: TaskSummaryItem = {
-                  taskId: typeof parsed.taskId === "string" ? parsed.taskId : file.replace(/\.json$/, ""),
+                  taskId,
                   state: typeof parsed.state === "string" ? parsed.state : "unknown",
                 };
+                if (typeof parsed.projectId === "string" && parsed.projectId) item.projectId = parsed.projectId;
+                if (typeof parsed.projectName === "string" && parsed.projectName) item.projectName = parsed.projectName;
+
+                if (!item.projectId || !item.projectName) {
+                  const tf = path.join(tasksDir, `${taskId}.md`);
+                  if (fs.existsSync(tf)) {
+                    try {
+                      const tc = fs.readFileSync(tf, "utf8");
+                      const idM = tc.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/im);
+                      const nameM = tc.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/im);
+                      if (!item.projectId && idM) item.projectId = idM[1].trim();
+                      if (!item.projectName && nameM) item.projectName = nameM[1].trim();
+                    } catch {}
+                  }
+                }
+
+                if (filterProj) {
+                  const pId = (item.projectId || "").toLowerCase();
+                  const pName = (item.projectName || "").toLowerCase();
+                  if (pId !== filterProj && pName !== filterProj) {
+                    continue;
+                  }
+                }
+
                 if (typeof parsed.agent === "string") item.agent = parsed.agent;
                 if (typeof parsed.model === "string") item.model = parsed.model;
                 if (typeof parsed.reasoningEffort === "string") item.reasoningEffort = parsed.reasoningEffort;

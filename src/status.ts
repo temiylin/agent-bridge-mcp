@@ -10,6 +10,8 @@ export const ACTIVE_STATES: TaskState[] = ["running", "suspected_stalled"];
 export interface TaskStatusInfo {
   taskId?: string;
   state: TaskState;
+  projectId?: string;
+  projectName?: string;
   agent?: string;
   model?: string;
   reasoningEffort?: string;
@@ -65,18 +67,22 @@ export function writeStatus(
 
   // Prevent active/non-terminal status refreshes (running / suspected_stalled) from overwriting
   // an already persisted "cancelled" terminal state.
-  if (ACTIVE_STATES.includes(info.state) && fs.existsSync(targetPath)) {
-    try {
-      const existing = JSON.parse(fs.readFileSync(targetPath, "utf8")) as TaskStatusInfo;
-      if (existing && existing.state === "cancelled") {
-        return;
-      }
-    } catch {}
-  }
+    if ( fs.existsSync(targetPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(targetPath, "utf8")) as TaskStatusInfo;
+        if (ACTIVE_STATES.includes(info.state) && existing && existing.state === "cancelled") {
+          return;
+        }
+        if (!info.projectId && existing?.projectId) info.projectId = existing.projectId;
+        if (!info.projectName && existing?.projectName) info.projectName = existing.projectName;
+      } catch {}
+    }
 
   const payload: TaskStatusInfo = {
     taskId,
     state: info.state,
+    ...(info.projectId ? { projectId: info.projectId } : {}),
+    ...(info.projectName ? { projectName: info.projectName } : {}),
     agent: info.agent || "",
     ...(info.model ? { model: info.model } : {}),
     ...(info.reasoningEffort ? { reasoningEffort: info.reasoningEffort } : {}),

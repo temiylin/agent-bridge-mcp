@@ -9,8 +9,13 @@ import {
   Users,
   Plus,
   Trash2,
+  FolderGit2,
+  Edit3,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
+import type { ProjectConfigItem } from '../types';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -19,6 +24,9 @@ export const SettingsModal: React.FC = () => {
     setSettingsOpen,
     config,
     saveConfig,
+    projects,
+    saveProject,
+    deleteProject,
     showToast,
     systemStats,
     poolAccounts,
@@ -30,10 +38,154 @@ export const SettingsModal: React.FC = () => {
     syncAuth,
   } = useAppStore();
 
-  const [activeTab, setActiveTab] = useState<'routing' | 'agents' | 'pool' | 'system'>('routing');
+  const [activeTab, setActiveTab] = useState<'projects' | 'routing' | 'agents' | 'pool' | 'system'>('projects');
   const [instructions, setInstructions] = useState(config?.routing.instructions || '');
   const [defaultAgent, setDefaultAgent] = useState(config?.routing.defaultAgent || 'codex');
   const [rules, setRules] = useState(config?.routing.rules || []);
+
+  // Project Form State
+  const [editingProjMode, setEditingProjMode] = useState<'none' | 'add' | 'update'>('none');
+  const [projError, setProjError] = useState<string | null>(null);
+  const [projSaving, setProjSaving] = useState(false);
+  const [projForm, setProjForm] = useState({
+    id: '',
+    name: '',
+    repo_path: '',
+    repo: '',
+    default_base_branch: 'develop',
+    push_remote: 'origin',
+    forbidden_remotes: '',
+    worktree_root: '',
+    default_agent: '',
+    default_model: '',
+    default_account: '',
+    default_timeout_seconds: '',
+    callback_url: '',
+    callback_headers_text: '',
+    test_commands_text: '',
+  });
+
+  const openAddProjectForm = () => {
+    setProjError(null);
+    setProjForm({
+      id: '',
+      name: '',
+      repo_path: '',
+      repo: '',
+      default_base_branch: 'develop',
+      push_remote: 'origin',
+      forbidden_remotes: '',
+      worktree_root: '',
+      default_agent: '',
+      default_model: '',
+      default_account: '',
+      default_timeout_seconds: '',
+      callback_url: '',
+      callback_headers_text: '',
+      test_commands_text: '',
+    });
+    setEditingProjMode('add');
+  };
+
+  const openEditProjectForm = (p: ProjectConfigItem) => {
+    setProjError(null);
+    const headersText = Object.entries(p.callback_headers || {})
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    setProjForm({
+      id: p.id,
+      name: p.name || p.id,
+      repo_path: p.repo_path || p.paths?.[0] || '',
+      repo: p.repo || '',
+      default_base_branch: p.default_base_branch || 'develop',
+      push_remote: p.push_remote || 'origin',
+      forbidden_remotes: (p.forbidden_remotes || []).join(', '),
+      worktree_root: p.worktree_root || '',
+      default_agent: p.default_agent || '',
+      default_model: p.default_model || '',
+      default_account: p.default_account || '',
+      default_timeout_seconds: p.default_timeout_seconds ? String(p.default_timeout_seconds) : '',
+      callback_url: p.callback_url || '',
+      callback_headers_text: headersText,
+      test_commands_text: (p.verify_pr?.test_commands || []).join('\n'),
+    });
+    setEditingProjMode('update');
+  };
+
+  const handleSaveProjectForm = async () => {
+    setProjError(null);
+    if (!projForm.id.trim() || !projForm.repo_path.trim()) {
+      setProjError('项目 ID 与主仓库路径 (repo_path) 不能为空');
+      return;
+    }
+
+    const callbackHeaders: Record<string, string> = {};
+    for (const line of projForm.callback_headers_text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx <= 0) {
+        setProjError(`回调 Header 格式错误: "${trimmed}"，应为 Header-Name=$ENV_VAR_NAME`);
+        return;
+      }
+      const hKey = trimmed.slice(0, eqIdx).trim();
+      const hVal = trimmed.slice(eqIdx + 1).trim();
+      const envName = hVal.startsWith('$') ? hVal.slice(1).trim() : hVal;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
+        setProjError(`回调密钥只允许填写环境变量名（如 $VISION_HUB_TOKEN），禁止直接填入密钥明文: "${hVal}"`);
+        return;
+      }
+      callbackHeaders[hKey] = `$${envName}`;
+    }
+
+    const testCmds = projForm.test_commands_text
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const payload: Record<string, any> = {
+      id: projForm.id.trim(),
+      name: projForm.name.trim() || projForm.id.trim(),
+      repo_path: projForm.repo_path.trim(),
+      repo: projForm.repo.trim() || undefined,
+      default_base_branch: projForm.default_base_branch.trim() || 'develop',
+      push_remote: projForm.push_remote.trim() || 'origin',
+      forbidden_remotes: projForm.forbidden_remotes
+        .split(/[,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+      worktree_root: projForm.worktree_root.trim() || undefined,
+      default_agent: projForm.default_agent.trim() || undefined,
+      default_model: projForm.default_model.trim() || undefined,
+      default_account: projForm.default_account.trim() || undefined,
+      default_timeout_seconds: projForm.default_timeout_seconds
+        ? Number(projForm.default_timeout_seconds)
+        : undefined,
+      callback_url: projForm.callback_url.trim() || undefined,
+      callback_headers: callbackHeaders,
+      verify_pr: testCmds.length > 0 ? { test_commands: testCmds } : undefined,
+    };
+
+    setProjSaving(true);
+    try {
+      const res = await saveProject(editingProjMode === 'add' ? 'add' : 'update', payload);
+      if (res.success) {
+        setEditingProjMode('none');
+      } else {
+        setProjError(res.error || '保存项目失败');
+      }
+    } finally {
+      setProjSaving(false);
+    }
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    if (!confirm(`确定要移除项目 "${id}" 吗？（仅移除注册配置，不会删除本地仓库文件）`)) return;
+    const res = await deleteProject(id);
+    if (!res.success && res.error) {
+      alert(res.error);
+    }
+  };
 
   if (!settingsOpen) return null;
 
@@ -125,6 +277,13 @@ export const SettingsModal: React.FC = () => {
         {/* Tabs Bar */}
         <div className="tabs tabs-boxed bg-base-100 p-1 mb-4">
           <button
+            className={`tab tab-sm font-semibold gap-1.5 ${activeTab === 'projects' ? 'tab-active !bg-primary !text-primary-content' : ''}`}
+            onClick={() => setActiveTab('projects')}
+          >
+            <FolderGit2 className="w-3.5 h-3.5" />
+            <span>{t('tabProjects')}</span>
+          </button>
+          <button
             className={`tab tab-sm font-semibold gap-1.5 ${activeTab === 'routing' ? 'tab-active !bg-primary !text-primary-content' : ''}`}
             onClick={() => setActiveTab('routing')}
           >
@@ -156,6 +315,296 @@ export const SettingsModal: React.FC = () => {
 
         {/* Tab Content */}
         <div className="flex-1 overflow-y-auto pr-1">
+          {activeTab === 'projects' && (
+            <div className="space-y-4">
+              {editingProjMode !== 'none' ? (
+                <div className="card bg-base-100 border border-base-300 p-4 space-y-3 text-xs">
+                  <div className="flex items-center justify-between border-b border-base-300 pb-2">
+                    <h4 className="font-bold text-sm">
+                      {editingProjMode === 'add' ? '➕ 新增项目配置' : `✏️ 编辑项目: ${projForm.id}`}
+                    </h4>
+                    <button className="btn btn-xs btn-ghost" onClick={() => setEditingProjMode('none')}>
+                      返回列表
+                    </button>
+                  </div>
+
+                  {projError && (
+                    <div className="alert alert-error py-2 px-3 text-xs rounded-lg">
+                      <span>{projError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">项目 ID (project_id) *</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="如 vision_hub"
+                        disabled={editingProjMode === 'update'}
+                        value={projForm.id}
+                        onChange={(e) => setProjForm({ ...projForm, id: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">项目名称</label>
+                      <input
+                        className="input input-xs input-bordered w-full"
+                        placeholder="如 Vision Hub"
+                        value={projForm.name}
+                        onChange={(e) => setProjForm({ ...projForm, name: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">GitHub 仓库 (owner/repo)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="如 org/vision_hub"
+                        value={projForm.repo}
+                        onChange={(e) => setProjForm({ ...projForm, repo: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">主仓库本地路径 (repo_path) *</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="/Users/.../vision_hub"
+                        value={projForm.repo_path}
+                        onChange={(e) => setProjForm({ ...projForm, repo_path: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">Worktree 根目录 (可选)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="/Users/.../worktrees/vision_hub"
+                        value={projForm.worktree_root}
+                        onChange={(e) => setProjForm({ ...projForm, worktree_root: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">默认基础分支 (default_base_branch)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="develop"
+                        value={projForm.default_base_branch}
+                        onChange={(e) => setProjForm({ ...projForm, default_base_branch: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">默认推送 Remote (push_remote)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="github 或 origin"
+                        value={projForm.push_remote}
+                        onChange={(e) => setProjForm({ ...projForm, push_remote: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">禁止推送的 Remote URL 规则 (逗号隔开)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="如 gitee.com, git@gitee.com:org/repo"
+                        value={projForm.forbidden_remotes}
+                        onChange={(e) => setProjForm({ ...projForm, forbidden_remotes: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">默认 Agent</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="如 agy-sdk / codex"
+                        value={projForm.default_agent}
+                        onChange={(e) => setProjForm({ ...projForm, default_agent: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">默认模型</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="可选"
+                        value={projForm.default_model}
+                        onChange={(e) => setProjForm({ ...projForm, default_model: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">默认账号/池</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="可选邮箱或 alias"
+                        value={projForm.default_account}
+                        onChange={(e) => setProjForm({ ...projForm, default_account: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">默认超时 (秒)</label>
+                      <input
+                        type="number"
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="如 1800"
+                        value={projForm.default_timeout_seconds}
+                        onChange={(e) => setProjForm({ ...projForm, default_timeout_seconds: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">默认回调 URL (callback_url)</label>
+                      <input
+                        className="input input-xs input-bordered w-full font-mono"
+                        placeholder="http://127.0.0.1:8000/api/webhook"
+                        value={projForm.callback_url}
+                        onChange={(e) => setProjForm({ ...projForm, callback_url: e.target.value })}
+                      />
+                      <label className="label py-1 font-semibold mt-1">
+                        <span>回调 Header 环境变量引用 (仅限 $ENV_VAR 名，禁止明文密钥)</span>
+                      </label>
+                      <textarea
+                        className="textarea textarea-bordered w-full h-16 font-mono text-xs"
+                        placeholder={'Authorization=$VISION_HUB_WEBHOOK_TOKEN\nX-Project-Key=$VISION_HUB_KEY'}
+                        value={projForm.callback_headers_text}
+                        onChange={(e) => setProjForm({ ...projForm, callback_headers_text: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">PR 验证测试命令 (每行一条)</label>
+                      <textarea
+                        className="textarea textarea-bordered w-full h-28 font-mono text-xs"
+                        placeholder={'pnpm build\npytest'}
+                        value={projForm.test_commands_text}
+                        onChange={(e) => setProjForm({ ...projForm, test_commands_text: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button className="btn btn-xs btn-ghost" onClick={() => setEditingProjMode('none')}>
+                      取消
+                    </button>
+                    <button
+                      className="btn btn-xs btn-primary"
+                      disabled={projSaving}
+                      onClick={handleSaveProjectForm}
+                    >
+                      {projSaving ? '保存中...' : '保存项目'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="card bg-base-100 border border-base-300 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="font-bold text-xs">📁 已注册项目配置 (projects.json)</h4>
+                      <p className="text-[11px] text-base-content/60">
+                        派发任务时仅需传 <code className="font-mono">project_id</code> 即可自动套用路径、分支、Remote 拦截与默认回调。回调密钥仅展示环境变量名。
+                      </p>
+                    </div>
+                    <button className="btn btn-xs btn-primary gap-1" onClick={openAddProjectForm}>
+                      <Plus className="w-3 h-3" />
+                      <span>添加项目</span>
+                    </button>
+                  </div>
+
+                  {projects.length === 0 ? (
+                    <div className="text-center py-8 text-xs text-base-content/40">
+                      暂未配置项目，点击右上角「添加项目」即可创建。
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {projects.map((p) => (
+                        <div
+                          key={p.id}
+                          className="p-3 bg-base-200 rounded-lg border border-base-300 flex flex-col gap-2 text-xs"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold font-mono text-sm text-primary">{p.id}</span>
+                              <span className="text-base-content/80 font-medium">{p.name}</span>
+                              {p.path_valid !== false ? (
+                                <span className="badge badge-xs badge-success gap-1">
+                                  <CheckCircle2 className="w-2.5 h-2.5" /> 仓库正常
+                                </span>
+                              ) : (
+                                <span className="badge badge-xs badge-error gap-1" title={p.path_error}>
+                                  <AlertCircle className="w-2.5 h-2.5" /> 路径异常
+                                </span>
+                              )}
+                              {p.default_base_branch && (
+                                <span className="badge badge-xs badge-ghost font-mono">
+                                  base: {p.default_base_branch}
+                                </span>
+                              )}
+                              {p.push_remote && (
+                                <span className="badge badge-xs badge-info badge-outline font-mono">
+                                  push: {p.push_remote}
+                                </span>
+                              )}
+                              {p.default_agent && (
+                                <span className="badge badge-xs badge-primary font-mono">
+                                  agent: {p.default_agent}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                title="编辑项目"
+                                onClick={() => openEditProjectForm(p)}
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                className="btn btn-ghost btn-xs text-error"
+                                title="删除项目"
+                                onClick={() => handleDeleteProject(p.id)}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="font-mono text-[11px] text-base-content/60 truncate">
+                            📍 {p.repo_path || p.paths?.[0]}
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                            {p.forbidden_remotes && p.forbidden_remotes.length > 0 && (
+                              <span className="text-rose-400 font-mono">
+                                🚫 禁推 URL: {p.forbidden_remotes.join(', ')}
+                              </span>
+                            )}
+                            {p.callback_url && (
+                              <span className="text-base-content/60 font-mono">
+                                🔔 回调: {p.callback_url}
+                              </span>
+                            )}
+                            {p.callback_headers && Object.keys(p.callback_headers).length > 0 && (
+                              <span className="text-emerald-400 font-mono">
+                                🔑 环境变量引用:{' '}
+                                {Object.entries(p.callback_headers)
+                                  .map(([hk, hv]) => `${hk}=${hv}`)
+                                  .join(', ')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'routing' && (
             <div className="space-y-4">
               <div className="card bg-base-100 border border-base-300 p-4">

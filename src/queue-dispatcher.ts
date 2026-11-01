@@ -13,6 +13,12 @@ import {
 } from "./queue.js";
 import { writeRequirement, getRequirement } from "./requirements.js";
 import { setTaskWebhook, TaskWebhookConfig } from "./webhook.js";
+import {
+  resolveProject,
+  getProjectRepoPath,
+  validateGitRepoPath,
+  buildProjectGitRulesPromptNote,
+} from "./project-router.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -23,6 +29,9 @@ export interface TaskDispatchParams {
   continue_session?: boolean;
   session_id?: string;
   account?: string;
+  project_id?: string;
+  project_dir?: string;
+  timeout_seconds?: number;
   on_complete?: TaskWebhookConfig;
 }
 
@@ -46,6 +55,20 @@ export function dispatchTaskDirect(
     fs.mkdirSync(tasksDir, { recursive: true });
   }
 
+  const projectResolution = resolveProject(rootDir, {
+    projectId: params.project_id,
+    projectDir: params.project_dir,
+  });
+  const matchedProject = projectResolution.project;
+  const configuredRepoPath = getProjectRepoPath(matchedProject);
+
+  if (matchedProject && !params.project_dir && configuredRepoPath) {
+    const pathCheck = validateGitRepoPath(configuredRepoPath);
+    if (!pathCheck.valid) {
+      throw new Error(`Project "${matchedProject.id}" repository path is invalid or has moved: ${pathCheck.error}`);
+    }
+  }
+
   const prompt = params.prompt;
   let registry: ReturnType<typeof loadAgents> = {};
   try {
@@ -53,12 +76,29 @@ export function dispatchTaskDirect(
   } catch {}
 
   let agentName = "";
-  if (params.agent && params.agent.trim().length > 0 && params.agent.trim().toLowerCase() !== "auto") {
-    agentName = params.agent.trim();
+  const effectiveAgentArg =
+    params.agent && params.agent.trim().length > 0 && params.agent.trim().toLowerCase() !== "auto"
+      ? params.agent.trim()
+      : matchedProject?.default_agent && matchedProject.default_agent.toLowerCase() !== "auto"
+        ? matchedProject.default_agent.trim()
+        : "";
+
+  if (effectiveAgentArg) {
+    agentName = effectiveAgentArg;
   } else {
     const resolved = resolveTaskAgent(rootDir, prompt);
     agentName = resolved.agent;
   }
+
+  const effectiveModel = params.model?.trim() || matchedProject?.default_model;
+  const effectiveAccount = params.account?.trim() || matchedProject?.default_account;
+  const effectiveTimeout =
+    params.timeout_seconds && params.timeout_seconds > 0
+      ? params.timeout_seconds
+      : matchedProject?.default_timeout_seconds && matchedProject.default_timeout_seconds > 0
+        ? matchedProject.default_timeout_seconds
+        : undefined;
+  const effectiveProjectDir = params.project_dir || configuredRepoPath;
 
   const taskId = generateTaskId();
   const taskFilePath = resolveSafePath(tasksDir, rootDir, `${taskId}.md`);
@@ -66,14 +106,24 @@ export function dispatchTaskDirect(
   const taskTitle = params.title && params.title.trim().length > 0 ? params.title.trim() : `Task ${taskId}`;
 
   let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
-  if (params.model) headerMeta += `- **Model**: ${params.model.trim()}\n`;
+  if (matchedProject?.id) headerMeta += `- **Project ID**: ${matchedProject.id}\n`;
+  if (matchedProject?.name) headerMeta += `- **Project Name**: ${matchedProject.name}\n`;
+  if (matchedProject?.repo) headerMeta += `- **Project Repo**: ${matchedProject.repo}\n`;
+  if (matchedProject?.slack_webhook_env) headerMeta += `- **Slack Webhook Env**: ${matchedProject.slack_webhook_env}\n`;
+  if (effectiveProjectDir) headerMeta += `- **Project Dir**: ${effectiveProjectDir}\n`;
+  if (projectResolution.channelId) headerMeta += `- **Slack Channel**: ${projectResolution.channelId}\n`;
+  if (matchedProject?.callback_url) headerMeta += `- **Callback URL**: ${matchedProject.callback_url}\n`;
+  if (matchedProject?.callback_headers) headerMeta += `- **Callback Headers**: ${JSON.stringify(matchedProject.callback_headers)}\n`;
+  if (effectiveModel) headerMeta += `- **Model**: ${effectiveModel}\n`;
   if (params.reasoning_effort) headerMeta += `- **Reasoning Effort**: ${params.reasoning_effort.trim().toLowerCase()}\n`;
   if (params.continue_session) headerMeta += `- **Continue Session**: true\n`;
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
-  if (params.account && params.account.trim()) headerMeta += `- **Account**: ${params.account.trim()}\n`;
+  if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
+  if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
   headerMeta += `- **Created At**: ${createdAt}\n`;
 
-  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}\n`;
+  const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
+  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}${gitPromptNote}\n`;
 
   fs.writeFileSync(taskFilePath, content, "utf8");
 
@@ -87,10 +137,12 @@ export function dispatchTaskDirect(
   try {
     writeStatus(rootDir, taskId, {
       state: "queued",
+      projectId: matchedProject?.id,
+      projectName: matchedProject?.name,
       agent: agentName,
-      model: params.model || undefined,
+      model: effectiveModel || undefined,
       reasoningEffort: params.reasoning_effort || undefined,
-      account: params.account?.trim() || undefined,
+      account: effectiveAccount || undefined,
       startedAt: createdAt,
     });
   } catch {}
@@ -232,6 +284,9 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     continue_session: true, // Auto queue continues same session
     session_id: sessionId,
     account: item.options?.account,
+    project_id: item.options?.project_id || item.options?.project,
+    project_dir: item.options?.project_dir,
+    timeout_seconds: item.options?.timeout_seconds,
     on_complete: item.options?.on_complete,
   });
 

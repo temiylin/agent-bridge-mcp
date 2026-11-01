@@ -36,7 +36,7 @@ import {
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
-import { loadProjectsConfig } from "./project-router.js";
+import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
 import {
   sendDesktopNotification,
   buildOsascriptNotifyArgs,
@@ -817,6 +817,8 @@ async function executeTaskFile(
   // Write running status and audit as execution begins
   writeStatus(currentRoot, taskId, {
     state: "running",
+    projectId,
+    projectName,
     agent: agentName,
     model,
     reasoningEffort,
@@ -1000,12 +1002,14 @@ async function executeTaskFile(
     try {
       const projConfig = loadProjectsConfig(currentRoot);
       const matchedProj = Object.values(projConfig.projects).find(
-        (p) => (projectId && p.id === projectId) || (projectDir && p.paths && p.paths.includes(projectDir))
+        (p) =>
+          (projectId && p.id.toLowerCase() === projectId.toLowerCase()) ||
+          (projectDir && (getProjectRepoPath(p) === projectDir || (p.paths && p.paths.includes(projectDir))))
       );
       const wtRes = setupGitWorktree({
         repoDir: effectiveWorkingDir,
         worktreeName,
-        baseBranch: worktreeBaseBranch,
+        baseBranch: worktreeBaseBranch || matchedProj?.default_base_branch,
         worktreeRoot: matchedProj?.worktree_root,
         symlinkDirs: matchedProj?.symlink_dirs,
         logger: logWorker,

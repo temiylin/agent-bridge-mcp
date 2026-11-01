@@ -50,11 +50,33 @@ export function registerOpsTools(
         };
       }
 
+      // Helper to read project metadata from tasks/<task_id>.md if not already on status
+      const readProjectMetaFromTaskFile = (): { projectId?: string; projectName?: string } => {
+        try {
+          const tf = resolveSafePath(tasksDir, rootDir, `${task_id}.md`);
+          if (fs.existsSync(tf)) {
+            const c = fs.readFileSync(tf, "utf8");
+            const idM = c.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const nameM = c.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/im);
+            return {
+              projectId: idM ? idM[1].trim() : undefined,
+              projectName: nameM ? nameM[1].trim() : undefined,
+            };
+          }
+        } catch {}
+        return {};
+      };
+
       // Check status file first (reconciled against the real worker/agent processes)
       const status = readReconciledStatus(rootDir, task_id);
       if (status) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: status.state });
         const { logTail, ...sanitizedStatus } = status;
+        if (!sanitizedStatus.projectId || !sanitizedStatus.projectName) {
+          const pm = readProjectMetaFromTaskFile();
+          if (!sanitizedStatus.projectId && pm.projectId) sanitizedStatus.projectId = pm.projectId;
+          if (!sanitizedStatus.projectName && pm.projectName) sanitizedStatus.projectName = pm.projectName;
+        }
         const now = Date.now();
         const lastAct = sanitizedStatus.last_activity_at || sanitizedStatus.lastActivityAt;
         const lastActMs = lastAct ? new Date(lastAct).getTime() : (sanitizedStatus.startedAt ? new Date(sanitizedStatus.startedAt).getTime() : now);
@@ -94,6 +116,7 @@ export function registerOpsTools(
 
       if (fs.existsSync(taskFilePath)) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: "queued" });
+        const pm = readProjectMetaFromTaskFile();
         return {
           content: [
             {
@@ -101,6 +124,8 @@ export function registerOpsTools(
               text: JSON.stringify({
                 taskId: task_id,
                 state: "queued",
+                ...(pm.projectId ? { projectId: pm.projectId } : {}),
+                ...(pm.projectName ? { projectName: pm.projectName } : {}),
                 activity: "idle",
                 idle_seconds: 0,
                 activity_source: "none",
