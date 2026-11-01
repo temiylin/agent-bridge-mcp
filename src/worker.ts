@@ -13,8 +13,8 @@ import {
   getStallThresholdMs,
   getDescendantPids,
   getProcessTreeCpuTime,
-  getAgentSessionOrProgressMtime,
 } from "./task-reconcile.js";
+import { TaskSessionTracker } from "./session-tracker.js";
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
@@ -883,6 +883,7 @@ async function executeTaskFile(
   let child: ChildProcess | null = null;
   let isTimeout = false;
   let isCancelled = false;
+  let seenCancelRequested = false;
   let exitCode: number | null = null;
 
   // Prepare incremental stdout file in logs/<task_id>.out
@@ -1114,6 +1115,18 @@ async function executeTaskFile(
         return reject(spawnErr);
       }
 
+      // Initialize per-task session tracker for accurate stuck detection without global scans
+      const sessionTracker = new TaskSessionTracker({
+        taskId,
+        agentName,
+        command,
+        workDir: effectiveWorkingDir,
+        prompt,
+        sessionId: targetSessionToResume || sessionId,
+        profileHome: poolProfile?.home,
+        startedAtMs: new Date(startedAt).getTime(),
+      });
+
       // Record child/worker pid, log path and work dir so status readers can detect ghosts.
       try {
         writeStatus(currentRoot, taskId, {
@@ -1128,6 +1141,11 @@ async function executeTaskFile(
           workerPid: process.pid,
           logPath: taskOutFilePath,
           workDir: effectiveWorkingDir,
+          lastActivityAt: startedAt,
+          activity: "active",
+          last_activity_at: startedAt,
+          idle_seconds: 0,
+          activity_source: "none",
         });
       } catch {}
 
@@ -1148,40 +1166,24 @@ async function executeTaskFile(
       }
 
       // Stuck detection: warn if process produces no new output AND genuine idle evidence indicates wedged state
-      // (no conversation activity, no file/workdir progress, no process CPU time change).
+      // (no session log growth, no stdout/stderr growth, no process CPU delta, no workDir change).
       const stuckThresholdMs = parseInt(process.env.AGENT_BRIDGE_STUCK_MS || "180000", 10);
       let lastOutputTime = Date.now();
-      let lastActivityTime = Date.now();
-      let lastCpuSec = getProcessTreeCpuTime(child?.pid);
       let stuckWarned = false;
       let stuckCheckInterval: NodeJS.Timeout | null = null;
       if (isNotifyEnabled && notifyOn.has("stuck")) {
         stuckCheckInterval = setInterval(() => {
           if (stuckWarned) return;
-          const now = Date.now();
 
-          // Check real external progress signals (conversation DB, brain scratch, worktree)
-          const sessionMtime = getAgentSessionOrProgressMtime(effectiveWorkingDir);
-          if (sessionMtime && sessionMtime > lastActivityTime) {
-            lastActivityTime = Math.max(lastActivityTime, sessionMtime);
-          }
+          // Check the 4 activity signals for this specific task
+          const act = sessionTracker.checkActivity({
+            childPid: child?.pid,
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
 
-          // Check process tree CPU activity
-          const currentCpuSec = getProcessTreeCpuTime(child?.pid);
-          if (currentCpuSec > lastCpuSec + 0.1) {
-            lastActivityTime = now;
-            lastCpuSec = currentCpuSec;
-          }
-
-          // Child process existence probe
-          const childPids = getDescendantPids(child?.pid);
-          if (childPids.length > 0) {
-            // Actively running child tools/compilers/builds
-            lastActivityTime = now;
-          }
-
-          // Update task status lastActivityAt
-          const effectiveLastActive = Math.max(lastOutputTime, lastActivityTime);
+          // Update task status with compact activity fields
           try {
             writeStatus(currentRoot, taskId, {
               state: stallFlagged ? "suspected_stalled" : "running",
@@ -1195,12 +1197,17 @@ async function executeTaskFile(
               workerPid: process.pid,
               logPath: taskOutFilePath,
               workDir: effectiveWorkingDir,
-              lastActivityAt: new Date(effectiveLastActive).toISOString(),
+              lastActivityAt: act.last_activity_at,
+              activity: act.activity,
+              last_activity_at: act.last_activity_at,
+              idle_seconds: act.idle_seconds,
+              activity_source: act.activity_source,
             });
           } catch {}
 
           // Only alert when BOTH output has been quiet AND genuine progress has ceased for >= stuckThresholdMs
-          if (now - lastOutputTime >= stuckThresholdMs && now - lastActivityTime >= stuckThresholdMs) {
+          const now = Date.now();
+          if (now - lastOutputTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs) {
             stuckWarned = true;
             logWorker("WARN", `Task ${taskId} has produced no output or progress for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
             notify("agent-bridge", `Task ${taskId} 超过 ${Math.round(stuckThresholdMs / 1000)}s 无新输出或活动，可能已卡住 [${agentName}]`, {
@@ -1227,7 +1234,7 @@ async function executeTaskFile(
               }).catch(() => {});
             }
           }
-        }, 10000);
+        }, Math.min(10000, Math.max(250, Math.floor(stuckThresholdMs / 4))));
       }
 
       // Stall detection: no log output AND no work-dir change for AGENT_BRIDGE_STALL_MINUTES.
@@ -1269,21 +1276,27 @@ async function executeTaskFile(
         } catch {}
       };
 
+      let seenCancelRequested = false;
       // Check for control/<taskId>.cancel every 250ms (responsive cancellation)
       cancelCheckInterval = setInterval(() => {
         let cancelRequested = false;
         if (fs.existsSync(cancelFilePath)) {
+          cancelRequested = true;
           try {
             fs.unlinkSync(cancelFilePath);
           } catch {}
-          cancelRequested = true;
-        } else {
+        }
+        if (!cancelRequested) {
           try {
             const currentSt = readStatus(currentRoot, taskId);
             if (currentSt?.state === "cancelled") {
               cancelRequested = true;
             }
           } catch {}
+        }
+
+        if (cancelRequested) {
+          seenCancelRequested = true;
         }
 
         if (cancelRequested && !isCancelled) {
@@ -1307,7 +1320,6 @@ async function executeTaskFile(
 
       child.stdout?.on("data", (chunk) => {
         lastOutputTime = Date.now();
-        lastActivityTime = Date.now();
         stuckWarned = false;
         clearStall();
         const text = chunk.toString("utf8");
@@ -1315,11 +1327,17 @@ async function executeTaskFile(
         try {
           fs.appendFileSync(taskOutFilePath, text, "utf8");
         } catch {}
+        const extracted = extractSessionIdFromOutput(text);
+        sessionTracker.checkActivity({
+          extractedSessionId: extracted,
+          stdoutLen: stdoutData.length,
+          stderrLen: stderrData.length,
+          stuckThresholdMs,
+        });
       });
 
       child.stderr?.on("data", (chunk) => {
         lastOutputTime = Date.now();
-        lastActivityTime = Date.now();
         stuckWarned = false;
         clearStall();
         const errText = chunk.toString("utf8");
@@ -1327,6 +1345,11 @@ async function executeTaskFile(
         try {
           fs.appendFileSync(taskOutFilePath.replace(/\.out$/, ".err"), errText, "utf8");
         } catch {}
+        sessionTracker.checkActivity({
+          stdoutLen: stdoutData.length,
+          stderrLen: stderrData.length,
+          stuckThresholdMs,
+        });
       });
 
       child.on("error", (err) => {
@@ -1360,17 +1383,37 @@ async function executeTaskFile(
   let state: "completed" | "failed" | "cancelled" | "paused_quota" = "completed";
   let reason: string | undefined = undefined;
 
+  // Check cancellation before writing final result:
+  // status is cancelled, or control cancel file exists, or seenCancelRequested, or isCancelled
+  let wasCancelled = isCancelled || seenCancelRequested;
+  try {
+    if (fs.existsSync(cancelFilePath)) {
+      wasCancelled = true;
+      try { fs.unlinkSync(cancelFilePath); } catch {}
+    }
+  } catch {}
+  if (!wasCancelled) {
+    try {
+      const currentSt = readStatus(currentRoot, taskId);
+      if (currentSt?.state === "cancelled") {
+        wasCancelled = true;
+      }
+    } catch {}
+  }
+
   // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
   // Quota exhaustion takes precedence over agy early-exit fail-fast so sessions can be resumed after account switch.
   const isAgy = command.includes("agy") || agentName === "agy";
-  const failureKind = exitCode !== 0 && !isCancelled && !isTimeout
+  const failureKind = exitCode !== 0 && !wasCancelled && !isTimeout
     ? classifyAgentFailure(exitCode, stdoutData, stderrData)
     : "other";
   const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
-  if (isCancelled) {
+  if (wasCancelled) {
     status = "cancelled (cancelled by request)";
     state = "cancelled";
     reason = "cancelled by request";
+    isCancelled = true;
+    if (exitCode === null || exitCode === 0) exitCode = 1;
   } else if (isTimeout) {
     status = "failed (timeout)";
     state = "failed";
@@ -1461,12 +1504,17 @@ async function executeTaskFile(
     account: effectiveAccountAlias,
     startedAt,
     finishedAt,
-    exitCode,
+    exitCode: state === "cancelled" ? (exitCode ?? 1) : exitCode,
     ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
     ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
     logPath: taskOutFilePath,
-    ...(effectiveWorkingDir ? { workDir: effectiveWorkingDir } : {}),
+    workDir: effectiveWorkingDir,
+    lastActivityAt: finishedAt,
+    activity: "idle",
+    last_activity_at: finishedAt,
+    idle_seconds: 0,
+    activity_source: state === "cancelled" ? "cancelled" : "none",
     ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
   });
 

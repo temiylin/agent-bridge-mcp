@@ -95,8 +95,8 @@ export function getProcessTreeCpuTime(rootPid: number | undefined | null): numbe
 }
 
 /**
- * Scans agent sessions, conversation databases, brain scratch/annotations,
- * and working directory for the most recent modification time (in ms).
+ * Scans working directory or specified explicit directories for the most recent modification time (in ms).
+ * Global ~/.gemini and ~/.codex directories are excluded to avoid cross-task interference.
  */
 export function getAgentSessionOrProgressMtime(
   workDir?: string,
@@ -105,38 +105,17 @@ export function getAgentSessionOrProgressMtime(
   maxEntries = 2000
 ): number {
   let newest = 0;
-  const homedir = os.homedir();
-  const searchDirs = [
-    path.join(homedir, ".gemini", "antigravity-cli", "conversations"),
-    path.join(homedir, ".gemini", "antigravity-cli", "brain"),
-    path.join(homedir, ".gemini", "antigravity-cli", "log"),
-    path.join(homedir, ".codex", "sessions"),
-    path.join(homedir, ".codex"),
-    ...(extraDirs || []),
-  ];
-
-  for (const dir of searchDirs) {
+  for (const dir of (extraDirs || [])) {
     if (!fs.existsSync(dir)) continue;
     try {
       const st = fs.statSync(dir);
       if (st.mtimeMs > newest) newest = st.mtimeMs;
-      // Read top-level entries
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const ent of entries) {
         const fullPath = path.join(dir, ent.name);
         try {
           const m = fs.statSync(fullPath).mtimeMs;
           if (m > newest) newest = m;
-          // If it's a directory under brain (e.g. brain/<session-id>), check direct children
-          if (ent.isDirectory() && (dir.includes("brain") || dir.includes("sessions"))) {
-            const subEntries = fs.readdirSync(fullPath);
-            for (const sub of subEntries) {
-              try {
-                const sm = fs.statSync(path.join(fullPath, sub)).mtimeMs;
-                if (sm > newest) newest = sm;
-              } catch {}
-            }
-          }
         } catch {}
       }
     } catch {}
@@ -238,6 +217,10 @@ export function reconcileTaskStatus(rootDir: string, status: TaskStatusInfo, opt
     finishedAt,
     exitCode: null,
     reason,
+    activity: "idle",
+    last_activity_at: finishedAt,
+    idle_seconds: 0,
+    activity_source: "none",
     ...(logTail ? { logTail } : {}),
   };
   try {

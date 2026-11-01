@@ -9,6 +9,16 @@ export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "t
 
 export type WebhookPayloadStatus = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
 
+export const TERMINAL_WEBHOOK_STATUSES = new Set<string>([
+  "completed",
+  "failed",
+  "cancelled",
+  "timeout",
+  "paused_quota",
+]);
+
+const inMemoryDeliveredTerminalTasks = new Set<string>();
+
 export interface TaskWebhookConfig {
   url: string;
   headers?: Record<string, string>;
@@ -97,6 +107,11 @@ export function clearTaskWebhook(rootDir: string, taskId: string): boolean {
   if (fs.existsSync(targetPath)) {
     try {
       fs.unlinkSync(targetPath);
+      inMemoryDeliveredTerminalTasks.delete(taskId);
+      try {
+        const deliveredPath = path.join(webhooksDir, `${taskId}.delivered`);
+        if (fs.existsSync(deliveredPath)) fs.unlinkSync(deliveredPath);
+      } catch {}
       return true;
     } catch {
       return false;
@@ -254,6 +269,23 @@ export async function triggerTaskWebhook(
 
     if (!isPrEvent && !resolved.deliver) {
       return;
+    }
+
+    // Deduplicate terminal webhooks so each task fires at most once for terminal states
+    const isTerminal = !isPrEvent && (
+      TERMINAL_WEBHOOK_STATUSES.has(resolved.payloadStatus) ||
+      TERMINAL_WEBHOOK_STATUSES.has(terminalStatus.toLowerCase())
+    );
+    const webhooksDir = getWebhooksDir(rootDir);
+    const deliveredPath = path.join(webhooksDir, `${taskId}.delivered`);
+    if (isTerminal) {
+      if (inMemoryDeliveredTerminalTasks.has(taskId) || fs.existsSync(deliveredPath)) {
+        return;
+      }
+      inMemoryDeliveredTerminalTasks.add(taskId);
+      try {
+        fs.writeFileSync(deliveredPath, resolved.payloadStatus, "utf8");
+      } catch {}
     }
 
     // Extract last log snippet <= 200 chars

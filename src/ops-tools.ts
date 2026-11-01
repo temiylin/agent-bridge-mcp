@@ -54,11 +54,28 @@ export function registerOpsTools(
       const status = readReconciledStatus(rootDir, task_id);
       if (status) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: status.state });
+        const { logTail, ...sanitizedStatus } = status;
+        const now = Date.now();
+        const lastAct = sanitizedStatus.last_activity_at || sanitizedStatus.lastActivityAt;
+        const lastActMs = lastAct ? new Date(lastAct).getTime() : (sanitizedStatus.startedAt ? new Date(sanitizedStatus.startedAt).getTime() : now);
+        const idleSec = Math.max(0, Math.floor((now - lastActMs) / 1000));
+        if (sanitizedStatus.idle_seconds === undefined) {
+          sanitizedStatus.idle_seconds = idleSec;
+        }
+        if (!sanitizedStatus.activity) {
+          sanitizedStatus.activity = ACTIVE_STATES.includes(sanitizedStatus.state) && idleSec < 30 ? "active" : "idle";
+        }
+        if (!sanitizedStatus.last_activity_at && lastAct) {
+          sanitizedStatus.last_activity_at = lastAct;
+        }
+        if (!sanitizedStatus.activity_source) {
+          sanitizedStatus.activity_source = "none";
+        }
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(status, null, 2),
+              text: JSON.stringify(sanitizedStatus, null, 2),
             },
           ],
         };
@@ -81,7 +98,13 @@ export function registerOpsTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ taskId: task_id, state: "queued" }, null, 2),
+              text: JSON.stringify({
+                taskId: task_id,
+                state: "queued",
+                activity: "idle",
+                idle_seconds: 0,
+                activity_source: "none",
+              }, null, 2),
             },
           ],
         };
@@ -97,7 +120,13 @@ export function registerOpsTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ taskId: task_id, state: "completed" }, null, 2),
+                text: JSON.stringify({
+                  taskId: task_id,
+                  state: "completed",
+                  activity: "idle",
+                  idle_seconds: 0,
+                  activity_source: "none",
+                }, null, 2),
               },
             ],
           };
@@ -199,18 +228,28 @@ export function registerOpsTools(
       audit(rootDir, { tool: "cancel_task", taskId: task_id, state: "cancel_requested" });
       logger.info(`cancel_task: wrote control file for taskId=${task_id}`);
 
-      // Immediately signal active agent process and mark status to prevent flicker
-      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
-        try {
-          writeStatus(rootDir, task_id, {
-            ...currentStatus,
-            state: "cancelled",
-            reason: "cancelled by request",
-          });
-        } catch {}
+      // Persist status as cancelled BEFORE killing process
+      try {
+        const existingStatus = readStatus(rootDir, task_id) || {};
+        writeStatus(rootDir, task_id, {
+          taskId: task_id,
+          ...existingStatus,
+          state: "cancelled",
+          reason: "cancelled by request",
+          activity: "idle",
+        });
+      } catch {}
 
+      // Immediately signal active agent process
+      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
         if (currentStatus.pid && isPidAlive(currentStatus.pid)) {
           const childPid = currentStatus.pid;
+          const logMsg = `[${new Date().toISOString()}] [WARN] Task ${task_id} cancellation requested. Sending SIGTERM to process.\n`;
+          try {
+            const logsDir = path.join(rootDir, "logs");
+            if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+            fs.appendFileSync(path.join(logsDir, "worker.log"), logMsg, "utf8");
+          } catch {}
           const isWin = process.platform === "win32";
           if (isWin) {
             try {

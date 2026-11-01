@@ -27,6 +27,14 @@ export interface TaskStatusInfo {
   logPath?: string;
   workDir?: string;
   lastActivityAt?: string;
+  /** Activity status: active or idle */
+  activity?: "active" | "idle";
+  /** Last activity timestamp in ISO format */
+  last_activity_at?: string;
+  /** Idle duration in seconds */
+  idle_seconds?: number;
+  /** Activity signal source: stdout | stderr | session_log | cpu | workdir | none */
+  activity_source?: string;
   /** Last lines of the task log when the task failed or stalled. */
   logTail?: string;
 }
@@ -73,6 +81,10 @@ export function writeStatus(
     ...(info.logPath ? { logPath: info.logPath } : {}),
     ...(info.workDir ? { workDir: info.workDir } : {}),
     ...(info.lastActivityAt ? { lastActivityAt: info.lastActivityAt } : {}),
+    ...(info.activity ? { activity: info.activity } : {}),
+    ...(info.last_activity_at ? { last_activity_at: info.last_activity_at } : (info.lastActivityAt ? { last_activity_at: info.lastActivityAt } : {})),
+    ...(info.idle_seconds !== undefined ? { idle_seconds: info.idle_seconds } : {}),
+    ...(info.activity_source ? { activity_source: info.activity_source } : {}),
     ...(info.logTail ? { logTail: info.logTail } : {}),
   };
 

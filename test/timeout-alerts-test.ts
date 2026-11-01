@@ -9,7 +9,9 @@ import {
   triggerTaskWebhook,
 } from "../src/webhook.js";
 import { resolveHardKillTimeoutMs, HARD_KILL_SAFETY_CAP_MS } from "../src/worker.js";
-import { getAgentSessionOrProgressMtime, getProcessTreeCpuTime, getDescendantPids } from "../src/task-reconcile.js";
+import { getAgentSessionOrProgressMtime, getProcessTreeCpuTime, getDescendantPids, readReconciledStatus } from "../src/task-reconcile.js";
+import { TaskSessionTracker, getNonEmptyCrashLog } from "../src/session-tracker.js";
+import { writeStatus, readStatus } from "../src/status.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-timeout-alerts-test";
 
@@ -198,8 +200,8 @@ block
       "utf8"
     );
 
-    await waitForFile(path.join(resultsDir, `${hardTaskId}.md`), 20000);
-    await waitForCondition(() => webhookHits.some((h) => h.taskId === hardTaskId), 5000);
+    await waitForCondition(() => webhookHits.some((h) => h.taskId === hardTaskId), 20000);
+    await waitForFile(path.join(resultsDir, `${hardTaskId}.md`), 10000);
     assert.equal(webhookHits.filter((h) => h.taskId === hardTaskId).length, 1);
     assert.equal(webhookHits[0].status, "timeout");
     console.log("✓ Test C passed.\n");
@@ -229,8 +231,9 @@ block
       "utf8"
     );
 
-    await waitForFile(path.join(resultsDir, `${fallbackTaskId}.md`), 20000);
-    await waitForCondition(() => webhookHits.some((h) => h.taskId === fallbackTaskId), 5000);
+    await waitForCondition(() => webhookHits.some((h) => h.taskId === fallbackTaskId), 20000);
+    await waitForFile(path.join(resultsDir, `${fallbackTaskId}.md`), 10000);
+    assert.equal(webhookHits.filter((h) => h.taskId === fallbackTaskId).length, 1);
     assert.equal(webhookHits[0].status, "failed");
     console.log("✓ Test D passed.\n");
 
@@ -262,6 +265,112 @@ block
     const currentDesc = getDescendantPids(process.pid);
     assert.ok(Array.isArray(currentDesc), "Descendant pids returns an array");
     console.log("✓ Test F passed.\n");
+
+    // -------------------------------------------------------------------------
+    // [Test G] Normal 0-byte crash log is ignored; non-empty crash log is detected
+    // -------------------------------------------------------------------------
+    console.log("[Test G] Verify 0-byte crash logs are ignored");
+    const fakeCliHome = path.join(TEST_ROOT, "fake-cli-home");
+    const crashesDir = path.join(fakeCliHome, "crashes");
+    fs.mkdirSync(crashesDir, { recursive: true });
+    const normalEmptyCrash = path.join(crashesDir, "crash_12345_normal.log");
+    fs.writeFileSync(normalEmptyCrash, "", "utf8"); // 0 bytes
+    assert.equal(getNonEmptyCrashLog(fakeCliHome, 12345), null, "0-byte crash log must NOT be considered a crash");
+
+    const realCrash = path.join(crashesDir, "crash_54321_fatal.log");
+    fs.writeFileSync(realCrash, "FATAL UNCAUGHT EXCEPTION\n", "utf8");
+    assert.equal(getNonEmptyCrashLog(fakeCliHome, 54321), realCrash, "Non-empty crash log must be recognized");
+    console.log("✓ Test G passed: 0-byte crash logs ignored correctly.\n");
+
+    // -------------------------------------------------------------------------
+    // [Test H] Bound session log growth prevents stuck alert
+    // -------------------------------------------------------------------------
+    console.log("[Test H] Bound session log growth prevents stuck alert");
+    const fakeAgyHome = path.join(TEST_ROOT, "fake-agy-tracker");
+    process.env.GEMINI_CLI_HOME = fakeAgyHome;
+    const convAId = "conv-session-task-A";
+    const brainDirA = path.join(fakeAgyHome, "brain", convAId, ".system_generated", "logs");
+    fs.mkdirSync(brainDirA, { recursive: true });
+    const transcriptA = path.join(brainDirA, "transcript.jsonl");
+    fs.writeFileSync(transcriptA, JSON.stringify({ step: 0, cwd: "/tmp/projectA" }) + "\n", "utf8");
+
+    const trackerA = new TaskSessionTracker({
+      taskId: "task_tracker_A",
+      agentName: "agy",
+      command: "agy",
+      workDir: "/tmp/projectA",
+      sessionId: convAId,
+    });
+
+    const actInitial = trackerA.checkActivity({ stuckThresholdMs: 2000 });
+    assert.equal(actInitial.hasActivity, false);
+    assert.equal(actInitial.activity_source, "none");
+
+    // Simulate task quiet output but background transcript growth
+    await new Promise((r) => setTimeout(r, 600));
+    fs.appendFileSync(transcriptA, JSON.stringify({ step: 1, tool: "edit_file" }) + "\n", "utf8");
+
+    const actAfterGrowth = trackerA.checkActivity({ stuckThresholdMs: 2000 });
+    assert.equal(actAfterGrowth.hasActivity, true, "Growth in bound transcript must register as activity");
+    assert.equal(actAfterGrowth.activity_source, "session_log");
+    assert.equal(actAfterGrowth.activity, "active");
+    assert.ok(actAfterGrowth.idle_seconds <= 1, "Idle seconds reset on transcript append");
+    console.log("✓ Test H passed: Session log growth keeps task active without stuck alert.\n");
+
+    // -------------------------------------------------------------------------
+    // [Test I] Quiet log and stationary CPU triggers stuck / idle
+    // -------------------------------------------------------------------------
+    console.log("[Test I] Quiet log and stationary CPU triggers stuck / idle");
+    const trackerIdle = new TaskSessionTracker({
+      taskId: "task_tracker_idle",
+      agentName: "custom-worker",
+      startedAtMs: Date.now() - 5000,
+    });
+
+    const actIdle = trackerIdle.checkActivity({ stuckThresholdMs: 2000 });
+    assert.equal(actIdle.hasActivity, false, "No activity on stationary tracker");
+    assert.equal(actIdle.activity, "idle", "Must transition to idle when time exceeds cutoff");
+    assert.ok(actIdle.idle_seconds >= 2, "idle_seconds must be >= 2");
+    console.log("✓ Test I passed: Stationary session transitions to idle / stuck.\n");
+
+    // -------------------------------------------------------------------------
+    // [Test J] Task A session growth does NOT affect Task B stuck judgment
+    // -------------------------------------------------------------------------
+    console.log("[Test J] Task A session growth does NOT affect Task B judgment");
+    const convBId = "conv-session-task-B";
+    const brainDirB = path.join(fakeAgyHome, "brain", convBId, ".system_generated", "logs");
+    fs.mkdirSync(brainDirB, { recursive: true });
+    const transcriptB = path.join(brainDirB, "transcript.jsonl");
+    fs.writeFileSync(transcriptB, JSON.stringify({ step: 0, cwd: "/tmp/projectB" }) + "\n", "utf8");
+
+    const trackerB = new TaskSessionTracker({
+      taskId: "task_tracker_B",
+      agentName: "agy",
+      command: "agy",
+      workDir: "/tmp/projectB",
+      sessionId: convBId,
+      startedAtMs: Date.now() - 4000,
+    });
+
+    // Task B initially checked
+    trackerB.checkActivity({ stuckThresholdMs: 2000 });
+
+    // Now actively write to Task A's session file
+    await new Promise((r) => setTimeout(r, 600));
+    fs.appendFileSync(transcriptA, JSON.stringify({ step: 2, action: "compile" }) + "\n", "utf8");
+
+    // Check Task A: active
+    const checkA = trackerA.checkActivity({ stuckThresholdMs: 2000 });
+    assert.equal(checkA.hasActivity, true);
+    assert.equal(checkA.activity, "active");
+
+    // Check Task B: must NOT have seen activity from Task A
+    const checkB = trackerB.checkActivity({ stuckThresholdMs: 2000 });
+    assert.equal(checkB.hasActivity, false, "Task A's transcript growth must NOT register as Task B's activity");
+    assert.equal(checkB.activity, "idle", "Task B must remain idle despite Task A activity");
+    console.log("✓ Test J passed: Task A session activity is strictly isolated from Task B.\n");
+
+    delete process.env.GEMINI_CLI_HOME;
   } finally {
     workerProcess.kill("SIGTERM");
     callbackServer.close();
