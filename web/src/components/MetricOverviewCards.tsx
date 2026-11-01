@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/appStore';
 
 export const MetricOverviewCards: React.FC = () => {
   const { t } = useTranslation();
-  const { tasks, filterStatus, setFilterStatus } = useAppStore();
+  const { allTasks, filterStatus, setFilterStatus } = useAppStore();
 
   const now = new Date();
   const todayYMD = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -16,7 +16,7 @@ export const MetricOverviewCards: React.FC = () => {
   let completedToday = 0;
   let failedToday = 0;
 
-  tasks.forEach((t) => {
+  allTasks.forEach((t) => {
     if (t.status === 'running') running++;
     else if (t.status === 'queued') queued++;
     else if (t.status === 'paused_quota' || t.status === 'paused') pausedQuota++;

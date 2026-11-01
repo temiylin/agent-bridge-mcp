@@ -60,16 +60,16 @@ export const QuotaOverviewStrip: React.FC = () => {
                   key={acc.email}
                   className="bg-base-100 p-3.5 rounded-xl border border-base-300 flex flex-col gap-2 hover:border-primary/40 transition-colors"
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 font-bold text-xs truncate max-w-[180px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold text-xs truncate flex-1">
                       {acc.cockpit_current && (
-                        <span title="当前 Cockpit 活跃主账号" className="inline-flex">
-                          <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
+                        <span title="当前 Cockpit 活跃主账号" className="inline-flex shrink-0">
+                          <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
                         </span>
                       )}
                       <span className="truncate">{acc.email}</span>
                     </div>
-                    <span className={`font-mono text-xs font-bold ${textColor}`}>
+                    <span className={`font-mono text-xs font-bold shrink-0 ${textColor}`}>
                       {pct}%
                     </span>
                   </div>
@@ -81,17 +81,17 @@ export const QuotaOverviewStrip: React.FC = () => {
                   ></progress>
 
                   <div className="flex items-center justify-between text-[11px] text-base-content/60">
-                    <div>
+                    <div className="shrink-0">
                       {isPaused ? (
-                        <span className="text-purple-400 font-medium">⏸ 暂停中</span>
+                        <span className="badge badge-xs badge-secondary font-medium">⏸ 暂停</span>
                       ) : pct <= 5 ? (
-                        <span className="text-rose-400 font-medium">⚠ 额度耗尽</span>
+                        <span className="text-rose-400 font-medium">⚠ 耗尽</span>
                       ) : (
                         <span className="text-emerald-400">● 正常</span>
                       )}
                     </div>
                     {acc.reset_time && (
-                      <span className="font-mono text-[10px]">
+                      <span className="font-mono text-[10px] text-base-content/40 truncate text-right ml-2">
                         重置: {formatTime(acc.reset_time)}
                       </span>
                     )}

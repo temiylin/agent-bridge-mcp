@@ -198,10 +198,10 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                     statusLabel = '✕ 异常';
                   } else if (task.status === 'paused_quota') {
                     badgeClass = 'badge-secondary';
-                    statusLabel = '⏸ 额度暂停';
+                    statusLabel = '额度暂停';
                   } else if (task.status === 'paused') {
                     badgeClass = 'badge-secondary';
-                    statusLabel = '⏸ 挂起';
+                    statusLabel = '队列挂起';
                   }
 
                   return (
@@ -214,9 +214,9 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           onChange={() => toggleSelectTask(task.taskId)}
                         />
                       </td>
-                      <td>
+                      <td className="py-2.5">
                         <span
-                          className="font-mono text-xs text-primary font-bold cursor-pointer hover:underline"
+                          className="font-mono text-xs text-primary font-bold cursor-pointer hover:underline block"
                           title="点击复制 Task ID"
                           onClick={() => {
                             navigator.clipboard.writeText(task.taskId);
@@ -226,7 +226,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           {task.taskId}
                         </span>
                         {task.account && (
-                          <div className="text-[10px] text-base-content/40 truncate max-w-[140px]" title={task.account}>
+                          <div className="text-[11px] font-mono text-base-content/40 truncate max-w-[160px] mt-0.5" title={task.account}>
                             {task.account.replace('default:', '')}
                           </div>
                         )}
@@ -243,15 +243,15 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                         )}
                       </td>
                       <td>
-                        <span className={`badge badge-sm ${badgeClass} font-semibold text-[11px]`}>
+                        <span className={`badge badge-sm ${badgeClass} font-medium text-[11px] whitespace-nowrap px-2.5 py-1`}>
                           {statusLabel}
                         </span>
                       </td>
                       <td className="text-xs">{formatActivityAgo(task.last_activity_at || task.created_at)}</td>
-                      <td className="text-[11px] font-mono text-base-content/70">
+                      <td className="text-[11px] font-mono text-base-content/70 whitespace-nowrap">
                         {formatTime(task.created_at)}
                       </td>
-                      <td className="text-[11px] font-mono text-base-content/70">
+                      <td className="text-[11px] font-mono text-base-content/70 whitespace-nowrap">
                         {task.status === 'running' ? (
                           <span className="text-info font-sans">进行中 {task.elapsed && `(${task.elapsed})`}</span>
                         ) : (
@@ -287,18 +287,18 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                         )}
                       </td>
                       <td className="text-right">
-                        <div className="join gap-0.5 justify-end">
+                        <div className="flex items-center justify-end gap-1">
                           {/* Details & Logs */}
                           <button
-                            className="btn btn-ghost btn-xs"
-                            title="查看完整详情"
+                            className="btn btn-ghost btn-xs btn-square text-base-content/70 hover:text-primary"
+                            title="查看详情"
                             onClick={() => onOpenDetails(task.taskId)}
                           >
                             <FileText className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            className="btn btn-ghost btn-xs"
-                            title="查看最新尾部日志"
+                            className="btn btn-ghost btn-xs btn-square text-base-content/70 hover:text-primary"
+                            title="查看实时尾部日志"
                             onClick={() => onOpenLogs(task.taskId)}
                           >
                             <Terminal className="w-3.5 h-3.5" />
@@ -307,7 +307,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           {/* State buttons */}
                           {task.status === 'running' && (
                             <button
-                              className="btn btn-ghost btn-xs text-rose-400"
+                              className="btn btn-ghost btn-xs btn-square text-rose-400 hover:bg-rose-500/10"
                               title="取消任务"
                               onClick={() => cancelTask(task.taskId)}
                             >
@@ -318,21 +318,21 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           {(task.status === 'paused_quota' || task.status === 'paused') && (
                             <>
                               <button
-                                className="btn btn-ghost btn-xs text-emerald-400"
+                                className="btn btn-ghost btn-xs btn-square text-emerald-400 hover:bg-emerald-500/10"
                                 title="续跑任务"
                                 onClick={() => onOpenRetry(task, 'continue')}
                               >
                                 <Play className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                className="btn btn-ghost btn-xs text-sky-400"
+                                className="btn btn-ghost btn-xs btn-square text-sky-400 hover:bg-sky-500/10"
                                 title="换号改派"
                                 onClick={() => onOpenRetry(task, 'switch_account')}
                               >
                                 <UserCheck className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                className="btn btn-ghost btn-xs text-rose-400"
+                                className="btn btn-ghost btn-xs btn-square text-rose-400 hover:bg-rose-500/10"
                                 title="取消"
                                 onClick={() => cancelTask(task.taskId)}
                               >
@@ -344,14 +344,14 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           {(task.status === 'failed' || task.state === 'cancelled') && (
                             <>
                               <button
-                                className="btn btn-ghost btn-xs text-emerald-400"
+                                className="btn btn-ghost btn-xs btn-square text-emerald-400 hover:bg-emerald-500/10"
                                 title="从头重试"
                                 onClick={() => onOpenRetry(task, 'continue')}
                               >
                                 <RotateCcw className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                className="btn btn-ghost btn-xs text-rose-400"
+                                className="btn btn-ghost btn-xs btn-square text-rose-400 hover:bg-rose-500/10"
                                 title="归档删除此任务"
                                 onClick={() => archiveTask(task.taskId, false)}
                               >
@@ -362,7 +362,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
 
                           {task.status === 'completed' && (
                             <button
-                              className="btn btn-ghost btn-xs text-base-content/40 hover:text-error"
+                              className="btn btn-ghost btn-xs btn-square text-base-content/40 hover:text-error"
                               title="归档任务"
                               onClick={() => archiveTask(task.taskId, false)}
                             >
@@ -371,7 +371,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           )}
 
                           <button
-                            className="btn btn-ghost btn-xs text-base-content/40 hover:text-primary"
+                            className="btn btn-ghost btn-xs btn-square text-base-content/40 hover:text-primary"
                             title="复制提示词"
                             onClick={() => copyPrompt(task.taskId)}
                           >

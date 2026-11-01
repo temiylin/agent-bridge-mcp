@@ -76,7 +76,7 @@ const resources = {
       batchArchiveCleanWorktree: '批量归档 + 清理 Worktree',
 
       // Quota Strip
-      quotaTitle: '👥 账号池额度概览 (Read-Only Quota Overview)',
+      quotaTitle: '账号池额度概览 (Quota Overview)',
       quotaSubtitle: '实时汇总本地 Cockpit 与 Profile 账号 5 小时窗口可用额度与重置时间。',
       quotaNormal: '正常',
       quotaExhausted: '额度耗尽',

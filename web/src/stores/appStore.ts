@@ -22,6 +22,7 @@ interface AppStore {
 
   // Tasks
   tasks: TaskItem[];
+  allTasks: TaskItem[];
   filterStatus: string;
   setFilterStatus: (st: string) => void;
   selectedTaskIds: Set<string>;
@@ -61,6 +62,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   config: null,
   systemStats: null,
   tasks: [],
+  allTasks: [],
   filterStatus: 'active',
   selectedTaskIds: new Set(),
   poolAccounts: [],
@@ -161,14 +163,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     try {
-      let url = '/api/recent-tasks';
-      if (filter !== 'active' && filter !== 'all') {
-        url += `?status=${encodeURIComponent(filter)}`;
-      }
-      const res = await fetch(url);
+      const res = await fetch('/api/recent-tasks');
       if (res.ok) {
         const data = await res.json();
         const all: TaskItem[] = data.tasks || [];
+        set({ allTasks: all });
+
         if (filter === 'active') {
           const activeTasks = all.filter(
             (t) =>
@@ -178,8 +178,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
               t.status === 'paused_quota'
           );
           set({ tasks: activeTasks });
-        } else {
+        } else if (filter === 'all') {
           set({ tasks: all });
+        } else {
+          set({ tasks: all.filter((t) => t.status === filter) });
         }
       }
     } catch (err) {
