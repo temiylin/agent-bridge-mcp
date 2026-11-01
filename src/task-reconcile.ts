@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { readStatus, writeStatus, TaskStatusInfo, ACTIVE_STATES } from "./status.js";
 import { isValidTaskId } from "./validator.js";
 
@@ -12,6 +14,140 @@ export function isPidAlive(pid: number | undefined | null): boolean {
   } catch (err: any) {
     return err?.code === "EPERM";
   }
+}
+
+/**
+ * Returns all descendant process IDs of a given root process.
+ */
+export function getDescendantPids(rootPid: number | undefined | null): number[] {
+  if (!rootPid || !Number.isFinite(rootPid) || rootPid <= 0) return [];
+  try {
+    const res = spawnSync("ps", ["-eo", "pid,ppid"], { encoding: "utf8" });
+    if (res.status !== 0 || !res.stdout) return [];
+    const lines = res.stdout.trim().split("\n").slice(1);
+    const parentToChildren = new Map<number, number[]>();
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        const pid = parseInt(parts[0], 10);
+        const ppid = parseInt(parts[1], 10);
+        if (Number.isFinite(pid) && Number.isFinite(ppid)) {
+          if (!parentToChildren.has(ppid)) parentToChildren.set(ppid, []);
+          parentToChildren.get(ppid)!.push(pid);
+        }
+      }
+    }
+    const descendants: number[] = [];
+    const queue = [rootPid];
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const children = parentToChildren.get(curr) || [];
+      for (const ch of children) {
+        descendants.push(ch);
+        queue.push(ch);
+      }
+    }
+    return descendants;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Parses CPU time formatted as [[HH:]MM:]SS[.cc] into total seconds.
+ */
+export function parseCpuTimeToSeconds(timeStr: string | undefined | null): number {
+  if (!timeStr) return 0;
+  const parts = timeStr.trim().split(":");
+  if (parts.length === 2) {
+    return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+  } else if (parts.length === 3) {
+    return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+  }
+  return parseFloat(timeStr) || 0;
+}
+
+/**
+ * Retrieves total accumulated CPU time in seconds for a process and all its child processes.
+ */
+export function getProcessTreeCpuTime(rootPid: number | undefined | null): number {
+  if (!rootPid || !Number.isFinite(rootPid) || rootPid <= 0) return 0;
+  const allPids = [rootPid, ...getDescendantPids(rootPid)];
+  try {
+    const res = spawnSync("ps", ["-eo", "pid,cputime"], { encoding: "utf8" });
+    if (res.status !== 0 || !res.stdout) return 0;
+    const targetPidSet = new Set(allPids);
+    let totalCpuSeconds = 0;
+    const lines = res.stdout.trim().split("\n").slice(1);
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        const pid = parseInt(parts[0], 10);
+        if (targetPidSet.has(pid)) {
+          totalCpuSeconds += parseCpuTimeToSeconds(parts[1]);
+        }
+      }
+    }
+    return totalCpuSeconds;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Scans agent sessions, conversation databases, brain scratch/annotations,
+ * and working directory for the most recent modification time (in ms).
+ */
+export function getAgentSessionOrProgressMtime(
+  workDir?: string,
+  extraDirs?: string[],
+  maxDepth = 3,
+  maxEntries = 2000
+): number {
+  let newest = 0;
+  const homedir = os.homedir();
+  const searchDirs = [
+    path.join(homedir, ".gemini", "antigravity-cli", "conversations"),
+    path.join(homedir, ".gemini", "antigravity-cli", "brain"),
+    path.join(homedir, ".gemini", "antigravity-cli", "log"),
+    path.join(homedir, ".codex", "sessions"),
+    path.join(homedir, ".codex"),
+    ...(extraDirs || []),
+  ];
+
+  for (const dir of searchDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const st = fs.statSync(dir);
+      if (st.mtimeMs > newest) newest = st.mtimeMs;
+      // Read top-level entries
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const ent of entries) {
+        const fullPath = path.join(dir, ent.name);
+        try {
+          const m = fs.statSync(fullPath).mtimeMs;
+          if (m > newest) newest = m;
+          // If it's a directory under brain (e.g. brain/<session-id>), check direct children
+          if (ent.isDirectory() && (dir.includes("brain") || dir.includes("sessions"))) {
+            const subEntries = fs.readdirSync(fullPath);
+            for (const sub of subEntries) {
+              try {
+                const sm = fs.statSync(path.join(fullPath, sub)).mtimeMs;
+                if (sm > newest) newest = sm;
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  if (workDir && fs.existsSync(workDir)) {
+    const wtMtime = newestMtime(workDir, maxDepth, maxEntries);
+    if (wtMtime > newest) newest = wtMtime;
+  }
+
+  return newest;
 }
 
 /** Last N non-empty lines of logs/<id>.out and logs/<id>.err (stdout and stderr). */

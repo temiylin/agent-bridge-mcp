@@ -504,7 +504,19 @@ Because conversational history in Antigravity lives locally on the machine rathe
 
 If `timeout_seconds` is **omitted**, there is **no shorter implicit hard kill**: the worker applies a **6 hour safety cap** (or `AGENT_BRIDGE_TIMEOUT_MS` when set higher). Soft overdue settings must **not** be treated as a hard kill (legacy task files that only had `**Timeout Seconds**` in the header are interpreted as soft overdue).
 
-`on_complete.events` supports `completed`, `failed`, `pr_opened`, `stalled`, `timeout`, `stuck`, and `overdue` (default: `["completed","failed"]`).
+`on_complete.events` supports `completed`, `failed`, `pr_opened`, `stalled`, `timeout`, `stuck`, `overdue`, and `cancelled` (default: `["completed","failed"]`).
+
+### Task Cancellation & Final Statuses
+
+When `cancel_task` is called:
+1. Cancellation is marked immediately in task status (`state: "cancelled"`), preventing UI/caller flicker between `running` and `cancelled`.
+2. The agent process tree receives `SIGTERM`, escalating to `SIGKILL` within a short 2-second grace period if still unresponsive.
+3. For intentional cancels, a single terminal webhook/callback event is emitted with `status: "cancelled"` (or falls back to `"failed"` with reason `"cancelled by request"` if the webhook subscription only listens to `"failed"`). No duplicate noisy failure/cancel events are emitted.
+4. **Callers should expect the final task state**:
+   - `get_task_status`: `state: "cancelled"`, `reason: "cancelled by request"`
+   - `results/<taskId>.md`: `status: "cancelled (cancelled by request)"`
+   - `callback_url` payload: `status: "cancelled"`, `exitCode: 1`
+   - `on_complete` webhook: `status: "cancelled"` (when `cancelled` is subscribed) or `status: "failed"` (when `failed` is subscribed)
 
 ### Opt-In Per-Task Completion Webhooks
 > **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` such as `["completed","failed","timeout","overdue"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.

@@ -166,7 +166,20 @@ async function runTests() {
   const symlinkPath = path.join(wtResult.worktreeDir, "node_modules");
   assert.strictEqual(fs.existsSync(symlinkPath), true);
   assert.strictEqual(fs.lstatSync(symlinkPath).isSymbolicLink(), true);
-  console.log("✓ Test 4 passed: Git worktree created and node_modules directory symlinked.");
+
+  // Failure cases: missing base branch / create failure must throw loudly
+  assert.throws(
+    () => {
+      setupGitWorktree({
+        repoDir: gitRepoDir,
+        worktreeName: "fail-wt-missing-base",
+        worktreeRoot: customWtRoot,
+        baseBranch: "origin/nonexistent_branch_definitely_missing_12345",
+      });
+    },
+    /git worktree add failed/
+  );
+  console.log("✓ Test 4 passed: Git worktree created and node_modules directory symlinked (and missing base branch throws loudly).");
 
   // -------------------------------------------------------------------------
   // 5. Security & Device token resolution

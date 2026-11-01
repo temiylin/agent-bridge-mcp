@@ -145,7 +145,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           url: z.string().describe("Destination webhook URL (must be http/https)"),
           headers: z.record(z.string(), z.string()).optional().describe("Optional custom HTTP headers"),
           events: z
-            .array(z.enum(["completed", "failed", "pr_opened", "stalled", "timeout", "stuck", "overdue"]))
+            .array(z.enum(["completed", "failed", "pr_opened", "stalled", "timeout", "stuck", "overdue", "cancelled"]))
             .optional()
             .describe("Events to trigger webhook on (default: ['completed', 'failed'])"),
           secret: z.string().optional().describe("Optional shared secret for HMAC-SHA256 signature in X-Agent-Bridge-Signature header"),

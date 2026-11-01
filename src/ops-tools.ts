@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
-import { readStatus, ACTIVE_STATES } from "./status.js";
-import { readReconciledStatus, reconcileTaskStatus } from "./task-reconcile.js";
+import { readStatus, writeStatus, ACTIVE_STATES } from "./status.js";
+import { readReconciledStatus, reconcileTaskStatus, isPidAlive, getDescendantPids } from "./task-reconcile.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 
@@ -197,6 +198,32 @@ export function registerOpsTools(
       fs.writeFileSync(cancelFilePath, new Date().toISOString(), "utf8");
       audit(rootDir, { tool: "cancel_task", taskId: task_id, state: "cancel_requested" });
       logger.info(`cancel_task: wrote control file for taskId=${task_id}`);
+
+      // Immediately signal active agent process and mark status to prevent flicker
+      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
+        try {
+          writeStatus(rootDir, task_id, {
+            ...currentStatus,
+            state: "cancelled",
+            reason: "cancelled by request",
+          });
+        } catch {}
+
+        if (currentStatus.pid && isPidAlive(currentStatus.pid)) {
+          const childPid = currentStatus.pid;
+          const isWin = process.platform === "win32";
+          if (isWin) {
+            try {
+              spawnSync("taskkill", ["/T", "/PID", String(childPid)], { windowsHide: true });
+            } catch {}
+          } else {
+            const allPids = [childPid, ...getDescendantPids(childPid)];
+            for (const p of allPids) {
+              try { process.kill(p, "SIGTERM"); } catch {}
+            }
+          }
+        }
+      }
 
       return {
         content: [

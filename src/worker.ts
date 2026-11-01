@@ -7,7 +7,14 @@ import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
 import { loadAgents, AgentRegistry, AgentConfig, agentSupportsEffort } from "./agents.js";
-import { reconcileAllTasks, newestMtime, getStallThresholdMs } from "./task-reconcile.js";
+import {
+  reconcileAllTasks,
+  newestMtime,
+  getStallThresholdMs,
+  getDescendantPids,
+  getProcessTreeCpuTime,
+  getAgentSessionOrProgressMtime,
+} from "./task-reconcile.js";
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
@@ -878,10 +885,58 @@ async function executeTaskFile(
   let isCancelled = false;
   let exitCode: number | null = null;
 
+  // Prepare incremental stdout file in logs/<task_id>.out
+  const taskLogsDir = path.join(currentRoot, "logs");
+  const taskOutFilePath = path.join(taskLogsDir, `${taskId}.out`);
+  try {
+    if (!fs.existsSync(taskLogsDir)) fs.mkdirSync(taskLogsDir, { recursive: true });
+    fs.writeFileSync(taskOutFilePath, "", "utf8");
+  } catch {}
+
   let effectiveWorkingDir = projectDir && fs.existsSync(projectDir) ? projectDir : undefined;
 
   // Worktree setup if requested
-  if (worktreeName && effectiveWorkingDir) {
+  if (worktreeName) {
+    if (!effectiveWorkingDir) {
+      const errMsg = `Worktree requested ("${worktreeName}"), but no valid project directory or repository path was resolved (projectDir="${projectDir || ""}"). Cannot create worktree without base repo.`;
+      const fin = new Date().toISOString();
+      writeResultFile(resultsDir, taskId, "failed (worktree setup failed)", agentName, startedAt, fin, 1, "", errMsg);
+      writeStatus(currentRoot, taskId, {
+        state: "failed",
+        agent: agentName,
+        model,
+        account: effectiveAccountAlias,
+        startedAt,
+        finishedAt: fin,
+        exitCode: 1,
+        reason: errMsg,
+      });
+      releaseAccount();
+      process.removeListener("exit", releaseAccount);
+      saveProcessedTask(processedMap, taskId, fin);
+      audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
+      logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
+      notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+      if (callbackUrl) {
+        sendCompletionCallback({
+          url: callbackUrl,
+          headers: callbackHeaders,
+          taskId,
+          agent: agentName,
+          status: "failed",
+          exitCode: 1,
+          durationSeconds: 0,
+          resultPath: path.join(resultsDir, `${taskId}.md`),
+          logPath: taskOutFilePath,
+          project: projectName || projectId,
+          logger: logWorker,
+        }).catch(() => {});
+      }
+      try { onTaskFinished(currentRoot, taskId, "failed", activeSessionId || sessionId, errMsg); } catch {}
+      try { triggerTaskWebhook(currentRoot, taskId, "failed", activeSessionId || sessionId, 0).catch(() => {}); } catch {}
+      return true;
+    }
+
     try {
       const projConfig = loadProjectsConfig(currentRoot);
       const matchedProj = Object.values(projConfig.projects).find(
@@ -898,7 +953,43 @@ async function executeTaskFile(
       effectiveWorkingDir = wtRes.worktreeDir;
       logWorker("INFO", `Task ${taskId} executing inside git worktree: ${effectiveWorkingDir}`);
     } catch (wtErr: any) {
-      logWorker("WARN", `Failed to setup git worktree "${worktreeName}": ${wtErr?.message || String(wtErr)}`);
+      const errMsg = `Failed to setup git worktree "${worktreeName}": ${wtErr?.message || String(wtErr)}`;
+      const fin = new Date().toISOString();
+      writeResultFile(resultsDir, taskId, "failed (worktree setup failed)", agentName, startedAt, fin, 1, "", errMsg);
+      writeStatus(currentRoot, taskId, {
+        state: "failed",
+        agent: agentName,
+        model,
+        account: effectiveAccountAlias,
+        startedAt,
+        finishedAt: fin,
+        exitCode: 1,
+        reason: errMsg,
+      });
+      releaseAccount();
+      process.removeListener("exit", releaseAccount);
+      saveProcessedTask(processedMap, taskId, fin);
+      audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
+      logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
+      notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+      if (callbackUrl) {
+        sendCompletionCallback({
+          url: callbackUrl,
+          headers: callbackHeaders,
+          taskId,
+          agent: agentName,
+          status: "failed",
+          exitCode: 1,
+          durationSeconds: 0,
+          resultPath: path.join(resultsDir, `${taskId}.md`),
+          logPath: taskOutFilePath,
+          project: projectName || projectId,
+          logger: logWorker,
+        }).catch(() => {});
+      }
+      try { onTaskFinished(currentRoot, taskId, "failed", activeSessionId || sessionId, errMsg); } catch {}
+      try { triggerTaskWebhook(currentRoot, taskId, "failed", activeSessionId || sessionId, 0).catch(() => {}); } catch {}
+      return true;
     }
   }
 
@@ -911,14 +1002,6 @@ async function executeTaskFile(
       }
     } catch {}
   }
-
-  // Prepare incremental stdout file in logs/<task_id>.out
-  const taskLogsDir = path.join(currentRoot, "logs");
-  const taskOutFilePath = path.join(taskLogsDir, `${taskId}.out`);
-  try {
-    if (!fs.existsSync(taskLogsDir)) fs.mkdirSync(taskLogsDir, { recursive: true });
-    fs.writeFileSync(taskOutFilePath, "", "utf8");
-  } catch {}
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -972,16 +1055,18 @@ async function executeTaskFile(
       const killChild = (sig: "SIGTERM" | "SIGKILL") => {
         const activeChild = child as ChildProcess | null;
         if (activeChild && activeChild.pid !== undefined && activeChild.exitCode === null && activeChild.signalCode === null) {
+          const childPid = activeChild.pid;
           if (isWin) {
             try {
-              const killArgs = ["/T", "/PID", String(activeChild.pid)];
+              const killArgs = ["/T", "/PID", String(childPid)];
               if (sig === "SIGKILL") killArgs.push("/F");
               spawnSync("taskkill", killArgs, { shell: false, windowsHide: true });
             } catch {}
           } else {
-            try {
-              activeChild.kill(sig);
-            } catch {}
+            const allPids = [childPid, ...getDescendantPids(childPid)];
+            for (const p of allPids) {
+              try { process.kill(p, sig); } catch {}
+            }
           }
         }
       };
@@ -1062,17 +1147,63 @@ async function executeTaskFile(
         }, effectiveHardTimeoutMs);
       }
 
-      // Stuck detection: warn if process produces no new output for 3 minutes (180s)
-      const stuckThresholdMs = 180000;
+      // Stuck detection: warn if process produces no new output AND genuine idle evidence indicates wedged state
+      // (no conversation activity, no file/workdir progress, no process CPU time change).
+      const stuckThresholdMs = parseInt(process.env.AGENT_BRIDGE_STUCK_MS || "180000", 10);
       let lastOutputTime = Date.now();
+      let lastActivityTime = Date.now();
+      let lastCpuSec = getProcessTreeCpuTime(child?.pid);
       let stuckWarned = false;
       let stuckCheckInterval: NodeJS.Timeout | null = null;
       if (isNotifyEnabled && notifyOn.has("stuck")) {
         stuckCheckInterval = setInterval(() => {
-          if (!stuckWarned && Date.now() - lastOutputTime >= stuckThresholdMs) {
+          if (stuckWarned) return;
+          const now = Date.now();
+
+          // Check real external progress signals (conversation DB, brain scratch, worktree)
+          const sessionMtime = getAgentSessionOrProgressMtime(effectiveWorkingDir);
+          if (sessionMtime && sessionMtime > lastActivityTime) {
+            lastActivityTime = Math.max(lastActivityTime, sessionMtime);
+          }
+
+          // Check process tree CPU activity
+          const currentCpuSec = getProcessTreeCpuTime(child?.pid);
+          if (currentCpuSec > lastCpuSec + 0.1) {
+            lastActivityTime = now;
+            lastCpuSec = currentCpuSec;
+          }
+
+          // Child process existence probe
+          const childPids = getDescendantPids(child?.pid);
+          if (childPids.length > 0) {
+            // Actively running child tools/compilers/builds
+            lastActivityTime = now;
+          }
+
+          // Update task status lastActivityAt
+          const effectiveLastActive = Math.max(lastOutputTime, lastActivityTime);
+          try {
+            writeStatus(currentRoot, taskId, {
+              state: stallFlagged ? "suspected_stalled" : "running",
+              agent: agentName,
+              model,
+              reasoningEffort,
+              account: effectiveAccountAlias,
+              startedAt,
+              ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+              pid: child?.pid,
+              workerPid: process.pid,
+              logPath: taskOutFilePath,
+              workDir: effectiveWorkingDir,
+              lastActivityAt: new Date(effectiveLastActive).toISOString(),
+            });
+          } catch {}
+
+          // Only alert when BOTH output has been quiet AND genuine progress has ceased for >= stuckThresholdMs
+          if (now - lastOutputTime >= stuckThresholdMs && now - lastActivityTime >= stuckThresholdMs) {
             stuckWarned = true;
-            logWorker("WARN", `Task ${taskId} has produced no output for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
-            notify("agent-bridge", `Task ${taskId} 超过 3 分钟无新输出，可能已卡住 [${agentName}]`, {
+            logWorker("WARN", `Task ${taskId} has produced no output or progress for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
+            notify("agent-bridge", `Task ${taskId} 超过 ${Math.round(stuckThresholdMs / 1000)}s 无新输出或活动，可能已卡住 [${agentName}]`, {
               subtitle: "任务可能卡住",
               level: "warning",
               channel: notifyChannel,
@@ -1138,29 +1269,45 @@ async function executeTaskFile(
         } catch {}
       };
 
-      // Check for control/<taskId>.cancel every 1 second
+      // Check for control/<taskId>.cancel every 250ms (responsive cancellation)
       cancelCheckInterval = setInterval(() => {
+        let cancelRequested = false;
         if (fs.existsSync(cancelFilePath)) {
           try {
             fs.unlinkSync(cancelFilePath);
           } catch {}
+          cancelRequested = true;
+        } else {
+          try {
+            const currentSt = readStatus(currentRoot, taskId);
+            if (currentSt?.state === "cancelled") {
+              cancelRequested = true;
+            }
+          } catch {}
+        }
+
+        if (cancelRequested && !isCancelled) {
           isCancelled = true;
           logWorker("WARN", `Task ${taskId} cancellation requested. Sending SIGTERM to process.`);
           killChild("SIGTERM");
           killTimer = setTimeout(() => {
-            logWorker("WARN", `Task ${taskId} process still running after 5s of cancellation. Sending SIGKILL.`);
+            logWorker("WARN", `Task ${taskId} process still running after 2s of cancellation. Sending SIGKILL.`);
             killChild("SIGKILL");
-          }, 5000);
+          }, 2000);
         }
-      }, 1000);
+      }, 250);
 
       if (agentConfig.input === "stdin" && child.stdin) {
-        child.stdin.write(prompt);
-        child.stdin.end();
+        child.stdin.on("error", () => {});
+        try {
+          child.stdin.write(prompt);
+          child.stdin.end();
+        } catch {}
       }
 
       child.stdout?.on("data", (chunk) => {
         lastOutputTime = Date.now();
+        lastActivityTime = Date.now();
         stuckWarned = false;
         clearStall();
         const text = chunk.toString("utf8");
@@ -1172,6 +1319,7 @@ async function executeTaskFile(
 
       child.stderr?.on("data", (chunk) => {
         lastOutputTime = Date.now();
+        lastActivityTime = Date.now();
         stuckWarned = false;
         clearStall();
         const errText = chunk.toString("utf8");
@@ -1318,6 +1466,7 @@ async function executeTaskFile(
     ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
     logPath: taskOutFilePath,
+    ...(effectiveWorkingDir ? { workDir: effectiveWorkingDir } : {}),
     ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
   });
 

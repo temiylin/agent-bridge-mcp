@@ -5,9 +5,9 @@ import { resolveBridgeRoot } from "./config.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 import { getLastLogLine, extractPrUrl } from "./recent-tasks.js";
 
-export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue";
+export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
 
-export type WebhookPayloadStatus = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue";
+export type WebhookPayloadStatus = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
 
 export interface TaskWebhookConfig {
   url: string;
@@ -142,7 +142,16 @@ export function resolveWebhookDelivery(
     }
     return null;
   }
-  if (normalized === "cancelled" || normalized === "paused_quota") {
+  if (normalized === "cancelled") {
+    if (allowedEvents.includes("cancelled")) {
+      return { deliver: true, payloadStatus: "cancelled" };
+    }
+    if (allowedEvents.includes("failed")) {
+      return { deliver: true, payloadStatus: "failed" };
+    }
+    return null;
+  }
+  if (normalized === "paused_quota") {
     return allowedEvents.includes("failed") ? { deliver: true, payloadStatus: "failed" } : null;
   }
   // failed and other error states

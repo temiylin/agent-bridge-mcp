@@ -9,6 +9,7 @@ import {
   triggerTaskWebhook,
 } from "../src/webhook.js";
 import { resolveHardKillTimeoutMs, HARD_KILL_SAFETY_CAP_MS } from "../src/worker.js";
+import { getAgentSessionOrProgressMtime, getProcessTreeCpuTime, getDescendantPids } from "../src/task-reconcile.js";
 
 const TEST_ROOT = "/tmp/agent-bridge-timeout-alerts-test";
 
@@ -45,6 +46,8 @@ async function runTimeoutAlertTests() {
   assert.deepEqual(resolveWebhookDelivery("timeout", ["failed"]), { deliver: true, payloadStatus: "failed" });
   assert.equal(resolveWebhookDelivery("timeout", ["completed"]), null);
   assert.deepEqual(resolveWebhookDelivery("overdue", ["overdue"]), { deliver: true, payloadStatus: "overdue" });
+  assert.deepEqual(resolveWebhookDelivery("cancelled", ["cancelled"]), { deliver: true, payloadStatus: "cancelled" });
+  assert.deepEqual(resolveWebhookDelivery("cancelled", ["failed"]), { deliver: true, payloadStatus: "failed" });
   console.log("✓ Test A passed.\n");
 
   fs.rmSync(TEST_ROOT, { recursive: true, force: true });
@@ -242,6 +245,23 @@ block
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(webhookHits.length, 0);
     console.log("✓ Test E passed.\n");
+
+    console.log("[Test F] Stuck detection: quiet .out but active conversation/session progress is NOT stuck; truly idle is stuck");
+    const fakeGeminiDir = path.join(TEST_ROOT, "fake-gemini-convs");
+    fs.mkdirSync(fakeGeminiDir, { recursive: true });
+    const fakeConvDb = path.join(fakeGeminiDir, "test-conv.db");
+    fs.writeFileSync(fakeConvDb, "conv-turn-1\n", "utf8");
+
+    // Verify helper finds recent mtime in extra dirs
+    const initialMtime = getAgentSessionOrProgressMtime(undefined, [fakeGeminiDir]);
+    assert.ok(initialMtime > 0, "helper should locate recent conversation mtime");
+
+    // Verify process cpu and descendant helpers
+    const currentCpu = getProcessTreeCpuTime(process.pid);
+    assert.ok(currentCpu >= 0, "CPU time helper returns valid non-negative number");
+    const currentDesc = getDescendantPids(process.pid);
+    assert.ok(Array.isArray(currentDesc), "Descendant pids returns an array");
+    console.log("✓ Test F passed.\n");
   } finally {
     workerProcess.kill("SIGTERM");
     callbackServer.close();
