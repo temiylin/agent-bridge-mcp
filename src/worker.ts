@@ -478,6 +478,18 @@ async function executeTaskFile(
   }
 
   const startedAt = new Date().toISOString();
+
+  // Clear any stale non-cancelled status file if the same taskId is being re-dispatched
+  const existingStatusPath = path.join(currentRoot, "status", `${taskId}.json`);
+  const cancelFilePathEarly = path.join(controlDir, `${taskId}.cancel`);
+  if (fs.existsSync(existingStatusPath) && !fs.existsSync(cancelFilePathEarly)) {
+    try {
+      const prevSt = readStatus(currentRoot, taskId);
+      if (prevSt && prevSt.state !== "cancelled" && prevSt.state !== "queued") {
+        fs.unlinkSync(existingStatusPath);
+      }
+    } catch {}
+  }
   const {
     agentName,
     prompt,
