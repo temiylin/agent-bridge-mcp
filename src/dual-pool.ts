@@ -553,26 +553,44 @@ export function queryAccountOverview(
       let resetWeekly: string | number | undefined;
       let hasWeekly = false;
 
-      for (const q of Object.values(c.quotas)) {
+      for (const [mName, q] of Object.entries(c.quotas)) {
         if (!q || !q.resetTime) continue;
         const resetMs = typeof q.resetTime === "number" ? q.resetTime : new Date(q.resetTime).getTime();
         if (isNaN(resetMs)) continue;
         const diffHours = (resetMs - now) / (3600 * 1000);
         const frac = typeof q.remainingFraction === "number" ? q.remainingFraction : 1.0;
 
-        if (diffHours <= 12) {
-          has5h = true;
-          if (frac < min5h) min5h = frac;
-          if (!reset5h || resetMs < (typeof reset5h === "number" ? reset5h : new Date(reset5h).getTime())) {
-            reset5h = q.resetTime;
-          }
-        } else {
+        // Models with longer reset cycles (e.g. gemini-4-argon or resets > 14 hours)
+        if (mName.includes("argon") || diffHours > 14) {
           hasWeekly = true;
           if (frac < minWeekly) minWeekly = frac;
           if (!resetWeekly || resetMs < (typeof resetWeekly === "number" ? resetWeekly : new Date(resetWeekly).getTime())) {
             resetWeekly = q.resetTime;
           }
         }
+
+        // Standard rolling models (e.g. Gemini 2.5 / 3.x, or resets <= 14 hours)
+        if (!mName.includes("argon") && (diffHours <= 14 || mName.startsWith("gemini-") || mName.startsWith("claude-"))) {
+          has5h = true;
+          if (frac < min5h) min5h = frac;
+          if (!reset5h || resetMs < (typeof reset5h === "number" ? reset5h : new Date(reset5h).getTime())) {
+            reset5h = q.resetTime;
+          }
+        }
+      }
+
+      // Important: If weekly quota is depleted or lower, 5-hour quota is capped by weekly quota!
+      // An account cannot have a "full" usable quota if its weekly quota is exhausted.
+      if (hasWeekly && minWeekly < min5h) {
+        min5h = minWeekly;
+        if (!reset5h || (resetWeekly && new Date(resetWeekly).getTime() > new Date(reset5h).getTime())) {
+          reset5h = resetWeekly;
+        }
+      }
+
+      // Also ensure min5h is bounded by cockpit's remainingFractionSummary
+      if (typeof c.remainingFractionSummary === "number" && c.remainingFractionSummary < min5h) {
+        min5h = c.remainingFractionSummary;
       }
 
       if (has5h) {
