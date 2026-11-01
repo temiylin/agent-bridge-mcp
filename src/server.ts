@@ -67,7 +67,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
   const server = new McpServer(
     {
       name: "agent-bridge-mcp",
-      version: "1.0.0",
+      version: "1.1.0",
     },
     {
       instructions: SERVER_INSTRUCTIONS,
@@ -232,19 +232,25 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           };
         }
 
+        // If project_id is omitted but the plan is bound to a project, inherit it automatically
+        const effectiveProjectId =
+          (project_id && project_id.trim()) ||
+          (effectivePlan?.project_id && effectivePlan.project_id.trim()) ||
+          undefined;
+
         // Resolve project early so project-level defaults (agent, model, account, timeout, repo_path, base_branch, callback) apply
         const projectResolution = resolveProject(rootDir, {
-          projectId: project_id,
+          projectId: effectiveProjectId,
           projectDir: project_dir,
         });
 
-        if (project_id && project_id.trim() && !projectResolution.matched && !projectResolution.conflict) {
+        if (effectiveProjectId && !projectResolution.matched && !projectResolution.conflict) {
           return {
             isError: true,
             content: [
               {
                 type: "text",
-                text: `Error: Unknown project_id "${project_id.trim()}". Use list_projects or add_project to register it first.`,
+                text: `Error: Unknown project_id "${effectiveProjectId}". Use list_projects or add_project to register it first.`,
               },
             ],
           };

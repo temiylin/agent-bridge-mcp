@@ -40,7 +40,7 @@ const server = http.createServer(async (req, res) => {
         {
           service: "agent-bridge-relay",
           status: "online",
-          version: "1.0.0",
+          version: "1.1.0",
           devicesOnlineCount: devices.size,
           timestamp: new Date().toISOString(),
         },

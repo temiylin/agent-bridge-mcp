@@ -73,6 +73,7 @@ export function registerQueueTools(
         const effectivePlanId = plan_id?.trim() || options?.plan_id?.trim();
         const effectiveStepId = step_id?.trim() || options?.step_id?.trim();
 
+        let effectivePlan: any = null;
         if (effectivePlanId) {
           if (!effectiveStepId) {
             return {
@@ -80,22 +81,21 @@ export function registerQueueTools(
               content: [{ type: "text", text: "Error: step_id is required when plan_id is provided." }],
             };
           }
-          let p: any;
           try {
-            p = getPlan(rootDir, effectivePlanId);
+            effectivePlan = getPlan(rootDir, effectivePlanId);
           } catch (err: any) {
             return {
               isError: true,
               content: [{ type: "text", text: `Error loading plan "${effectivePlanId}": ${err?.message || String(err)}` }],
             };
           }
-          if (!p) {
+          if (!effectivePlan) {
             return {
               isError: true,
               content: [{ type: "text", text: `Error: Plan "${effectivePlanId}" not found.` }],
             };
           }
-          const st = p.steps.find((s: any) => s.id === effectiveStepId);
+          const st = effectivePlan.steps.find((s: any) => s.id === effectiveStepId);
           if (!st) {
             return {
               isError: true,
@@ -134,6 +134,10 @@ export function registerQueueTools(
           ...(on_complete ? { on_complete } : {}),
           ...(effectivePlanId ? { plan_id: effectivePlanId, step_id: effectiveStepId } : {}),
         };
+        // Auto-inherit project_id from plan if not explicitly supplied
+        if (!mergedOptions.project_id && effectivePlan?.project_id) {
+          mergedOptions.project_id = effectivePlan.project_id;
+        }
         if (mergedOptions.project_id) {
           const projRes = resolveProject(rootDir, { projectId: mergedOptions.project_id });
           if (projRes.project) {
@@ -182,18 +186,23 @@ export function registerQueueTools(
 
   /**
    * Tool: list_queue
-   * Lists compact queue items (preview <= 80 chars) for a session or globally.
+   * Lists compact queue items (preview <= 80 chars) for a session or globally (filterable by project_id and plan_id).
    */
   server.tool(
     "list_queue",
-    "List queued items in compact form (id, session_id, position, status, mode, prompt_preview <= 80 chars).",
+    "List queued items in compact form (id, session_id, position, status, mode, project_id, plan_id, prompt_preview <= 80 chars).",
     {
       session_id: z.string().optional().describe("Optional session_id to filter by"),
+      project_id: z.string().optional().describe("Optional project_id to filter by"),
+      plan_id: z.string().optional().describe("Optional plan_id to filter by"),
     },
     { readOnlyHint: true, destructiveHint: false },
-    async ({ session_id }) => {
+    async ({ session_id, project_id, plan_id }) => {
       try {
-        const items = listQueue(rootDir, session_id?.trim());
+        const items = listQueue(rootDir, session_id?.trim(), {
+          projectId: project_id?.trim(),
+          planId: plan_id?.trim(),
+        });
         return {
           content: [
             {

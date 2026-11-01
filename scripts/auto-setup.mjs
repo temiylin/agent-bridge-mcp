@@ -278,11 +278,28 @@ async function main() {
   fs.mkdirSync(path.join(tempPackDir, "skills", "agent-bridge"), { recursive: true });
 
   // 写入 plugin.json
+  const templatePluginPath = path.join(PROJECT_ROOT, "plugin-package", "plugin.json");
+  const pkgJsonPath = path.join(PROJECT_ROOT, "package.json");
+  let pluginVersion = "1.1.0";
+  let pluginDesc = "Directly inspect, monitor, manage projects & multi-step plans, and dispatch tasks to your local Mac/PC from ChatGPT.";
+  if (fs.existsSync(templatePluginPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(templatePluginPath, "utf8"));
+      if (parsed.version) pluginVersion = parsed.version;
+      if (parsed.description) pluginDesc = parsed.description;
+    } catch {}
+  } else if (fs.existsSync(pkgJsonPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8"));
+      if (parsed.version) pluginVersion = parsed.version;
+    } catch {}
+  }
+
   const pluginJson = {
     $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
     name: "agent-bridge",
-    version: "1.0.0",
-    description: "Directly inspect, monitor, and dispatch tasks to your local Mac/PC from ChatGPT.",
+    version: pluginVersion,
+    description: pluginDesc,
     author: {
       name: "temiylin",
     },

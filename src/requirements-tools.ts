@@ -27,19 +27,21 @@ export function registerRequirementsTools(
     "save_requirement",
     "Save a requirement to the backlog for later review and dispatch.",
     {
-      project: z.string().describe("Project identifier or name"),
+      project: z.string().optional().describe("Project identifier or name (legacy parameter)"),
+      project_id: z.string().optional().describe("Project identifier (e.g. 'vision_hub')"),
       topic: z.string().optional().describe("Optional topic or session_id to group requirements"),
       session_id: z.string().optional().describe("Optional session_id (alias for topic)"),
       title: z.string().describe("Requirement title"),
       raw_text: z.string().describe("Full raw requirement specification text"),
       tags: z.array(z.string()).optional().describe("Optional category or keyword tags"),
     },
-    async ({ project, topic, session_id, title, raw_text, tags }) => {
+    async ({ project, project_id, topic, session_id, title, raw_text, tags }) => {
       try {
-        if (!project || project.trim().length === 0) {
+        const effectiveProject = (project_id && project_id.trim()) || (project && project.trim());
+        if (!effectiveProject) {
           return {
             isError: true,
-            content: [{ type: "text", text: "Error: project must be a non-empty string." }],
+            content: [{ type: "text", text: "Error: project or project_id must be a non-empty string." }],
           };
         }
         if (!title || title.trim().length === 0) {
@@ -61,7 +63,7 @@ export function registerRequirementsTools(
 
         const record: RequirementRecord = {
           id,
-          project: project.trim(),
+          project: effectiveProject,
           topic: effectiveTopic,
           session_id: effectiveTopic,
           title: title.trim(),
@@ -100,7 +102,8 @@ export function registerRequirementsTools(
     "list_requirements",
     "List stored requirements in compact form (omits full raw text).",
     {
-      project: z.string().optional().describe("Filter by project name"),
+      project: z.string().optional().describe("Filter by project name (legacy parameter)"),
+      project_id: z.string().optional().describe("Filter by project ID or name (e.g. 'vision_hub')"),
       topic: z.string().optional().describe("Filter by topic or session_id"),
       status: z
         .enum(["draft", "dispatched", "merged", "archived"])
@@ -108,10 +111,11 @@ export function registerRequirementsTools(
         .describe("Filter by requirement status"),
     },
     { readOnlyHint: true, destructiveHint: false },
-    async ({ project, topic, status }) => {
+    async ({ project, project_id, topic, status }) => {
       try {
+        const effectiveProject = (project_id && project_id.trim()) || (project && project.trim());
         const compactList = listRequirements(rootDir, {
-          project: project?.trim(),
+          project: effectiveProject,
           topic: topic?.trim(),
           status: status as RequirementStatus,
         });
@@ -193,9 +197,11 @@ export function registerRequirementsTools(
       raw_text: z.string().optional().describe("New raw_text"),
       tags: z.array(z.string()).optional().describe("New tags array"),
       topic: z.string().optional().describe("New topic or session_id"),
+      project: z.string().optional().describe("New project (legacy)"),
+      project_id: z.string().optional().describe("New project ID or name"),
       status: z.enum(["draft", "dispatched", "merged", "archived"]).optional().describe("New status"),
     },
-    async ({ id, title, raw_text, tags, topic, status }) => {
+    async ({ id, title, raw_text, tags, topic, project, project_id, status }) => {
       try {
         if (!isValidRequirementId(id)) {
           return {
@@ -218,6 +224,10 @@ export function registerRequirementsTools(
         if (topic !== undefined) {
           record.topic = topic.trim();
           record.session_id = topic.trim();
+        }
+        const effectiveProjectUpdate = (project_id && project_id.trim()) || (project && project.trim());
+        if (effectiveProjectUpdate !== undefined && effectiveProjectUpdate.length > 0) {
+          record.project = effectiveProjectUpdate;
         }
         if (status !== undefined) record.status = status;
         record.updated_at = new Date().toISOString();
@@ -447,6 +457,9 @@ export function registerRequirementsTools(
       agent: z.string().optional().describe("Optional agent name override"),
       options: z
         .object({
+          project_id: z.string().optional().describe("Optional project_id override (defaults to requirement.project)"),
+          plan_id: z.string().optional().describe("Optional plan_id to link this requirement dispatch to an execution plan"),
+          step_id: z.string().optional().describe("Optional step_id within the plan"),
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
           account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
@@ -462,7 +475,7 @@ export function registerRequirementsTools(
             .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
         })
         .optional()
-        .describe("Optional execution settings, queuing options, and opt-in webhook"),
+        .describe("Optional execution settings, project/plan linkage, queuing options, and opt-in webhook"),
     },
     async ({ id, agent, options }) => {
       try {
@@ -483,6 +496,10 @@ export function registerRequirementsTools(
 
         const effectiveSessionId = record.session_id || record.topic;
         const queueIfBusy = options?.queue_if_busy === true;
+        const effectiveProjectId =
+          (options?.project_id && options.project_id.trim()) ||
+          (record.project && record.project.trim()) ||
+          undefined;
 
         if (effectiveSessionId && queueIfBusy && isSessionBusy(rootDir, effectiveSessionId)) {
           // Enqueue instead
@@ -496,12 +513,15 @@ export function registerRequirementsTools(
               reasoning_effort: options?.reasoning_effort,
               account: options?.account,
               requirement_id: record.id,
+              project_id: effectiveProjectId,
+              plan_id: options?.plan_id,
+              step_id: options?.step_id,
               on_complete: options?.on_complete,
             },
             mode: "auto",
           });
 
-          logger.info(`dispatch_requirement: session ${effectiveSessionId} is busy, enqueued requirement ${id} as item ${enqRes.id}`);
+          logger.info(`dispatch_requirement: session ${effectiveSessionId} is busy, enqueued requirement ${id} as item ${enqRes.id} (project=${effectiveProjectId})`);
           return {
             content: [
               {
@@ -513,6 +533,9 @@ export function registerRequirementsTools(
                     queued_item_id: enqRes.id,
                     position: enqRes.position,
                     session_id: effectiveSessionId,
+                    project_id: effectiveProjectId,
+                    plan_id: options?.plan_id,
+                    step_id: options?.step_id,
                     message: `Session is busy. Enqueued requirement for auto-dispatch.`,
                   },
                   null,
@@ -533,6 +556,9 @@ export function registerRequirementsTools(
           continue_session: !!effectiveSessionId,
           session_id: effectiveSessionId,
           account: options?.account,
+          project_id: effectiveProjectId,
+          plan_id: options?.plan_id,
+          step_id: options?.step_id,
           on_complete: options?.on_complete,
         });
 
@@ -543,7 +569,7 @@ export function registerRequirementsTools(
         record.updated_at = now;
         writeRequirement(rootDir, record);
 
-        logger.info(`dispatch_requirement: dispatched requirement ${id} as taskId ${dispatchRes.taskId}`);
+        logger.info(`dispatch_requirement: dispatched requirement ${id} as taskId ${dispatchRes.taskId} (project=${effectiveProjectId})`);
 
         return {
           content: [
@@ -557,6 +583,9 @@ export function registerRequirementsTools(
                   dispatched_at: now,
                   agent: dispatchRes.agentName,
                   session_id: effectiveSessionId,
+                  project_id: effectiveProjectId,
+                  plan_id: options?.plan_id,
+                  step_id: options?.step_id,
                 },
                 null,
                 2
