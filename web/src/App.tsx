@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Navbar } from './components/Navbar';
+import { ActionHomeView, buildHomePageViewModel } from './components/ActionHomeView';
 import { MetricOverviewCards } from './components/MetricOverviewCards';
 import { TaskTable } from './components/TaskTable';
 import { QuotaOverviewStrip } from './components/QuotaOverviewStrip';
@@ -15,6 +16,12 @@ export const App: React.FC = () => {
     loadSystemStats,
     loadTasks,
     loadPool,
+    allTasks,
+    systemIssues,
+    poolAccounts,
+    activeMainTab,
+    setActiveMainTab,
+    setSettingsOpen,
     toast,
   } = useAppStore();
 
@@ -38,30 +45,92 @@ export const App: React.FC = () => {
         return;
       }
       loadTasks();
+      loadSystemStats();
     }, 5000);
     return () => clearInterval(timer);
   }, []);
+
+  const homeVm = buildHomePageViewModel(allTasks, systemIssues);
+  const homeActionCount =
+    homeVm.needsHumanTasks.length +
+    homeVm.visibleSystemIssues.length +
+    homeVm.workingAndQueuedTasks.length;
 
   return (
     <div className="min-h-screen bg-base-100 flex flex-col font-sans">
       <Navbar />
 
       <main className="flex-1 w-full p-4 md:p-8">
-        {/* Top Metric Cards */}
-        <MetricOverviewCards />
+        {/* Secondary Navigation Tabs */}
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-6 border-b border-base-300 pb-3">
+          <div className="tabs tabs-boxed bg-base-200 p-1">
+            <button
+              type="button"
+              className={`tab tab-sm md:tab-md gap-1.5 font-bold ${
+                activeMainTab === 'home' ? 'tab-active' : ''
+              }`}
+              onClick={() => setActiveMainTab('home')}
+            >
+              <span>🏠 首页工作台</span>
+              <span className="badge badge-xs font-mono">{homeActionCount}</span>
+            </button>
+            <button
+              type="button"
+              className={`tab tab-sm md:tab-md gap-1.5 font-bold ${
+                activeMainTab === 'tasks' ? 'tab-active' : ''
+              }`}
+              onClick={() => setActiveMainTab('tasks')}
+            >
+              <span>📋 完整任务表</span>
+              <span className="badge badge-xs font-mono">{allTasks.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`tab tab-sm md:tab-md gap-1.5 font-bold ${
+                activeMainTab === 'quota' ? 'tab-active' : ''
+              }`}
+              onClick={() => setActiveMainTab('quota')}
+            >
+              <span>🔋 配额明细</span>
+              <span className="badge badge-xs font-mono">{poolAccounts.length}</span>
+            </button>
+          </div>
 
-        {/* Task Monitoring Stream */}
-        <TaskTable
-          onOpenDetails={(tid) => setDetailsTaskId(tid)}
-          onOpenLogs={(tid) => setLogsTaskId(tid)}
-          onOpenRetry={(task, mode) => setRetryTask({ task, mode })}
-        />
+          <button
+            type="button"
+            className="btn btn-xs md:btn-sm btn-ghost border border-base-300 gap-1"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <span>📁 项目管理 / 设置</span>
+          </button>
+        </div>
 
-        {/* Read-Only Account Quota Strip */}
-        <QuotaOverviewStrip />
+        {/* Tab 1: Home View (Strictly 3 blocks: 待处理, 系统问题[hidden when healthy], 执行中) */}
+        {activeMainTab === 'home' && (
+          <ActionHomeView
+            onOpenDetails={(tid) => setDetailsTaskId(tid)}
+            onOpenLogs={(tid) => setLogsTaskId(tid)}
+            onOpenRetry={(task, mode) => setRetryTask({ task, mode })}
+          />
+        )}
+
+        {/* Tab 2: Full Task Table & Metric Cards */}
+        {activeMainTab === 'tasks' && (
+          <>
+            <MetricOverviewCards />
+            <TaskTable
+              onOpenDetails={(tid) => setDetailsTaskId(tid)}
+              onOpenLogs={(tid) => setLogsTaskId(tid)}
+              onOpenRetry={(task, mode) => setRetryTask({ task, mode })}
+            />
+          </>
+        )}
+
+        {/* Tab 3: Quota Details */}
+        {activeMainTab === 'quota' && <QuotaOverviewStrip />}
       </main>
 
-      {/* Settings Modal (Dedicated Layer) */}
+      {/* Settings Modal (Dedicated Layer including Project Management) */}
       <SettingsModal />
 
       {/* Modals for Task Details, Logs, Retry */}

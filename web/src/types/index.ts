@@ -1,6 +1,40 @@
+export type TaskStage =
+  | 'needs_human/failed'
+  | 'needs_human/quota'
+  | 'needs_human/stalled'
+  | 'needs_human/answer'
+  | 'needs_human/review'
+  | 'queued'
+  | 'working'
+  | 'done';
+
+export type TaskOutcome = 'ready' | 'blocked' | 'failed' | 'dropped';
+
+export interface TaskReport {
+  outcome: TaskOutcome;
+  pr_url: string | null;
+  question: string | null;
+  summary: string;
+}
+
+export interface SystemIssueItem {
+  id: 'callback_failures' | 'pool_paused' | 'worker_offline';
+  kind: 'callback' | 'pool' | 'worker';
+  title: string;
+  detail: string;
+  consecutiveFailures: number;
+}
+
 export interface TaskItem {
   taskId: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'paused_quota' | 'queued' | string;
+  stage?: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
+  report?: TaskReport;
+  report_source?: 'report_json' | 'heuristic';
+  hasFollowUp?: boolean;
+  pr_open?: boolean;
   session_id?: string;
   project?: string;
   project_id?: string;
@@ -127,6 +161,7 @@ export interface SystemStats {
   totalMemGb: number;
   freeMemGb: string;
   workerPid: number | null;
+  systemIssues?: SystemIssueItem[];
 }
 
 export interface RoutingRule {

@@ -4,10 +4,21 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
+import {
+  deriveStage,
+  type TaskStage,
+  type TaskOutcome,
+  type ReportSource,
+} from "./task-stage.js";
 
 export interface TaskSummaryItem {
   taskId: string;
   state: string;
+  stage: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
+  pr_url?: string | null;
+  report_source?: ReportSource;
   projectId?: string;
   projectName?: string;
   agent?: string;
@@ -46,7 +57,7 @@ export function registerListTasksTool(
         if (fs.existsSync(statusDir)) {
           const files = fs.readdirSync(statusDir);
           for (const file of files) {
-            if (!file.endsWith(".json") || file.includes(".tmp")) {
+            if (!file.endsWith(".json") || file.includes(".tmp") || file.startsWith("_")) {
               continue;
             }
             const filePath = path.join(statusDir, file);
@@ -55,10 +66,24 @@ export function registerListTasksTool(
               const parsed = JSON.parse(content);
               if (parsed && typeof parsed === "object") {
                 const taskId = typeof parsed.taskId === "string" ? parsed.taskId : file.replace(/\.json$/, "");
+                const stateVal = typeof parsed.state === "string" ? parsed.state : "unknown";
                 const item: TaskSummaryItem = {
                   taskId,
-                  state: typeof parsed.state === "string" ? parsed.state : "unknown",
+                  state: stateVal,
+                  stage: deriveStage(parsed),
                 };
+                if (parsed.outcome || parsed.report?.outcome) {
+                  item.outcome = parsed.outcome || parsed.report?.outcome;
+                }
+                if (parsed.question !== undefined || parsed.report?.question !== undefined) {
+                  item.question = parsed.question ?? parsed.report?.question ?? null;
+                }
+                if (parsed.pr_url !== undefined || parsed.report?.pr_url !== undefined) {
+                  item.pr_url = parsed.pr_url ?? parsed.report?.pr_url ?? null;
+                }
+                if (parsed.report_source) {
+                  item.report_source = parsed.report_source;
+                }
                 if (typeof parsed.projectId === "string" && parsed.projectId) item.projectId = parsed.projectId;
                 if (typeof parsed.projectName === "string" && parsed.projectName) item.projectName = parsed.projectName;
 

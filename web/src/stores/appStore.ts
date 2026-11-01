@@ -3,6 +3,7 @@ import type {
   TaskItem,
   BridgeConfig,
   SystemStats,
+  SystemIssueItem,
   PoolAccountOverview,
   CockpitAccount,
   ProfileItem,
@@ -25,9 +26,14 @@ interface AppStore {
   saveProject: (action: 'add' | 'update', payload: Record<string, any>) => Promise<{ success: boolean; error?: string }>;
   deleteProject: (projectId: string) => Promise<{ success: boolean; error?: string }>;
 
-  // System Stats
+  // System Stats & Issues
   systemStats: SystemStats | null;
+  systemIssues: SystemIssueItem[];
   loadSystemStats: () => Promise<void>;
+
+  // Navigation
+  activeMainTab: 'home' | 'tasks' | 'quota';
+  setActiveMainTab: (tab: 'home' | 'tasks' | 'quota') => void;
 
   // Tasks
   tasks: TaskItem[];
@@ -75,6 +81,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projects: [],
   filterProject: 'all',
   systemStats: null,
+  systemIssues: [],
+  activeMainTab: 'home',
   tasks: [],
   allTasks: [],
   filterStatus: 'active',
@@ -96,6 +104,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   setSettingsOpen: (open: boolean) => set({ settingsOpen: open }),
+
+  setActiveMainTab: (tab: 'home' | 'tasks' | 'quota') => set({ activeMainTab: tab }),
 
   setFilterStatus: (st: string) => {
     set({ filterStatus: st });
@@ -223,7 +233,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const res = await fetch('/api/system');
       if (res.ok) {
         const data = await res.json();
-        set({ systemStats: data });
+        set({
+          systemStats: data,
+          systemIssues: Array.isArray(data.systemIssues) ? data.systemIssues : get().systemIssues,
+        });
       }
     } catch {}
   },
@@ -243,13 +256,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const projectFilter = get().filterProject;
       const url =
         projectFilter && projectFilter !== 'all'
-          ? `/api/recent-tasks?project=${encodeURIComponent(projectFilter)}`
-          : '/api/recent-tasks';
+          ? `/api/tasks?project=${encodeURIComponent(projectFilter)}`
+          : '/api/tasks';
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         const all: TaskItem[] = data.tasks || [];
-        set({ allTasks: all });
+        const issues: SystemIssueItem[] = Array.isArray(data.systemIssues)
+          ? data.systemIssues
+          : get().systemIssues;
+        set({ allTasks: all, systemIssues: issues });
 
         if (filter === 'active') {
           const activeTasks = all.filter(

@@ -34,9 +34,15 @@ import {
   type AccountSelection,
 } from "./dual-pool.js";
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
-import { sendCompletionCallback } from "./callback.js";
+import { sendCompletionCallback, extractPrUrl } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
 import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
+import {
+  deriveStage,
+  getTaskReportDir,
+  buildReportJsonPromptInstruction,
+  readOrFallbackTaskReport,
+} from "./task-stage.js";
 import {
   sendDesktopNotification,
   buildOsascriptNotifyArgs,
@@ -886,6 +892,17 @@ async function executeTaskFile(
     }
   }
 
+  // Prepare per-task structured report directory ($TASK_DIR) and ensure prompt instructs writing $TASK_DIR/report.json
+  const taskReportDir = getTaskReportDir(currentRoot, taskId);
+  try {
+    if (!fs.existsSync(taskReportDir)) {
+      fs.mkdirSync(taskReportDir, { recursive: true });
+    }
+  } catch {}
+  const effectivePrompt = prompt.includes("[Structured Report Requirement]")
+    ? prompt
+    : `${prompt}${buildReportJsonPromptInstruction(taskReportDir)}`;
+
   // agy agent requirement: use --print mode for non-interactive runs
   // Prompt is attached directly to the flag (--print=<prompt>) or passed as a flag argument
   // to prevent consuming subsequent options like --dangerously-skip-permissions, --model, etc.
@@ -894,7 +911,7 @@ async function executeTaskFile(
       (a) => a === "--print" || a === "-p" || a.startsWith("--print=") || a.startsWith("-p=")
     );
     if (!hasPrintFlag) {
-      args.push(`--print=${prompt}`);
+      args.push(`--print=${effectivePrompt}`);
     }
   }
 
@@ -930,7 +947,7 @@ async function executeTaskFile(
   }
 
   if (agentConfig.input === "arg" && !isAgyFamily) {
-    args.push(prompt);
+    args.push(effectivePrompt);
   }
 
   let stdoutData = "";
@@ -1184,6 +1201,7 @@ async function executeTaskFile(
             ...process.env,
             [pathKey]: combinedPath,
             HOME: effectiveHome,
+            TASK_DIR: taskReportDir,
           },
         });
       } catch (spawnErr: any) {
@@ -1484,7 +1502,7 @@ async function executeTaskFile(
       if (agentConfig.input === "stdin" && child.stdin) {
         child.stdin.on("error", () => {});
         try {
-          child.stdin.write(prompt);
+          child.stdin.write(effectivePrompt);
           child.stdin.end();
         } catch {}
       }
@@ -1711,8 +1729,37 @@ async function executeTaskFile(
       : accountSel?.pool === "default" ? `${accountEmail || "default HOME"} (default pool)` : undefined
   );
 
+  const combinedRawOutput = `${stdoutData}\n${stderrData}`;
+  const heuristicPrUrl = extractPrUrl(combinedRawOutput) || null;
+  const heuristicSummary = extractExecutionSummary(stdoutData, stderrData) || reason || "";
+  const { report: finalReport, report_source: finalReportSource, validation_error: reportValErr } =
+    readOrFallbackTaskReport(taskReportDir, {
+      state: isTimeout ? "timeout" : state,
+      prUrl: heuristicPrUrl,
+      summaryText: heuristicSummary,
+      reason,
+      rawOutput: combinedRawOutput,
+    });
+  if (reportValErr) {
+    logWorker("WARN", `Task ${taskId}: report.json validation failed (${reportValErr}); fell back to heuristic.`);
+  }
+  const finalPrUrl = finalReport.pr_url || heuristicPrUrl;
+  if (!finalReport.pr_url && finalPrUrl) {
+    finalReport.pr_url = finalPrUrl;
+  }
+  const finalStage = deriveStage({
+    state: isTimeout ? "timeout" : state,
+    status,
+    reason,
+    report: finalReport,
+    outcome: finalReport.outcome,
+    pr_url: finalPrUrl,
+    question: finalReport.question,
+  });
+
   writeStatus(currentRoot, taskId, {
     state,
+    stage: finalStage,
     agent: agentName,
     model,
     reasoningEffort,
@@ -1731,6 +1778,11 @@ async function executeTaskFile(
     idle_seconds: 0,
     activity_source: state === "cancelled" ? "cancelled" : (sdkParser?.hasStructuredEvents() ? sdkParser.getLastActivitySource() : "none"),
     ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
+    report: finalReport,
+    report_source: finalReportSource,
+    outcome: finalReport.outcome,
+    pr_url: finalPrUrl,
+    question: finalReport.question,
   });
 
   releaseAccount();
@@ -1861,12 +1913,17 @@ async function executeTaskFile(
       taskId,
       agent: agentName,
       status: terminalStatus,
+      stage: finalStage,
+      outcome: finalReport.outcome,
+      question: finalReport.question,
+      prUrl: finalPrUrl,
       exitCode: exitCode !== null ? exitCode : (terminalStatus === "completed" ? 0 : 1),
       durationSeconds: callbackDuration,
       resultPath: path.join(resultsDir, `${taskId}.md`),
       logPath: taskOutFilePath,
       outputLog: stdoutData + "\n" + stderrData,
       project: projectName || projectId,
+      rootDir: currentRoot,
       logger: logWorker,
     }).catch(() => {});
   }

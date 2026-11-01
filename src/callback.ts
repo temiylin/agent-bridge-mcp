@@ -2,6 +2,12 @@ import fs from "node:fs";
 import { resolveBridgeRoot } from "./config.js";
 import { extractLastLines } from "./redaction.js";
 import { isAllowedCallbackEnvVarName } from "./project-router.js";
+import {
+  deriveStage,
+  recordCallbackResult,
+  type TaskStage,
+  type TaskOutcome,
+} from "./task-stage.js";
 
 export type TaskTerminalStatus = "completed" | "failed" | "timeout" | "cancelled" | "stuck" | "overdue";
 
@@ -10,11 +16,14 @@ export interface TaskCallbackPayload {
   project?: string;
   agent: string;
   status: TaskTerminalStatus;
+  stage: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
   exit_code: number | null;
   duration_s: number;
   result_path: string;
   log_path: string;
-  pr_url?: string;
+  pr_url?: string | null;
   last_log_lines?: string[];
 }
 
@@ -37,12 +46,16 @@ export interface TaskCallbackOptions {
   taskId: string;
   agent: string;
   status: TaskTerminalStatus;
+  stage?: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
   exitCode: number | null;
   durationSeconds: number;
   resultPath: string;
   logPath: string;
-  prUrl?: string;
+  prUrl?: string | null;
   outputLog?: string;
+  rootDir?: string;
   logger?: (level: "INFO" | "WARN" | "ERROR", msg: string) => void;
 }
 
@@ -182,6 +195,9 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     taskId,
     agent,
     status,
+    stage: explicitStage,
+    outcome,
+    question,
     exitCode,
     durationSeconds,
     resultPath,
@@ -189,6 +205,7 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     prUrl,
     outputLog,
     project,
+    rootDir,
     logger,
   } = options;
 
@@ -196,6 +213,7 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     return { success: true, attempts: 0 };
   }
 
+  const effectiveRoot = rootDir || resolveBridgeRoot();
   const targetUrl = url.trim();
   let resolvedHeaders: Record<string, string>;
   try {
@@ -208,10 +226,13 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     if (logger) {
       logger("ERROR", `Completion callback for task ${taskId} aborted: ${errMsg}`);
     }
+    try {
+      recordCallbackResult(effectiveRoot, false, errMsg);
+    } catch {}
     return { success: false, attempts: 0, error: errMsg };
   }
 
-  let detectedPrUrl = prUrl;
+  let detectedPrUrl = prUrl || undefined;
   if (!detectedPrUrl && outputLog) {
     detectedPrUrl = extractPrUrl(outputLog);
   }
@@ -228,16 +249,39 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     lastLogLines = extractLast20LogLines(outputLog || logPath);
   }
 
+  const effectiveOutcome: TaskOutcome =
+    outcome ||
+    (status === "cancelled"
+      ? "dropped"
+      : status === "failed" || status === "timeout"
+        ? "failed"
+        : status === "stuck" || question
+          ? "blocked"
+          : "ready");
+
+  const effectiveStage =
+    explicitStage ||
+    deriveStage({
+      state: status === "stuck" ? "suspected_stalled" : status === "overdue" ? "running" : status,
+      status,
+      outcome: effectiveOutcome,
+      pr_url: detectedPrUrl ?? null,
+      question: question ?? null,
+    });
+
   const payload: TaskCallbackPayload = {
     task_id: taskId,
     project: project || undefined,
     agent,
     status,
+    stage: effectiveStage,
+    outcome: effectiveOutcome,
+    question: question !== undefined ? question : null,
     exit_code: exitCode,
     duration_s: durationSeconds,
     result_path: resultPath,
     log_path: logPath,
-    ...(detectedPrUrl ? { pr_url: detectedPrUrl } : {}),
+    ...(detectedPrUrl !== undefined ? { pr_url: detectedPrUrl } : (prUrl === null ? { pr_url: null } : {})),
     ...(lastLogLines && lastLogLines.length > 0 ? { last_log_lines: lastLogLines } : {}),
   };
 
@@ -262,6 +306,9 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
         if (logger) {
           logger("INFO", `Completion callback for task ${taskId} sent successfully to ${targetUrl} (attempt ${attempt})`);
         }
+        try {
+          recordCallbackResult(effectiveRoot, true);
+        } catch {}
         return { success: true, attempts: attempt };
       } else {
         lastError = `HTTP ${res.status}: ${res.statusText}`;
@@ -280,6 +327,9 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
   if (logger) {
     logger("WARN", `Completion callback for task ${taskId} failed after ${maxAttempts} attempts: ${lastError}`);
   }
+  try {
+    recordCallbackResult(effectiveRoot, false, lastError);
+  } catch {}
 
   return { success: false, attempts: maxAttempts, error: lastError };
 }

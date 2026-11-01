@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import { resolveBridgeRoot } from "./config.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 import { getLastLogLine, extractPrUrl } from "./recent-tasks.js";
+import { readStatus } from "./status.js";
+import { deriveStage, type TaskStage, type TaskOutcome } from "./task-stage.js";
 
 export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
 
@@ -31,6 +33,9 @@ export interface WebhookPayload {
   taskId: string;
   session_id?: string;
   status: WebhookPayloadStatus;
+  stage?: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
   pr_url?: string;
   elapsed_ms?: number;
   last_log_snippet?: string;
@@ -250,12 +255,13 @@ export async function triggerTaskWebhook(
       return;
     }
 
-    // Check if PR URL exists in outputs
+    // Check if PR URL exists in status report or outputs
     const outPath = path.join(rootDir, "logs", `${taskId}.out`);
     const resPath = path.join(rootDir, "results", `${taskId}.md`);
-    let prUrl: string | undefined = undefined;
+    const statusInfo = readStatus(rootDir, taskId);
+    let prUrl: string | undefined = (statusInfo?.pr_url ?? statusInfo?.report?.pr_url) || undefined;
 
-    if (fs.existsSync(outPath)) {
+    if (!prUrl && fs.existsSync(outPath)) {
       try {
         prUrl = extractPrUrl(fs.readFileSync(outPath, "utf8"));
       } catch {}
@@ -296,10 +302,39 @@ export async function triggerTaskWebhook(
       snippet = getLastLogLine(resPath, 200);
     }
 
+    const effectiveOutcome: TaskOutcome | undefined =
+      statusInfo?.outcome ??
+      statusInfo?.report?.outcome ??
+      (terminalStatus === "cancelled"
+        ? "dropped"
+        : terminalStatus === "failed" || terminalStatus === "timeout"
+          ? "failed"
+          : terminalStatus === "paused_quota" || terminalStatus === "suspected_stalled" || terminalStatus === "stalled"
+            ? "blocked"
+            : "ready");
+
+    const effectiveQuestion = statusInfo?.question ?? statusInfo?.report?.question ?? null;
+
+    const effectiveStage =
+      statusInfo?.stage ||
+      deriveStage({
+        state: terminalStatus,
+        status: resolved.payloadStatus,
+        report: statusInfo?.report,
+        outcome: effectiveOutcome,
+        pr_url: prUrl || null,
+        question: effectiveQuestion,
+        pr_open: statusInfo?.pr_open,
+        hasFollowUp: statusInfo?.hasFollowUp,
+      });
+
     const payload: WebhookPayload = {
       taskId,
       session_id: sessionId,
       status: isPrEvent ? "pr_opened" : resolved.payloadStatus,
+      stage: effectiveStage,
+      outcome: effectiveOutcome,
+      question: effectiveQuestion,
       pr_url: prUrl,
       elapsed_ms: elapsedMs,
       last_log_snippet: snippet ? snippet.slice(0, 200) : undefined,

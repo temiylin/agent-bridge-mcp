@@ -129,8 +129,15 @@ export const ActionModals: React.FC<ModalsProps> = ({
               <div className="space-y-4 text-xs">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5 bg-base-100 p-3 rounded-xl border border-base-300">
                   <div>
-                    <span className="text-base-content/50">状态</span>
-                    <div className="font-bold mt-0.5">{detailsData.status?.state || 'unknown'}</div>
+                    <span className="text-base-content/50">状态 / 阶段 (Stage)</span>
+                    <div className="font-bold mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span>{detailsData.status?.state || 'unknown'}</span>
+                      {detailsData.status?.stage && (
+                        <span className="badge badge-xs badge-outline font-mono">
+                          {detailsData.status.stage}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <span className="text-base-content/50">Agent / Model</span>
@@ -140,6 +147,24 @@ export const ActionModals: React.FC<ModalsProps> = ({
                     <span className="text-base-content/50">账号 / Profile</span>
                     <div className="font-bold mt-0.5 truncate">{detailsData.status?.account || '-'}</div>
                   </div>
+                  {(detailsData.status?.question || detailsData.status?.report?.question) && (
+                    <div className="col-span-full bg-info/10 border border-info/30 rounded-lg p-2.5">
+                      <span className="text-info font-bold block mb-0.5">❓ Agent 待确认问题:</span>
+                      <div className="text-xs font-medium break-words">
+                        {detailsData.status?.question || detailsData.status?.report?.question}
+                      </div>
+                    </div>
+                  )}
+                  {detailsData.status?.report?.summary && (
+                    <div className="col-span-full">
+                      <span className="text-base-content/50">
+                        结构化摘要 ({detailsData.status?.report_source || 'report'})
+                      </span>
+                      <div className="text-xs mt-0.5 break-words">
+                        {detailsData.status.report.summary}
+                      </div>
+                    </div>
+                  )}
                   <div className="col-span-full">
                     <span className="text-base-content/50">工作目录 (Worktree)</span>
                     <div className="font-mono text-[11px] text-base-content/70 truncate">{detailsData.workDir || '-'}</div>

@@ -61,6 +61,9 @@ import {
   validateGitRepoPath,
 } from "./project-router.js";
 import { addProject, updateProject, removeProject } from "./project-tools.js";
+import { computeSystemIssues } from "./task-stage.js";
+import { checkWorkerLiveness } from "./worker-alive.js";
+import { isProfilePaused } from "./account-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -462,6 +465,19 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         const freeMem = (os.freemem() / (1024 * 1024 * 1024)).toFixed(1);
         const workerPid = process.pid;
 
+        let pausedPoolCount = 0;
+        try {
+          const profiles = loadPoolConfig(defaultInstance.rootDir);
+          pausedPoolCount = profiles.filter((p) => isProfilePaused(p)).length;
+        } catch {}
+
+        const liveness = checkWorkerLiveness(defaultInstance.rootDir);
+        const workerAlive = liveness.alive || Boolean(workerPid);
+        const systemIssues = computeSystemIssues(defaultInstance.rootDir, {
+          workerAlive,
+          pausedPoolCount,
+        });
+
         res.statusCode = 200;
         res.end(
           JSON.stringify({
@@ -472,28 +488,43 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
             totalMemGb: totalMem,
             freeMemGb: freeMem,
             workerPid,
+            systemIssues,
           })
         );
         return;
       }
 
-      // API: Recent Tasks
-      if (pathname === "/api/recent-tasks" && method === "GET") {
+      // API: Tasks (/api/tasks & /api/recent-tasks)
+      if ((pathname === "/api/tasks" || pathname === "/api/recent-tasks") && method === "GET") {
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : 50;
         const status = url.searchParams.get("status") || undefined;
+        const stageFilter = url.searchParams.get("stage") || undefined;
         const project = url.searchParams.get("project") || undefined;
         const sessionId = url.searchParams.get("session_id") || undefined;
 
         try {
-          const tasks = queryRecentTasks(defaultInstance.rootDir, {
+          let tasks = queryRecentTasks(defaultInstance.rootDir, {
             limit,
             status,
             project,
             session_id: sessionId,
           });
+          if (stageFilter) {
+            tasks = tasks.filter(
+              (t) => t.stage === stageFilter || (stageFilter === "needs_human" && t.stage.startsWith("needs_human/"))
+            );
+          }
+          let pausedPoolCount = 0;
+          try {
+            const profiles = loadPoolConfig(defaultInstance.rootDir);
+            pausedPoolCount = profiles.filter((p) => isProfilePaused(p)).length;
+          } catch {}
+          const systemIssues = computeSystemIssues(defaultInstance.rootDir, {
+            pausedPoolCount,
+          });
           res.statusCode = 200;
-          res.end(JSON.stringify({ success: true, tasks }));
+          res.end(JSON.stringify({ success: true, tasks, systemIssues }));
         } catch (err: any) {
           res.statusCode = 500;
           res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
@@ -786,6 +817,17 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           if (stashed) {
             removeStashedQuotaTask(rootDir, stashed.taskId);
           }
+
+          // Mark original failed/timed-out task as having a follow-up dispatched so deriveStage transitions it out of needs_human/failed
+          try {
+            const origSt = readStatus(rootDir, target);
+            if (origSt) {
+              writeStatus(rootDir, target, {
+                ...origSt,
+                hasFollowUp: true,
+              });
+            }
+          } catch {}
 
           audit(rootDir, {
             tool: "http_task_retry",
