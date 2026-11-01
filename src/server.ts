@@ -169,8 +169,9 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
       plan_id: z.string().optional().describe("Optional plan identifier to associate this task with"),
       step_id: z.string().optional().describe("Optional step identifier within the plan"),
+      pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task (e.g. for PR review, testing, or rework)"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete, plan_id, step_id }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete, plan_id, step_id, pr_url }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -436,6 +437,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
         if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
+        const cleanPrUrl = pr_url && typeof pr_url === "string" && pr_url.trim().length > 0 ? pr_url.trim() : undefined;
+        if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
         if (effectivePlan) {
           headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
           headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
@@ -530,7 +533,17 @@ ${finalPrompt}
               plan_version: planVersion,
               plan_title: planTitle,
             } : {}),
+            ...(cleanPrUrl ? {
+              pr_url: cleanPrUrl,
+              pr_urls: [cleanPrUrl],
+              pr_open: true,
+            } : {}),
           });
+          if (effectivePlan && cleanPrUrl) {
+            try {
+              setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep!.id, undefined, { taskId, prUrl: cleanPrUrl });
+            } catch {}
+          }
         } catch {}
 
         // If on_complete is provided, save opt-in task webhook
@@ -563,6 +576,7 @@ ${finalPrompt}
         if (notifyChannel) metaDetails += `\nnotify_channel: ${notifyChannel}`;
         if (hardTimeoutSec) metaDetails += `\nhard_timeout_seconds: ${hardTimeoutSec}`;
         if (notifyOverdueSec) metaDetails += `\nnotify_overdue_seconds: ${notifyOverdueSec}`;
+        if (cleanPrUrl) metaDetails += `\npr_url: ${cleanPrUrl}`;
 
         const [quota, early] = await Promise.all([
           withTimeout(

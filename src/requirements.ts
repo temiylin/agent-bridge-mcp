@@ -19,6 +19,7 @@ export interface RequirementRecord {
   updated_at?: string;
   dispatched_at?: string;
   task_id?: string;
+  pr_url?: string;
   merged_into?: string;
   merged_from?: string[];
 }
@@ -30,6 +31,7 @@ export interface RequirementCompact {
   topic?: string;
   session_id?: string;
   status: RequirementStatus;
+  pr_url?: string;
   created_at: string;
 }
 
@@ -137,6 +139,7 @@ export function listRequirements(
         topic: record.topic,
         session_id: record.session_id,
         status: record.status,
+        pr_url: record.pr_url,
         created_at: record.created_at,
       });
     } catch {

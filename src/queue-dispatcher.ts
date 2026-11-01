@@ -37,6 +37,7 @@ export interface TaskDispatchParams {
   on_complete?: TaskWebhookConfig;
   plan_id?: string;
   step_id?: string;
+  pr_url?: string;
 }
 
 export interface TaskDispatchResult {
@@ -149,6 +150,8 @@ export function dispatchTaskDirect(
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
   if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
   if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
+  const cleanPrUrl = params.pr_url && params.pr_url.trim().length > 0 ? params.pr_url.trim() : undefined;
+  if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
   if (effectivePlan) {
     headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
     headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
@@ -176,7 +179,7 @@ export function dispatchTaskDirect(
 
   if (effectivePlan && effectiveStep) {
     try {
-      setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep.id, "in_progress", { taskId });
+      setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep.id, "in_progress", { taskId, ...(cleanPrUrl ? { prUrl: cleanPrUrl } : {}) });
     } catch {}
   }
 
@@ -195,6 +198,11 @@ export function dispatchTaskDirect(
         step_id: effectiveStep!.id,
         plan_version: effectivePlan.version,
         plan_title: effectivePlan.title,
+      } : {}),
+      ...(cleanPrUrl ? {
+        pr_url: cleanPrUrl,
+        pr_urls: [cleanPrUrl],
+        pr_open: true,
       } : {}),
     });
   } catch {}

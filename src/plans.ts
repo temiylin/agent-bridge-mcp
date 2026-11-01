@@ -424,7 +424,7 @@ export function setPlanStepStatus(
   rootDir: string,
   planId: string,
   stepId: string,
-  status: PlanStepStatus,
+  status?: PlanStepStatus,
   extra?: { taskId?: string; prUrl?: string }
 ): { success: boolean; plan: Plan; step?: PlanStep } {
   return withPlanLock<{ success: boolean; plan: Plan; step?: PlanStep }>(rootDir, planId, (plan) => {
@@ -437,7 +437,9 @@ export function setPlanStepStatus(
       throw new Error(`Step "${stepId}" not found in plan "${planId}".`);
     }
 
-    step.status = status;
+    if (status) {
+      step.status = status;
+    }
     if (extra?.taskId && !step.task_ids.includes(extra.taskId)) {
       step.task_ids.push(extra.taskId);
     }

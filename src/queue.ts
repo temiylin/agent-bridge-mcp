@@ -46,6 +46,7 @@ export interface QueueCompactItem {
   project_id?: string;
   plan_id?: string;
   step_id?: string;
+  pr_url?: string;
 }
 
 export function isValidQueueId(id: unknown): id is string {
@@ -222,6 +223,7 @@ export function listQueue(
       const itemProj = (item.options?.project_id || item.options?.project || "").toString().trim();
       const itemPlan = (item.options?.plan_id || "").toString().trim();
       const itemStep = (item.options?.step_id || "").toString().trim();
+      const itemPrUrl = (item.options?.pr_url || "").toString().trim();
 
       if (normProj && itemProj.toLowerCase() !== normProj) {
         continue;
@@ -240,6 +242,7 @@ export function listQueue(
         project_id: itemProj || undefined,
         plan_id: itemPlan || undefined,
         step_id: itemStep || undefined,
+        pr_url: itemPrUrl || undefined,
       });
     }
   }

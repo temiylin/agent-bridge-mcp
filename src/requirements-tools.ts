@@ -34,8 +34,9 @@ export function registerRequirementsTools(
       title: z.string().describe("Requirement title"),
       raw_text: z.string().describe("Full raw requirement specification text"),
       tags: z.array(z.string()).optional().describe("Optional category or keyword tags"),
+      pr_url: z.string().optional().describe("Optional related GitHub Pull Request URL"),
     },
-    async ({ project, project_id, topic, session_id, title, raw_text, tags }) => {
+    async ({ project, project_id, topic, session_id, title, raw_text, tags, pr_url }) => {
       try {
         const effectiveProject = (project_id && project_id.trim()) || (project && project.trim());
         if (!effectiveProject) {
@@ -69,6 +70,7 @@ export function registerRequirementsTools(
           title: title.trim(),
           raw_text: raw_text.trim(),
           tags: tags && Array.isArray(tags) ? tags.map((t) => String(t).trim()).filter(Boolean) : undefined,
+          pr_url: (pr_url && pr_url.trim()) || undefined,
           status: "draft",
           created_at: createdAt,
         };
@@ -200,8 +202,9 @@ export function registerRequirementsTools(
       project: z.string().optional().describe("New project (legacy)"),
       project_id: z.string().optional().describe("New project ID or name"),
       status: z.enum(["draft", "dispatched", "merged", "archived"]).optional().describe("New status"),
+      pr_url: z.string().optional().describe("New or updated related GitHub PR URL"),
     },
-    async ({ id, title, raw_text, tags, topic, project, project_id, status }) => {
+    async ({ id, title, raw_text, tags, topic, project, project_id, status, pr_url }) => {
       try {
         if (!isValidRequirementId(id)) {
           return {
@@ -229,6 +232,7 @@ export function registerRequirementsTools(
         if (effectiveProjectUpdate !== undefined && effectiveProjectUpdate.length > 0) {
           record.project = effectiveProjectUpdate;
         }
+        if (pr_url !== undefined) record.pr_url = pr_url.trim();
         if (status !== undefined) record.status = status;
         record.updated_at = new Date().toISOString();
 
@@ -460,6 +464,7 @@ export function registerRequirementsTools(
           project_id: z.string().optional().describe("Optional project_id override (defaults to requirement.project)"),
           plan_id: z.string().optional().describe("Optional plan_id to link this requirement dispatch to an execution plan"),
           step_id: z.string().optional().describe("Optional step_id within the plan"),
+          pr_url: z.string().optional().describe("Optional related GitHub PR URL"),
           model: z.string().optional(),
           reasoning_effort: z.string().optional(),
           account: z.string().optional().describe("Optional agy account profile alias or 'auto'"),
@@ -500,6 +505,10 @@ export function registerRequirementsTools(
           (options?.project_id && options.project_id.trim()) ||
           (record.project && record.project.trim()) ||
           undefined;
+        const effectivePrUrl =
+          (options?.pr_url && options.pr_url.trim()) ||
+          (record.pr_url && record.pr_url.trim()) ||
+          undefined;
 
         if (effectiveSessionId && queueIfBusy && isSessionBusy(rootDir, effectiveSessionId)) {
           // Enqueue instead
@@ -516,6 +525,7 @@ export function registerRequirementsTools(
               project_id: effectiveProjectId,
               plan_id: options?.plan_id,
               step_id: options?.step_id,
+              pr_url: effectivePrUrl,
               on_complete: options?.on_complete,
             },
             mode: "auto",
@@ -536,6 +546,7 @@ export function registerRequirementsTools(
                     project_id: effectiveProjectId,
                     plan_id: options?.plan_id,
                     step_id: options?.step_id,
+                    pr_url: effectivePrUrl,
                     message: `Session is busy. Enqueued requirement for auto-dispatch.`,
                   },
                   null,
@@ -559,6 +570,7 @@ export function registerRequirementsTools(
           project_id: effectiveProjectId,
           plan_id: options?.plan_id,
           step_id: options?.step_id,
+          pr_url: effectivePrUrl,
           on_complete: options?.on_complete,
         });
 
@@ -567,6 +579,7 @@ export function registerRequirementsTools(
         record.task_id = dispatchRes.taskId;
         record.dispatched_at = now;
         record.updated_at = now;
+        if (effectivePrUrl) record.pr_url = effectivePrUrl;
         writeRequirement(rootDir, record);
 
         logger.info(`dispatch_requirement: dispatched requirement ${id} as taskId ${dispatchRes.taskId} (project=${effectiveProjectId})`);
@@ -586,6 +599,7 @@ export function registerRequirementsTools(
                   project_id: effectiveProjectId,
                   plan_id: options?.plan_id,
                   step_id: options?.step_id,
+                  pr_url: effectivePrUrl,
                 },
                 null,
                 2
