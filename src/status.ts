@@ -63,6 +63,17 @@ export function writeStatus(
   const targetPath = resolveSafePath(statusDir, root, `${taskId}.json`);
   const tmpPath = resolveSafePath(statusDir, root, `${taskId}.json.tmp`);
 
+  // Prevent active/non-terminal status refreshes (running / suspected_stalled) from overwriting
+  // an already persisted "cancelled" terminal state.
+  if (ACTIVE_STATES.includes(info.state) && fs.existsSync(targetPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(targetPath, "utf8")) as TaskStatusInfo;
+      if (existing && existing.state === "cancelled") {
+        return;
+      }
+    } catch {}
+  }
+
   const payload: TaskStatusInfo = {
     taskId,
     state: info.state,

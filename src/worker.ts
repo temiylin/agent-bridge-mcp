@@ -1173,7 +1173,13 @@ async function executeTaskFile(
       let stuckCheckInterval: NodeJS.Timeout | null = null;
       if (isNotifyEnabled && notifyOn.has("stuck")) {
         stuckCheckInterval = setInterval(() => {
-          if (stuckWarned) return;
+          if (stuckWarned || isCancelled || seenCancelRequested) return;
+          try {
+            if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+              seenCancelRequested = true;
+              return;
+            }
+          } catch {}
 
           // Check the 4 activity signals for this specific task
           const act = sessionTracker.checkActivity({
@@ -1241,7 +1247,13 @@ async function executeTaskFile(
       const stallMs = getStallThresholdMs();
       let stallFlagged = false;
       const stallCheckInterval: NodeJS.Timeout | null = stallMs > 0 ? setInterval(() => {
-        if (stallFlagged) return;
+        if (stallFlagged || isCancelled || seenCancelRequested) return;
+        try {
+          if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+            seenCancelRequested = true;
+            return;
+          }
+        } catch {}
         const now = Date.now();
         if (now - lastOutputTime < stallMs) return;
         const dirMtime = newestMtime(effectiveWorkingDir);
@@ -1264,9 +1276,13 @@ async function executeTaskFile(
         triggerTaskWebhook(currentRoot, taskId, "suspected_stalled", sessionId, now - new Date(startedAt).getTime()).catch(() => {});
       }, Math.min(30000, Math.max(1000, Math.floor(stallMs / 4)))) : null;
       const clearStall = () => {
-        if (!stallFlagged) return;
+        if (!stallFlagged || isCancelled || seenCancelRequested) return;
         stallFlagged = false;
         try {
+          if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+            seenCancelRequested = true;
+            return;
+          }
           writeStatus(currentRoot, taskId, {
             state: "running", agent: agentName, model, reasoningEffort, account: effectiveAccountAlias, startedAt,
             ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),

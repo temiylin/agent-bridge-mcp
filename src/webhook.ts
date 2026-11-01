@@ -18,6 +18,7 @@ export const TERMINAL_WEBHOOK_STATUSES = new Set<string>([
 ]);
 
 const inMemoryDeliveredTerminalTasks = new Set<string>();
+const inMemoryInFlightTerminalTasks = new Set<string>();
 
 export interface TaskWebhookConfig {
   url: string;
@@ -279,13 +280,14 @@ export async function triggerTaskWebhook(
     const webhooksDir = getWebhooksDir(rootDir);
     const deliveredPath = path.join(webhooksDir, `${taskId}.delivered`);
     if (isTerminal) {
-      if (inMemoryDeliveredTerminalTasks.has(taskId) || fs.existsSync(deliveredPath)) {
+      if (
+        inMemoryDeliveredTerminalTasks.has(taskId) ||
+        inMemoryInFlightTerminalTasks.has(taskId) ||
+        fs.existsSync(deliveredPath)
+      ) {
         return;
       }
-      inMemoryDeliveredTerminalTasks.add(taskId);
-      try {
-        fs.writeFileSync(deliveredPath, resolved.payloadStatus, "utf8");
-      } catch {}
+      inMemoryInFlightTerminalTasks.add(taskId);
     }
 
     // Extract last log snippet <= 200 chars
@@ -303,7 +305,19 @@ export async function triggerTaskWebhook(
       last_log_snippet: snippet ? snippet.slice(0, 200) : undefined,
     };
 
-    // Deliver with retry (non-blocking)
-    deliverWebhookWithRetry(config.url, payload, config.headers, config.secret).catch(() => {});
+    // Deliver with retry and only persist .delivered after successful delivery
+    deliverWebhookWithRetry(config.url, payload, config.headers, config.secret)
+      .then((ok) => {
+        inMemoryInFlightTerminalTasks.delete(taskId);
+        if (ok && isTerminal) {
+          inMemoryDeliveredTerminalTasks.add(taskId);
+          try {
+            fs.writeFileSync(deliveredPath, resolved.payloadStatus, "utf8");
+          } catch {}
+        }
+      })
+      .catch(() => {
+        inMemoryInFlightTerminalTasks.delete(taskId);
+      });
   } catch {}
 }
