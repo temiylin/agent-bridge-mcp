@@ -83,6 +83,7 @@ export const ActionHomeView: React.FC<ActionHomeViewProps> = ({
     systemIssues,
     resumeQueueSession,
     setSettingsOpen,
+    openPlanDrawer,
     showToast,
   } = useAppStore();
 
@@ -200,6 +201,16 @@ export const ActionHomeView: React.FC<ActionHomeViewProps> = ({
                           <span className="text-[11px] text-base-content/60 font-mono">
                             [{task.agent}{task.model ? ` / ${task.model}` : ''}]
                           </span>
+                        )}
+                        {task.plan_id && (
+                          <button
+                            type="button"
+                            onClick={() => openPlanDrawer(task.plan_id!, task.step_id)}
+                            className="badge badge-info badge-outline badge-xs font-mono hover:badge-primary cursor-pointer gap-0.5"
+                            title={`关联计划: ${task.plan_title || task.plan_id}${task.step_id ? ` · ${task.step_id}` : ''}`}
+                          >
+                            <span>📋 {task.plan_title || task.plan_id}{task.step_id ? ` · ${task.step_id}` : ''}</span>
+                          </button>
                         )}
                       </div>
                       <p className="text-xs text-base-content/80 break-words line-clamp-2">

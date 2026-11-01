@@ -4,6 +4,7 @@ import path from "node:path";
 export interface AuditEntry {
   tool?: string;
   taskId?: string;
+  planId?: string;
   agent?: string;
   state?: string;
   exitCode?: number | null;
@@ -34,6 +35,7 @@ export function audit(root: string, entry: AuditEntry): void {
   const filteredEntry: Record<string, any> = {};
   if (entry.tool !== undefined) filteredEntry.tool = entry.tool;
   if (entry.taskId !== undefined) filteredEntry.taskId = entry.taskId;
+  if (entry.planId !== undefined) filteredEntry.planId = entry.planId;
   if (entry.agent !== undefined) filteredEntry.agent = entry.agent;
   if (entry.state !== undefined) filteredEntry.state = entry.state;
   if (entry.exitCode !== undefined) filteredEntry.exitCode = entry.exitCode;

@@ -20,6 +20,7 @@ import {
   buildProjectGitRulesPromptNote,
 } from "./project-router.js";
 import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
+import { getPlan, formatPlanPromptPrefix, setPlanStepStatus, Plan, PlanStep } from "./plans.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -34,6 +35,8 @@ export interface TaskDispatchParams {
   project_dir?: string;
   timeout_seconds?: number;
   on_complete?: TaskWebhookConfig;
+  plan_id?: string;
+  step_id?: string;
 }
 
 export interface TaskDispatchResult {
@@ -101,6 +104,26 @@ export function dispatchTaskDirect(
         : undefined;
   const effectiveProjectDir = params.project_dir || configuredRepoPath;
 
+  let effectivePlan: Plan | null = null;
+  let effectiveStep: PlanStep | null = null;
+  let planPromptPrefix = "";
+  if (params.plan_id && params.plan_id.trim()) {
+    const cleanPlanId = params.plan_id.trim();
+    if (!params.step_id || !params.step_id.trim()) {
+      throw new Error("step_id is required when plan_id is provided.");
+    }
+    const cleanStepId = params.step_id.trim();
+    effectivePlan = getPlan(rootDir, cleanPlanId);
+    if (!effectivePlan) {
+      throw new Error(`Plan "${cleanPlanId}" not found.`);
+    }
+    effectiveStep = effectivePlan.steps.find((s) => s.id === cleanStepId) || null;
+    if (!effectiveStep) {
+      throw new Error(`Step "${cleanStepId}" not found in plan "${cleanPlanId}".`);
+    }
+    planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
+  }
+
   const taskId = generateTaskId();
   const taskFilePath = resolveSafePath(tasksDir, rootDir, `${taskId}.md`);
   const createdAt = new Date().toISOString();
@@ -121,6 +144,12 @@ export function dispatchTaskDirect(
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
   if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
   if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
+  if (effectivePlan) {
+    headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
+    headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
+    headerMeta += `- **Plan Version**: ${effectivePlan.version}\n`;
+    headerMeta += `- **Plan Title**: ${effectivePlan.title}\n`;
+  }
   headerMeta += `- **Created At**: ${createdAt}\n`;
 
   const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
@@ -128,7 +157,8 @@ export function dispatchTaskDirect(
   const reportPromptNote = prompt.includes("[Structured Report Requirement]")
     ? ""
     : buildReportJsonPromptInstruction(taskReportDir);
-  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}${gitPromptNote}${reportPromptNote}\n`;
+  const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${prompt}` : prompt;
+  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${promptWithPlan}${gitPromptNote}${reportPromptNote}\n`;
 
   fs.writeFileSync(taskFilePath, content, "utf8");
 
@@ -138,6 +168,12 @@ export function dispatchTaskDirect(
     agent: agentName || undefined,
     state: "dispatched",
   });
+
+  if (effectivePlan && effectiveStep) {
+    try {
+      setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep.id, "in_progress", { taskId });
+    } catch {}
+  }
 
   try {
     writeStatus(rootDir, taskId, {
@@ -149,6 +185,12 @@ export function dispatchTaskDirect(
       reasoningEffort: params.reasoning_effort || undefined,
       account: effectiveAccount || undefined,
       startedAt: createdAt,
+      ...(effectivePlan ? {
+        plan_id: effectivePlan.id,
+        step_id: effectiveStep!.id,
+        plan_version: effectivePlan.version,
+        plan_title: effectivePlan.title,
+      } : {}),
     });
   } catch {}
 
@@ -293,6 +335,8 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     project_dir: item.options?.project_dir,
     timeout_seconds: item.options?.timeout_seconds,
     on_complete: item.options?.on_complete,
+    plan_id: item.options?.plan_id || item.options?.planId,
+    step_id: item.options?.step_id || item.options?.stepId,
   });
 
   // Remove or mark dispatched. The spec says:

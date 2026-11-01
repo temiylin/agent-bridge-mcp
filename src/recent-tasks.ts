@@ -38,6 +38,9 @@ export interface RecentTaskItem {
   finished_at?: string;
   pr_url?: string;
   last_log_line?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
   /** Raw task state when it differs from status (e.g. suspected_stalled, cancelled). */
   state?: string;
   reason?: string;
@@ -105,6 +108,7 @@ export function queryRecentTasks(
     status?: string;
     project?: string;
     session_id?: string;
+    plan_id?: string;
   }
 ): RecentTaskItem[] {
   const limit = Math.max(1, Math.min(100, filter?.limit || 20));
@@ -154,6 +158,9 @@ export function queryRecentTasks(
         let taskAgent: string | undefined = statusObj.agent;
         let taskModel: string | undefined = statusObj.model;
         let taskAccount: string | undefined = statusObj.account;
+        let planId: string | undefined = statusObj.plan_id || statusObj.planId;
+        let stepId: string | undefined = statusObj.step_id || statusObj.stepId;
+        let planTitle: string | undefined = statusObj.plan_title || statusObj.planTitle;
 
         const taskFilePath = path.join(tasksDir, `${taskId}.md`);
         if (fs.existsSync(taskFilePath)) {
@@ -181,6 +188,18 @@ export function queryRecentTasks(
             if (!taskAccount) {
               const accMatch = taskContent.match(/- \*\*Account\*\*:\s*([^\r\n]+)/i);
               if (accMatch) taskAccount = accMatch[1].trim();
+            }
+            if (!planId) {
+              const planMatch = taskContent.match(/- \*\*Plan ID\*\*:\s*([^\r\n]+)/i);
+              if (planMatch) planId = planMatch[1].trim();
+            }
+            if (!stepId) {
+              const stepMatch = taskContent.match(/- \*\*Plan Step ID\*\*:\s*([^\r\n]+)/i);
+              if (stepMatch) stepId = stepMatch[1].trim();
+            }
+            if (!planTitle) {
+              const titleMatch = taskContent.match(/- \*\*Plan Title\*\*:\s*([^\r\n]+)/i);
+              if (titleMatch) planTitle = titleMatch[1].trim();
             }
           } catch {}
         }
@@ -252,6 +271,7 @@ export function queryRecentTasks(
         // Apply filters
         if (filter?.status && mappedStatus !== filter.status) continue;
         if (filter?.session_id && sessionId !== filter.session_id) continue;
+        if (filter?.plan_id && planId !== filter.plan_id) continue;
         if (filter?.project) {
           const fp = filter.project.trim().toLowerCase();
           const matchProj =
@@ -307,6 +327,9 @@ export function queryRecentTasks(
           finished_at,
           pr_url: prUrl,
           last_log_line: lastLogLine,
+          ...(planId ? { plan_id: planId } : {}),
+          ...(stepId ? { step_id: stepId } : {}),
+          ...(planTitle ? { plan_title: planTitle } : {}),
           ...(stateStr !== mappedStatus ? { state: stateStr } : {}),
           ...(statusObj.reason && mappedStatus !== "completed" ? { reason: String(statusObj.reason).slice(0, 300) } : {}),
         });
@@ -378,13 +401,15 @@ export function registerRecentTasksTool(
     status: z.enum(["running", "completed", "failed", "queued", "paused", "cancelled"]).optional().describe("Filter by task status"),
     project: z.string().optional().describe("Filter by project identifier"),
     session_id: z.string().optional().describe("Filter by topic / session ID"),
+    plan_id: z.string().optional().describe("Filter by plan ID"),
   };
 
-  const handler = async ({ limit, status, project, session_id }: {
+  const handler = async ({ limit, status, project, session_id, plan_id }: {
     limit?: number;
     status?: "running" | "completed" | "failed" | "queued" | "paused" | "cancelled";
     project?: string;
     session_id?: string;
+    plan_id?: string;
   }) => {
     try {
       audit(rootDir, { tool: "list_recent_tasks" });
@@ -393,6 +418,7 @@ export function registerRecentTasksTool(
         status,
         project: project?.trim(),
         session_id: session_id?.trim(),
+        plan_id: plan_id?.trim(),
       });
 
       return {

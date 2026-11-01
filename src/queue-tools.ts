@@ -15,6 +15,7 @@ import {
 import { resolveSessionId } from "./sessions.js";
 import { readStatus } from "./status.js";
 import { resolveProject } from "./project-router.js";
+import { getPlan } from "./plans.js";
 
 export function registerQueueTools(
   server: McpServer,
@@ -42,9 +43,13 @@ export function registerQueueTools(
           project_id: z.string().optional().describe("Optional project ID to inherit project defaults"),
           project_dir: z.string().optional().describe("Optional project working directory"),
           timeout_seconds: z.number().int().positive().optional(),
+          plan_id: z.string().optional().describe("Optional plan identifier to associate with"),
+          step_id: z.string().optional().describe("Optional step identifier within the plan"),
         })
         .optional()
         .describe("Optional agent/model/project options"),
+      plan_id: z.string().optional().describe("Optional plan identifier to associate with"),
+      step_id: z.string().optional().describe("Optional step identifier within the plan"),
       on_complete: z
         .object({
           url: z.string().describe("Destination webhook URL (must be http/https)"),
@@ -56,12 +61,51 @@ export function registerQueueTools(
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
       mode: z.enum(["auto", "notify"]).default("auto").describe("'auto' dispatches automatically when turn comes; 'notify' marks ready for manual triggering"),
     },
-    async ({ session_id, after_task_id, prompt, options, on_complete, mode }) => {
+    async ({ session_id, after_task_id, prompt, options, on_complete, mode, plan_id, step_id }) => {
       try {
         if (!prompt || prompt.trim().length === 0) {
           return {
             isError: true,
             content: [{ type: "text", text: "Error: prompt must be a non-empty string." }],
+          };
+        }
+
+        const effectivePlanId = plan_id?.trim() || options?.plan_id?.trim();
+        const effectiveStepId = step_id?.trim() || options?.step_id?.trim();
+
+        if (effectivePlanId) {
+          if (!effectiveStepId) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: "Error: step_id is required when plan_id is provided." }],
+            };
+          }
+          let p: any;
+          try {
+            p = getPlan(rootDir, effectivePlanId);
+          } catch (err: any) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error loading plan "${effectivePlanId}": ${err?.message || String(err)}` }],
+            };
+          }
+          if (!p) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error: Plan "${effectivePlanId}" not found.` }],
+            };
+          }
+          const st = p.steps.find((s: any) => s.id === effectiveStepId);
+          if (!st) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error: Step "${effectiveStepId}" not found in plan "${effectivePlanId}".` }],
+            };
+          }
+        } else if (effectiveStepId) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: "Error: step_id cannot be specified without plan_id." }],
           };
         }
 
@@ -88,6 +132,7 @@ export function registerQueueTools(
         let mergedOptions: Record<string, any> = {
           ...(options || {}),
           ...(on_complete ? { on_complete } : {}),
+          ...(effectivePlanId ? { plan_id: effectivePlanId, step_id: effectiveStepId } : {}),
         };
         if (mergedOptions.project_id) {
           const projRes = resolveProject(rootDir, { projectId: mergedOptions.project_id });

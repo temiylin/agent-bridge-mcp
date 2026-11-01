@@ -55,6 +55,14 @@ export interface TaskStatusInfo {
   question?: string | null;
   pr_open?: boolean;
   hasFollowUp?: boolean;
+  plan_id?: string;
+  step_id?: string;
+  plan_version?: number;
+  plan_title?: string;
+  planId?: string;
+  stepId?: string;
+  planVersion?: number;
+  planTitle?: string;
 }
 
 export function getStatusDir(root: string): string {
@@ -98,6 +106,19 @@ export function writeStatus(
         }
         if (info.pr_open === undefined && existing?.pr_open !== undefined) {
           info.pr_open = existing.pr_open;
+        }
+        const exAny = existing as any;
+        if (!info.plan_id && !info.planId && (exAny?.plan_id || exAny?.planId)) {
+          info.plan_id = exAny.plan_id || exAny.planId;
+        }
+        if (!info.step_id && !info.stepId && (exAny?.step_id || exAny?.stepId)) {
+          info.step_id = exAny.step_id || exAny.stepId;
+        }
+        if (info.plan_version === undefined && info.planVersion === undefined && (exAny?.plan_version !== undefined || exAny?.planVersion !== undefined)) {
+          info.plan_version = exAny.plan_version !== undefined ? exAny.plan_version : exAny.planVersion;
+        }
+        if (!info.plan_title && !info.planTitle && (exAny?.plan_title || exAny?.planTitle)) {
+          info.plan_title = exAny.plan_title || exAny.planTitle;
         }
       } catch {}
     }
@@ -148,6 +169,12 @@ export function writeStatus(
     ...(info.question !== undefined ? { question: info.question } : (info.report?.question ? { question: info.report.question } : {})),
     ...(info.pr_open !== undefined ? { pr_open: info.pr_open } : {}),
     ...(info.hasFollowUp !== undefined ? { hasFollowUp: info.hasFollowUp } : {}),
+    ...(info.plan_id || info.planId ? { plan_id: info.plan_id || info.planId } : {}),
+    ...(info.step_id || info.stepId ? { step_id: info.step_id || info.stepId } : {}),
+    ...(info.plan_version !== undefined || info.planVersion !== undefined
+      ? { plan_version: info.plan_version !== undefined ? info.plan_version : info.planVersion }
+      : {}),
+    ...(info.plan_title || info.planTitle ? { plan_title: info.plan_title || info.planTitle } : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");

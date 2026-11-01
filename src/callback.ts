@@ -25,6 +25,9 @@ export interface TaskCallbackPayload {
   log_path: string;
   pr_url?: string | null;
   last_log_lines?: string[];
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
 }
 
 export interface ResolveCallbackHeadersOptions {
@@ -57,6 +60,12 @@ export interface TaskCallbackOptions {
   outputLog?: string;
   rootDir?: string;
   logger?: (level: "INFO" | "WARN" | "ERROR", msg: string) => void;
+  planId?: string;
+  stepId?: string;
+  planTitle?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
 }
 
 /**
@@ -283,6 +292,9 @@ export async function sendCompletionCallback(options: TaskCallbackOptions): Prom
     log_path: logPath,
     ...(detectedPrUrl !== undefined ? { pr_url: detectedPrUrl } : (prUrl === null ? { pr_url: null } : {})),
     ...(lastLogLines && lastLogLines.length > 0 ? { last_log_lines: lastLogLines } : {}),
+    ...(options.plan_id || options.planId ? { plan_id: options.plan_id || options.planId } : {}),
+    ...(options.step_id || options.stepId ? { step_id: options.step_id || options.stepId } : {}),
+    ...(options.plan_title || options.planTitle ? { plan_title: options.plan_title || options.planTitle } : {}),
   };
 
   const bodyStr = JSON.stringify(payload);

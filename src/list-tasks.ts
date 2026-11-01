@@ -27,6 +27,9 @@ export interface TaskSummaryItem {
   startedAt?: string;
   finishedAt?: string;
   exitCode?: number | null;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
 }
 
 export function registerListTasksTool(
@@ -40,14 +43,16 @@ export function registerListTasksTool(
     {
       limit: z.number().int().optional().describe("Maximum number of tasks to return (1-50, default 20)"),
       project_id: z.string().optional().describe("Optional project ID or name to filter tasks by"),
+      plan_id: z.string().optional().describe("Optional plan ID to filter tasks by"),
     },
     { readOnlyHint: true, destructiveHint: false },
-    async ({ limit, project_id }) => {
+    async ({ limit, project_id, plan_id }) => {
       audit(rootDir, { tool: "list_tasks_summary" });
 
       const rawLimit = typeof limit === "number" && !Number.isNaN(limit) ? limit : 20;
       const effectiveLimit = Math.max(1, Math.min(50, Math.floor(rawLimit)));
       const filterProj = project_id?.trim().toLowerCase();
+      const filterPlan = plan_id?.trim();
 
       const statusDir = path.join(rootDir, "status");
       const tasksDir = path.join(rootDir, "tasks");
@@ -86,16 +91,25 @@ export function registerListTasksTool(
                 }
                 if (typeof parsed.projectId === "string" && parsed.projectId) item.projectId = parsed.projectId;
                 if (typeof parsed.projectName === "string" && parsed.projectName) item.projectName = parsed.projectName;
+                if (parsed.plan_id || parsed.planId) item.plan_id = parsed.plan_id || parsed.planId;
+                if (parsed.step_id || parsed.stepId) item.step_id = parsed.step_id || parsed.stepId;
+                if (parsed.plan_title || parsed.planTitle) item.plan_title = parsed.plan_title || parsed.planTitle;
 
-                if (!item.projectId || !item.projectName) {
+                if (!item.projectId || !item.projectName || !item.plan_id) {
                   const tf = path.join(tasksDir, `${taskId}.md`);
                   if (fs.existsSync(tf)) {
                     try {
                       const tc = fs.readFileSync(tf, "utf8");
                       const idM = tc.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/im);
                       const nameM = tc.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/im);
+                      const planIdM = tc.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/im);
+                      const planStepIdM = tc.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/im);
+                      const planTitleM = tc.match(/^-[ \t]*\*\*Plan Title\*\*:[ \t]*([^\r\n]*)$/im);
                       if (!item.projectId && idM) item.projectId = idM[1].trim();
                       if (!item.projectName && nameM) item.projectName = nameM[1].trim();
+                      if (!item.plan_id && planIdM) item.plan_id = planIdM[1].trim();
+                      if (!item.step_id && planStepIdM) item.step_id = planStepIdM[1].trim();
+                      if (!item.plan_title && planTitleM) item.plan_title = planTitleM[1].trim();
                     } catch {}
                   }
                 }
@@ -106,6 +120,10 @@ export function registerListTasksTool(
                   if (pId !== filterProj && pName !== filterProj) {
                     continue;
                   }
+                }
+
+                if (filterPlan && item.plan_id !== filterPlan) {
+                  continue;
                 }
 
                 if (typeof parsed.agent === "string") item.agent = parsed.agent;

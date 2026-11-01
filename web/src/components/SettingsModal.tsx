@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   X,
@@ -13,9 +13,10 @@ import {
   Edit3,
   CheckCircle2,
   AlertCircle,
+  FileText,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
-import type { ProjectConfigItem } from '../types';
+import type { ProjectConfigItem, PlanStepStatus } from '../types';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -27,6 +28,11 @@ export const SettingsModal: React.FC = () => {
     projects,
     saveProject,
     deleteProject,
+    plans,
+    loadPlans,
+    loadPlanDetails,
+    savePlan,
+    archivePlan,
     showToast,
     systemStats,
     poolAccounts,
@@ -38,10 +44,111 @@ export const SettingsModal: React.FC = () => {
     syncAuth,
   } = useAppStore();
 
-  const [activeTab, setActiveTab] = useState<'projects' | 'routing' | 'agents' | 'pool' | 'system'>('projects');
+  const [activeTab, setActiveTab] = useState<'projects' | 'plans' | 'routing' | 'agents' | 'pool' | 'system'>('projects');
   const [instructions, setInstructions] = useState(config?.routing.instructions || '');
   const [defaultAgent, setDefaultAgent] = useState(config?.routing.defaultAgent || 'codex');
   const [rules, setRules] = useState(config?.routing.rules || []);
+
+  // Plan Form State
+  const [editingPlanMode, setEditingPlanMode] = useState<'none' | 'create' | 'update'>('none');
+  const [planSaving, setPlanSaving] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planForm, setPlanForm] = useState({
+    id: '',
+    title: '',
+    project_id: '',
+    context: '',
+    steps: [] as Array<{ id: string; title: string; detail: string; status: PlanStepStatus }>,
+  });
+
+  useEffect(() => {
+    if (activeTab === 'plans') {
+      loadPlans();
+    }
+  }, [activeTab]);
+
+  const handleStartCreatePlan = () => {
+    setPlanForm({
+      id: '',
+      title: '',
+      project_id: '',
+      context: '',
+      steps: [
+        { id: 'step-1', title: 'Step 1', detail: '', status: 'todo' },
+      ],
+    });
+    setPlanError(null);
+    setEditingPlanMode('create');
+  };
+
+  const handleStartEditPlan = async (planId: string) => {
+    setPlanError(null);
+    const plan = await loadPlanDetails(planId);
+    if (!plan) {
+      showToast('获取计划详情失败');
+      return;
+    }
+    setPlanForm({
+      id: plan.id,
+      title: plan.title,
+      project_id: plan.project_id || '',
+      context: plan.context || '',
+      steps: (plan.steps || []).map((s) => ({
+        id: s.id,
+        title: s.title,
+        detail: s.detail || '',
+        status: s.status,
+      })),
+    });
+    setEditingPlanMode('update');
+  };
+
+  const handleSavePlan = async () => {
+    if (editingPlanMode === 'none') return;
+    if (!planForm.title.trim()) {
+      setPlanError('计划标题不能为空');
+      return;
+    }
+    setPlanSaving(true);
+    setPlanError(null);
+    try {
+      const payload: Record<string, any> = {
+        title: planForm.title.trim(),
+        project_id: planForm.project_id.trim() || undefined,
+        context: planForm.context,
+        steps: planForm.steps.map((s, idx) => ({
+          id: s.id.trim() || `step-${idx + 1}`,
+          title: s.title.trim() || `Step ${idx + 1}`,
+          detail: s.detail,
+          status: s.status,
+        })),
+      };
+      if (editingPlanMode === 'create' && planForm.id.trim()) {
+        payload.id = planForm.id.trim();
+      }
+      if (editingPlanMode === 'update') {
+        payload.plan_id = planForm.id;
+      }
+      const res = await savePlan(editingPlanMode, payload);
+      if (res.success) {
+        setEditingPlanMode('none');
+      } else {
+        setPlanError(res.error || '保存计划失败');
+      }
+    } finally {
+      setPlanSaving(false);
+    }
+  };
+
+  const handleArchivePlan = async (planId: string) => {
+    if (!confirm(`确定要归档计划 "${planId}" 吗？归档后该计划不可再派发任务。`)) {
+      return;
+    }
+    const res = await archivePlan(planId);
+    if (!res.success) {
+      alert(`归档失败: ${res.error}`);
+    }
+  };
 
   // Project Form State
   const [editingProjMode, setEditingProjMode] = useState<'none' | 'add' | 'update'>('none');
@@ -284,6 +391,13 @@ export const SettingsModal: React.FC = () => {
           >
             <FolderGit2 className="w-3.5 h-3.5" />
             <span>{t('tabProjects')}</span>
+          </button>
+          <button
+            className={`tab tab-sm font-semibold gap-1.5 ${activeTab === 'plans' ? 'tab-active !bg-primary !text-primary-content' : ''}`}
+            onClick={() => setActiveTab('plans')}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>计划 (Plans)</span>
           </button>
           <button
             className={`tab tab-sm font-semibold gap-1.5 ${activeTab === 'routing' ? 'tab-active !bg-primary !text-primary-content' : ''}`}
@@ -600,6 +714,293 @@ export const SettingsModal: React.FC = () => {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'plans' && (
+            <div className="space-y-4">
+              {editingPlanMode !== 'none' ? (
+                <div className="card bg-base-100 border border-base-300 p-4 space-y-4 text-xs">
+                  <div className="flex items-center justify-between border-b border-base-300 pb-2">
+                    <h4 className="font-bold text-sm flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-primary" />
+                      <span>{editingPlanMode === 'create' ? '新建多步骤计划' : `编辑计划: ${planForm.id}`}</span>
+                    </h4>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => setEditingPlanMode('none')}
+                    >
+                      取消
+                    </button>
+                  </div>
+
+                  {planError && (
+                    <div className="alert alert-error text-xs py-2">
+                      <AlertCircle className="w-4 h-4" />
+                      <span>{planError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="label py-1 font-semibold">计划标题 (Title) *</label>
+                      <input
+                        type="text"
+                        className="input input-sm input-bordered w-full"
+                        placeholder="例如: 重构统一认证流程"
+                        value={planForm.title}
+                        onChange={(e) => setPlanForm({ ...planForm, title: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="label py-1 font-semibold">计划 ID (可选，留空自动生成)</label>
+                      <input
+                        type="text"
+                        className="input input-sm input-bordered w-full font-mono"
+                        placeholder="plan_auth_refactor"
+                        disabled={editingPlanMode === 'update'}
+                        value={planForm.id}
+                        onChange={(e) => setPlanForm({ ...planForm, id: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="label py-1 font-semibold">关联项目 (Project)</label>
+                    <select
+                      className="select select-sm select-bordered w-full"
+                      value={planForm.project_id}
+                      onChange={(e) => setPlanForm({ ...planForm, project_id: e.target.value })}
+                    >
+                      <option value="">(无项目关联)</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          📁 {p.name || p.id} ({p.id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="label py-1 font-semibold">背景说明与目标 (Markdown Context)</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full h-28 font-mono text-xs"
+                      placeholder="计划整体目标、技术约束、上下文信息..."
+                      value={planForm.context}
+                      onChange={(e) => setPlanForm({ ...planForm, context: e.target.value })}
+                    />
+                  </div>
+
+                  {/* Steps Editor */}
+                  <div className="space-y-2 border-t border-base-300 pt-3">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-xs uppercase tracking-wider text-base-content/70">
+                        步骤列表 ({planForm.steps.length})
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline btn-primary gap-1"
+                        onClick={() => {
+                          const nextIdx = planForm.steps.length + 1;
+                          setPlanForm({
+                            ...planForm,
+                            steps: [
+                              ...planForm.steps,
+                              { id: `step-${nextIdx}`, title: `Step ${nextIdx}`, detail: '', status: 'todo' },
+                            ],
+                          });
+                        }}
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>添加步骤</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {planForm.steps.map((st, sIdx) => (
+                        <div key={sIdx} className="card bg-base-200/60 border border-base-300 p-3 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="badge badge-sm badge-neutral font-mono font-bold">#{sIdx + 1}</span>
+                            <input
+                              type="text"
+                              className="input input-xs input-bordered w-24 font-mono"
+                              placeholder="step-id"
+                              value={st.id}
+                              onChange={(e) => {
+                                const next = [...planForm.steps];
+                                next[sIdx] = { ...st, id: e.target.value };
+                                setPlanForm({ ...planForm, steps: next });
+                              }}
+                            />
+                            <input
+                              type="text"
+                              className="input input-xs input-bordered flex-1 font-semibold"
+                              placeholder="步骤标题"
+                              value={st.title}
+                              onChange={(e) => {
+                                const next = [...planForm.steps];
+                                next[sIdx] = { ...st, title: e.target.value };
+                                setPlanForm({ ...planForm, steps: next });
+                              }}
+                            />
+                            <select
+                              className="select select-xs select-bordered font-mono"
+                              value={st.status}
+                              onChange={(e) => {
+                                const next = [...planForm.steps];
+                                next[sIdx] = { ...st, status: e.target.value as PlanStepStatus };
+                                setPlanForm({ ...planForm, steps: next });
+                              }}
+                            >
+                              <option value="todo">todo</option>
+                              <option value="in_progress">in_progress</option>
+                              <option value="done">done</option>
+                              <option value="failed">failed</option>
+                              <option value="skipped">skipped</option>
+                            </select>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs text-rose-400 btn-square"
+                              title="删除此步骤"
+                              onClick={() => {
+                                setPlanForm({
+                                  ...planForm,
+                                  steps: planForm.steps.filter((_, idx) => idx !== sIdx),
+                                });
+                              }}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <textarea
+                            className="textarea textarea-bordered w-full h-16 text-xs font-mono"
+                            placeholder="步骤详细要求与说明..."
+                            value={st.detail}
+                            onChange={(e) => {
+                              const next = [...planForm.steps];
+                              next[sIdx] = { ...st, detail: e.target.value };
+                              setPlanForm({ ...planForm, steps: next });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-base-300">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setEditingPlanMode('none')}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      disabled={planSaving}
+                      onClick={handleSavePlan}
+                    >
+                      {planSaving ? '保存中...' : '保存计划'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-bold text-sm">📋 计划管理 (Execution Plans)</h4>
+                      <p className="text-xs text-base-content/60">
+                        管理多步骤计划。派任务时可引用计划 ID 与步骤 ID，自动注入上下文并回写任务执行状态。
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-sm btn-primary gap-1"
+                      onClick={handleStartCreatePlan}
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>新建计划</span>
+                    </button>
+                  </div>
+
+                  {plans.length === 0 ? (
+                    <div className="card bg-base-100 border border-base-300 p-8 text-center text-xs text-base-content/50">
+                      暂无计划，点击上方按钮创建新计划。
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto border border-base-300 rounded-lg bg-base-100">
+                      <table className="table table-xs table-zebra w-full font-mono">
+                        <thead>
+                          <tr className="border-b border-base-300 text-base-content/60 font-sans">
+                            <th>计划名称 / ID</th>
+                            <th>所属项目</th>
+                            <th>版本</th>
+                            <th>步骤进度</th>
+                            <th>更新时间</th>
+                            <th className="text-right">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {plans.map((p) => {
+                            const pct = p.total_steps > 0 ? Math.round((p.completed_steps / p.total_steps) * 100) : 0;
+                            return (
+                              <tr key={p.id}>
+                                <td className="py-2.5">
+                                  <div className="font-sans font-bold text-xs text-base-content">
+                                    {p.title}
+                                  </div>
+                                  <div className="text-[11px] text-base-content/40 font-mono">
+                                    {p.id}
+                                  </div>
+                                </td>
+                                <td>
+                                  {p.project_id ? (
+                                    <span className="badge badge-ghost badge-xs font-mono">
+                                      📁 {p.project_id}
+                                    </span>
+                                  ) : (
+                                    <span className="text-base-content/30">–</span>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className="badge badge-outline badge-xs font-mono">v{p.version}</span>
+                                </td>
+                                <td>
+                                  <div className="flex items-center gap-1.5 font-sans text-xs">
+                                    <span>{p.completed_steps}/{p.total_steps}</span>
+                                    <span className="text-[11px] text-base-content/50">({pct}%)</span>
+                                  </div>
+                                </td>
+                                <td className="text-[11px] text-base-content/60">
+                                  {new Date(p.updated_at).toLocaleString()}
+                                </td>
+                                <td className="text-right">
+                                  <div className="flex items-center justify-end gap-1 font-sans">
+                                    <button
+                                      className="btn btn-ghost btn-xs gap-1 text-primary"
+                                      onClick={() => handleStartEditPlan(p.id)}
+                                    >
+                                      <Edit3 className="w-3 h-3" />
+                                      <span>编辑</span>
+                                    </button>
+                                    <button
+                                      className="btn btn-ghost btn-xs gap-1 text-rose-400"
+                                      onClick={() => handleArchivePlan(p.id)}
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                      <span>归档</span>
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </div>

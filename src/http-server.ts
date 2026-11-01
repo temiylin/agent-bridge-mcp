@@ -53,6 +53,14 @@ import { removeGitWorktree, resolveWorktreeRoot } from "./worktree.js";
 import { resolveDeviceToken } from "./token.js";
 import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
 import { fileURLToPath } from "node:url";
+import {
+  createPlan,
+  getPlan,
+  updatePlan,
+  listPlans,
+  setPlanStepStatus,
+  archivePlan,
+} from "./plans.js";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
 import {
   loadProjectsConfig,
@@ -429,6 +437,106 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         }
       }
 
+      if (pathname === "/api/plans") {
+        if (method === "GET") {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          try {
+            const planId = url.searchParams.get("id") || url.searchParams.get("plan_id");
+            const projectId = url.searchParams.get("project_id") || undefined;
+            if (planId) {
+              const plan = getPlan(defaultInstance.rootDir, planId, { includeArchived: true });
+              if (!plan) {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, error: `Plan "${planId}" not found` }));
+                return;
+              }
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, plan }));
+              return;
+            }
+            const plans = listPlans(defaultInstance.rootDir, { projectId });
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, plans }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+
+        if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          try {
+            const body = await readBody();
+            if (!body || typeof body !== "object") {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, error: "Invalid JSON body" }));
+              return;
+            }
+            const action = body.action || "create";
+            if (action === "create") {
+              const plan = createPlan(defaultInstance.rootDir, body);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, plan }));
+              return;
+            }
+            if (action === "update") {
+              const planId = body.plan_id || body.id;
+              if (!planId) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "plan_id or id is required for update" }));
+                return;
+              }
+              const plan = updatePlan(defaultInstance.rootDir, planId, body);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, plan }));
+              return;
+            }
+            if (action === "set_step_status") {
+              const planId = body.plan_id || body.id;
+              const stepId = body.step_id;
+              const status = body.status;
+              if (!planId || !stepId || !status) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "plan_id, step_id, and status are required" }));
+                return;
+              }
+              const result = setPlanStepStatus(defaultInstance.rootDir, planId, stepId, status, {
+                taskId: body.task_id,
+                prUrl: body.pr_url,
+              });
+              res.statusCode = 200;
+              res.end(JSON.stringify(result));
+              return;
+            }
+            if (action === "archive" || action === "delete") {
+              const planId = body.plan_id || body.id;
+              if (!planId) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: "plan_id or id is required for archive" }));
+                return;
+              }
+              const result = archivePlan(defaultInstance.rootDir, planId);
+              res.statusCode = result.success ? 200 : 400;
+              res.end(JSON.stringify(result));
+              return;
+            }
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, error: `Unsupported action: ${action}` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, error: err?.message || String(err) }));
+          }
+          return;
+        }
+      }
+
       if (pathname === "/api/test-agent" && method === "POST") {
         const body = await readBody();
         const agentName = body?.agent || "codex";
@@ -502,6 +610,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         const stageFilter = url.searchParams.get("stage") || undefined;
         const project = url.searchParams.get("project") || undefined;
         const sessionId = url.searchParams.get("session_id") || undefined;
+        const planId = url.searchParams.get("plan_id") || url.searchParams.get("plan") || undefined;
 
         try {
           let tasks = queryRecentTasks(defaultInstance.rootDir, {
@@ -509,6 +618,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
             status,
             project,
             session_id: sessionId,
+            plan_id: planId,
           });
           if (stageFilter) {
             tasks = tasks.filter(
