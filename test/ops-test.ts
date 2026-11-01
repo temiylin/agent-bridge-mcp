@@ -150,6 +150,10 @@ async function runOpsTests() {
     const statusAfter = JSON.parse((statusAfterRes.content as any)[0].text);
     console.log("Status after completion:", statusAfter);
     assert.equal(statusAfter.state, "completed", "Final state must be completed");
+    assert.ok(statusAfter.activity !== undefined, "activity field must exist");
+    assert.ok(statusAfter.idle_seconds !== undefined, "idle_seconds field must exist");
+    assert.ok(statusAfter.activity_source !== undefined, "activity_source field must exist");
+    assert.equal(statusAfter.logTail, undefined, "logTail must NOT be returned in get_task_status to save caller tokens");
     console.log("✓ Test A passed: get_task_status correctly reported status transitions.\n");
 
     // -------------------------------------------------

@@ -1,3 +1,4 @@
+import { reconcileTaskStatus } from "./task-reconcile.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -5,16 +6,44 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { listAllSessionQueues, SessionQueueState } from "./queue.js";
+import {
+  deriveStage,
+  type TaskStage,
+  type TaskReport,
+  type TaskOutcome,
+  type ReportSource,
+} from "./task-stage.js";
 
 export interface RecentTaskItem {
   taskId: string;
-  status: "running" | "completed" | "failed" | "queued" | "paused";
+  status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota" | "cancelled";
+  stage: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
+  report?: TaskReport;
+  report_source?: ReportSource;
+  hasFollowUp?: boolean;
+  pr_open?: boolean;
   session_id?: string;
   project?: string;
+  project_id?: string;
+  project_name?: string;
+  agent?: string;
+  model?: string;
+  account?: string;
+  workDir?: string;
   elapsed?: string;
+  last_activity_at?: string;
+  created_at?: string;
   finished_at?: string;
   pr_url?: string;
   last_log_line?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
+  /** Raw task state when it differs from status (e.g. suspected_stalled, cancelled). */
+  state?: string;
+  reason?: string;
 }
 
 /**
@@ -79,6 +108,7 @@ export function queryRecentTasks(
     status?: string;
     project?: string;
     session_id?: string;
+    plan_id?: string;
   }
 ): RecentTaskItem[] {
   const limit = Math.max(1, Math.min(100, filter?.limit || 20));
@@ -98,25 +128,39 @@ export function queryRecentTasks(
     } catch {}
 
     for (const file of files) {
-      if (!file.endsWith(".json") || file.endsWith(".tmp")) continue;
+      if (!file.endsWith(".json") || file.endsWith(".tmp") || file.startsWith("_")) continue;
       const statusFilePath = path.join(statusDir, file);
       try {
         const raw = fs.readFileSync(statusFilePath, "utf8");
-        const statusObj = JSON.parse(raw);
+        let statusObj = JSON.parse(raw);
         if (!statusObj) continue;
+        if (statusObj.state === "running" || statusObj.state === "suspected_stalled") {
+          statusObj = reconcileTaskStatus(rootDir, { taskId: file.replace(/\.json$/, ""), ...statusObj });
+        }
 
         const taskId = statusObj.taskId || file.replace(/\.json$/, "");
         let stateStr = statusObj.state as string;
         let mappedStatus: RecentTaskItem["status"] = "queued";
-        if (stateStr === "running") mappedStatus = "running";
+        if (stateStr === "running" || stateStr === "suspected_stalled") mappedStatus = "running";
         else if (stateStr === "completed") mappedStatus = "completed";
-        else if (stateStr === "failed" || stateStr === "cancelled") mappedStatus = "failed";
+        else if (stateStr === "paused_quota") mappedStatus = "paused_quota";
+        else if (stateStr === "cancelled") mappedStatus = "cancelled";
+        else if (stateStr === "failed") mappedStatus = "failed";
         else mappedStatus = "queued";
 
         // Read metadata from tasks/<taskId>.md
         let sessionId = statusObj.sessionId;
-        let project: string | undefined = undefined;
-        let prUrl: string | undefined = undefined;
+        let projectId: string | undefined = statusObj.projectId;
+        let projectName: string | undefined = statusObj.projectName;
+        let project: string | undefined = projectName || projectId;
+        let prUrl: string | undefined = (statusObj.pr_url ?? statusObj.report?.pr_url) || undefined;
+        let createdAt: string | undefined = undefined;
+        let taskAgent: string | undefined = statusObj.agent;
+        let taskModel: string | undefined = statusObj.model;
+        let taskAccount: string | undefined = statusObj.account;
+        let planId: string | undefined = statusObj.plan_id || statusObj.planId;
+        let stepId: string | undefined = statusObj.step_id || statusObj.stepId;
+        let planTitle: string | undefined = statusObj.plan_title || statusObj.planTitle;
 
         const taskFilePath = path.join(tasksDir, `${taskId}.md`);
         if (fs.existsSync(taskFilePath)) {
@@ -126,9 +170,48 @@ export function queryRecentTasks(
               const sMatch = taskContent.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
               if (sMatch) sessionId = sMatch[1].trim();
             }
+            const idMatch = taskContent.match(/- \*\*Project ID\*\*:\s*([^\r\n]+)/i);
+            if (idMatch && !projectId) projectId = idMatch[1].trim();
             const pMatch = taskContent.match(/- \*\*Project(?:\s*Name)?\*\*:\s*([^\r\n]+)/i);
-            if (pMatch) project = pMatch[1].trim();
+            if (pMatch && !projectName) projectName = pMatch[1].trim();
+            if (!project) project = projectName || projectId;
+            const cMatch = taskContent.match(/- \*\*Created At\*\*:\s*([^\r\n]+)/i);
+            if (cMatch) createdAt = cMatch[1].trim();
+            if (!taskAgent) {
+              const aMatch = taskContent.match(/- \*\*Agent\*\*:\s*([^\r\n]+)/i);
+              if (aMatch) taskAgent = aMatch[1].trim();
+            }
+            if (!taskModel) {
+              const mMatch = taskContent.match(/- \*\*Model\*\*:\s*([^\r\n]+)/i);
+              if (mMatch) taskModel = mMatch[1].trim();
+            }
+            if (!taskAccount) {
+              const accMatch = taskContent.match(/- \*\*Account\*\*:\s*([^\r\n]+)/i);
+              if (accMatch) taskAccount = accMatch[1].trim();
+            }
+            if (!planId) {
+              const planMatch = taskContent.match(/- \*\*Plan ID\*\*:\s*([^\r\n]+)/i);
+              if (planMatch) planId = planMatch[1].trim();
+            }
+            if (!stepId) {
+              const stepMatch = taskContent.match(/- \*\*Plan Step ID\*\*:\s*([^\r\n]+)/i);
+              if (stepMatch) stepId = stepMatch[1].trim();
+            }
+            if (!planTitle) {
+              const titleMatch = taskContent.match(/- \*\*Plan Title\*\*:\s*([^\r\n]+)/i);
+              if (titleMatch) planTitle = titleMatch[1].trim();
+            }
           } catch {}
+        }
+
+        if (!createdAt) {
+          const idMatch = taskId.match(/^task_(\d{13})/);
+          if (idMatch) {
+            const ts = parseInt(idMatch[1], 10);
+            if (!isNaN(ts) && ts > 1000000000000) {
+              createdAt = new Date(ts).toISOString();
+            }
+          }
         }
 
         // Check elapsed for running tasks or finished_at
@@ -143,23 +226,33 @@ export function queryRecentTasks(
           }
         }
 
-        // Get last log line from logs/<taskId>.out
+        // Get last log line from logs/<taskId>.out and last activity timestamp
         const outFilePath = path.join(logsDir, `${taskId}.out`);
         let lastLogLine = getLastLogLine(outFilePath, 120);
+        let lastActivityAt: string | undefined = statusObj.lastActivityAt;
+        if (!lastActivityAt && fs.existsSync(outFilePath)) {
+          try {
+            const stat = fs.statSync(outFilePath);
+            lastActivityAt = stat.mtime.toISOString();
+          } catch {}
+        }
+        if (!lastActivityAt) {
+          lastActivityAt = finished_at || statusObj.startedAt || createdAt;
+        }
 
-        // Check for PR URL in out log or result file
-        if (fs.existsSync(outFilePath)) {
+        // Check for PR URL in out log or result file if not already in status/report
+        if (!prUrl && fs.existsSync(outFilePath)) {
           try {
             const outContent = fs.readFileSync(outFilePath, "utf8");
             prUrl = extractPrUrl(outContent);
           } catch {}
         }
-        if (!prUrl) {
+        if (!prUrl || !lastLogLine) {
           const resPath = path.join(resultsDir, `${taskId}.md`);
           if (fs.existsSync(resPath)) {
             try {
               const resContent = fs.readFileSync(resPath, "utf8");
-              prUrl = extractPrUrl(resContent);
+              if (!prUrl) prUrl = extractPrUrl(resContent);
               if (!lastLogLine) {
                 // If no .out log, extract from result output
                 const outMatch = resContent.match(/## Output\s*\n([\s\S]*?)(?:\n## Error Details|$)/i);
@@ -178,17 +271,67 @@ export function queryRecentTasks(
         // Apply filters
         if (filter?.status && mappedStatus !== filter.status) continue;
         if (filter?.session_id && sessionId !== filter.session_id) continue;
-        if (filter?.project && project !== filter.project) continue;
+        if (filter?.plan_id && planId !== filter.plan_id) continue;
+        if (filter?.project) {
+          const fp = filter.project.trim().toLowerCase();
+          const matchProj =
+            (project && project.toLowerCase() === fp) ||
+            (projectId && projectId.toLowerCase() === fp) ||
+            (projectName && projectName.toLowerCase() === fp);
+          if (!matchProj) continue;
+        }
+
+        const effectiveOutcome: TaskOutcome | undefined =
+          statusObj.outcome ||
+          statusObj.report?.outcome ||
+          (stateStr === "completed" ? "ready" : undefined);
+        const effectiveQuestion: string | null | undefined =
+          statusObj.question !== undefined
+            ? statusObj.question
+            : statusObj.report?.question !== undefined
+              ? statusObj.report.question
+              : undefined;
+        const derivedStage = deriveStage({
+          state: stateStr,
+          status: mappedStatus,
+          reason: statusObj.reason,
+          hasFollowUp: statusObj.hasFollowUp,
+          report: statusObj.report,
+          outcome: effectiveOutcome,
+          pr_url: prUrl || null,
+          question: effectiveQuestion ?? null,
+          pr_open: statusObj.pr_open,
+        });
 
         items.push({
           taskId,
           status: mappedStatus,
+          stage: derivedStage,
+          ...(effectiveOutcome ? { outcome: effectiveOutcome } : {}),
+          ...(effectiveQuestion !== undefined ? { question: effectiveQuestion } : {}),
+          ...(statusObj.report ? { report: statusObj.report } : {}),
+          ...(statusObj.report_source ? { report_source: statusObj.report_source } : {}),
+          ...(statusObj.hasFollowUp !== undefined ? { hasFollowUp: statusObj.hasFollowUp } : {}),
+          ...(statusObj.pr_open !== undefined ? { pr_open: statusObj.pr_open } : {}),
           session_id: sessionId,
           project,
+          ...(projectId ? { project_id: projectId } : {}),
+          ...(projectName ? { project_name: projectName } : {}),
+          agent: taskAgent,
+          model: taskModel,
+          account: taskAccount,
+          workDir: statusObj.workDir,
           elapsed,
+          last_activity_at: lastActivityAt,
+          created_at: createdAt,
           finished_at,
           pr_url: prUrl,
           last_log_line: lastLogLine,
+          ...(planId ? { plan_id: planId } : {}),
+          ...(stepId ? { step_id: stepId } : {}),
+          ...(planTitle ? { plan_title: planTitle } : {}),
+          ...(stateStr !== mappedStatus ? { state: stateStr } : {}),
+          ...(statusObj.reason && mappedStatus !== "completed" ? { reason: String(statusObj.reason).slice(0, 300) } : {}),
         });
       } catch {}
     }
@@ -205,27 +348,43 @@ export function queryRecentTasks(
       let itemStatus: RecentTaskItem["status"] = q.paused ? "paused" : "queued";
       if (filter?.status && itemStatus !== filter.status) continue;
 
-      const project = item.options?.project || item.options?.projectName;
-      if (filter?.project && project !== filter.project) continue;
+      const projectId = item.options?.project_id || item.options?.project;
+      const projectName = item.options?.projectName || projectId;
+      const project = projectName || projectId;
+      if (filter?.project) {
+        const fp = filter.project.trim().toLowerCase();
+        const matchProj =
+          (project && String(project).toLowerCase() === fp) ||
+          (projectId && String(projectId).toLowerCase() === fp) ||
+          (projectName && String(projectName).toLowerCase() === fp);
+        if (!matchProj) continue;
+      }
 
       const lastLogLine = item.prompt ? `[queued prompt] ${item.prompt.slice(0, 80).replace(/\r?\n/g, " ")}` : undefined;
 
       items.push({
         taskId: item.id,
         status: itemStatus,
+        stage: deriveStage({ state: itemStatus, status: itemStatus }),
         session_id: q.session_id,
         project,
+        ...(projectId ? { project_id: projectId } : {}),
+        ...(projectName ? { project_name: projectName } : {}),
+        agent: item.options?.agent,
+        model: item.options?.model,
+        account: item.options?.account,
+        created_at: item.created_at,
         last_log_line: lastLogLine,
       });
     }
   }
 
-  // 3. Sort: running tasks first, then by finished_at/createdAt descending
+  // 3. Sort: running tasks first, then by finished_at/created_at descending
   items.sort((a, b) => {
     if (a.status === "running" && b.status !== "running") return -1;
     if (b.status === "running" && a.status !== "running") return 1;
-    const timeA = a.finished_at ? new Date(a.finished_at).getTime() : 0;
-    const timeB = b.finished_at ? new Date(b.finished_at).getTime() : 0;
+    const timeA = (a.finished_at ? new Date(a.finished_at).getTime() : 0) || (a.created_at ? new Date(a.created_at).getTime() : 0);
+    const timeB = (b.finished_at ? new Date(b.finished_at).getTime() : 0) || (b.created_at ? new Date(b.created_at).getTime() : 0);
     return timeB - timeA;
   });
 
@@ -239,16 +398,18 @@ export function registerRecentTasksTool(
 ): void {
   const toolDefinition = {
     limit: z.number().int().optional().describe("Maximum number of tasks to return (default 20, max 100)"),
-    status: z.enum(["running", "completed", "failed", "queued", "paused"]).optional().describe("Filter by task status"),
+    status: z.enum(["running", "completed", "failed", "queued", "paused", "cancelled"]).optional().describe("Filter by task status"),
     project: z.string().optional().describe("Filter by project identifier"),
     session_id: z.string().optional().describe("Filter by topic / session ID"),
+    plan_id: z.string().optional().describe("Filter by plan ID"),
   };
 
-  const handler = async ({ limit, status, project, session_id }: {
+  const handler = async ({ limit, status, project, session_id, plan_id }: {
     limit?: number;
-    status?: "running" | "completed" | "failed" | "queued" | "paused";
+    status?: "running" | "completed" | "failed" | "queued" | "paused" | "cancelled";
     project?: string;
     session_id?: string;
+    plan_id?: string;
   }) => {
     try {
       audit(rootDir, { tool: "list_recent_tasks" });
@@ -257,6 +418,7 @@ export function registerRecentTasksTool(
         status,
         project: project?.trim(),
         session_id: session_id?.trim(),
+        plan_id: plan_id?.trim(),
       });
 
       return {

@@ -6,6 +6,28 @@ import { z } from "zod";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { isBlockedCredentialPath } from "./local-fs.js";
+import {
+  resolveProject,
+  getProjectRepoPath,
+  checkForbiddenRemotePush,
+  ProjectDefinition,
+} from "./project-router.js";
+
+function resolveRepoAndProject(
+  rootDir: string,
+  repoPath?: string,
+  projectId?: string
+): { cwd: string; project?: ProjectDefinition } {
+  const projRes = resolveProject(rootDir, { projectId, projectDir: repoPath });
+  const projRepoPath = getProjectRepoPath(projRes.project);
+  if (repoPath && typeof repoPath === "string" && repoPath.trim().length > 0) {
+    return { cwd: path.resolve(repoPath.trim()), project: projRes.project };
+  }
+  if (projRepoPath) {
+    return { cwd: path.resolve(projRepoPath), project: projRes.project };
+  }
+  return { cwd: resolveRepoDir(rootDir, repoPath), project: projRes.project };
+}
 
 function resolveRepoDir(rootDir: string, repoPath?: string): string {
   if (repoPath && typeof repoPath === "string" && repoPath.trim().length > 0) {
@@ -312,22 +334,66 @@ export function registerGitTools(
   // 5. git_push
   server.tool(
     "git_push",
-    "Push local commits or refspecs to a remote repository (e.g. 'github <sha>:refs/heads/develop' or 'origin develop').",
+    "Push local commits or refspecs to a remote repository (e.g. 'github <sha>:refs/heads/develop' or 'origin develop'). Enforces project push_remote default and URL-based forbidden_remotes protection.",
     {
-      repo_path: z.string().optional().describe("Path to local Git repository. Defaults to active project workspace."),
-      remote: z.string().describe("Target remote name, e.g. 'github' or 'origin'."),
+      project_id: z.string().optional().describe("Optional project ID to resolve repo_path, default push_remote, and forbidden_remotes rules."),
+      repo_path: z.string().optional().describe("Path to local Git repository. Defaults to project repo_path or active workspace."),
+      remote: z.string().optional().describe("Target remote name, e.g. 'github' or 'origin'. Defaults to project push_remote or 'origin'."),
       refspec: z.string().describe("Refspec or branch to push, e.g. 'develop', 'main', or '<sha>:refs/heads/develop'."),
       force: z.boolean().optional().describe("Whether to force push. Default: false. Caution: Use sparingly!"),
     },
-    async ({ repo_path, remote, refspec, force }) => {
+    async ({ project_id, repo_path, remote, refspec, force }) => {
       audit(rootDir, { tool: "git_push" });
-      const cwd = resolveRepoDir(rootDir, repo_path);
+      const { cwd, project } = resolveRepoAndProject(rootDir, repo_path, project_id);
 
       if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
         return { isError: true, content: [{ type: "text", text: `Error: Repository directory "${cwd}" does not exist.` }] };
       }
 
-      const args = ["push", remote.trim(), refspec.trim()];
+      // Resolve project by cwd if not already matched by project_id
+      const activeProject = project || resolveProject(rootDir, { projectDir: cwd }).project;
+      const effectiveRemote = (remote && remote.trim()) || activeProject?.push_remote || "origin";
+      const cleanRefspec = (refspec || "").trim();
+
+      if (!cleanRefspec || cleanRefspec.startsWith("-")) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Invalid refspec "${refspec}". Refspec cannot be empty or start with "-" (flags such as "--force" are not allowed in refspec).`,
+            },
+          ],
+        };
+      }
+      if (effectiveRemote.startsWith("-")) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Invalid remote "${effectiveRemote}". Remote name cannot start with "-".`,
+            },
+          ],
+        };
+      }
+
+      // URL-based forbidden_remotes check (does NOT modify user git config)
+      const forbiddenCheck = checkForbiddenRemotePush(cwd, effectiveRemote, activeProject);
+      if (forbiddenCheck.forbidden) {
+        logger.warn(`git_push blocked for repo="${cwd}", remote="${effectiveRemote}": ${forbiddenCheck.reason}`);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: ${forbiddenCheck.reason}`,
+            },
+          ],
+        };
+      }
+
+      const args = ["push", effectiveRemote, cleanRefspec];
       if (force) {
         args.push("--force-with-lease");
       }
@@ -347,10 +413,12 @@ export function registerGitTools(
             text: JSON.stringify(
               {
                 success: true,
+                ...(activeProject?.id ? { project_id: activeProject.id } : {}),
                 repo_path: cwd,
-                remote: remote.trim(),
+                remote: effectiveRemote,
+                remote_url: forbiddenCheck.resolvedUrl || undefined,
                 refspec: refspec.trim(),
-                message: `Successfully pushed "${refspec.trim()}" to "${remote.trim()}".`,
+                message: `Successfully pushed "${refspec.trim()}" to "${effectiveRemote}".`,
                 output: res.stderr || res.stdout,
               },
               null,

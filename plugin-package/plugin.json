@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-bridge",
-  "version": "1.0.0",
-  "description": "Directly inspect, monitor, and dispatch tasks to your local Mac/PC from ChatGPT.",
+  "version": "1.1.0",
+  "description": "Directly inspect, monitor, manage projects & multi-step plans, and dispatch tasks to your local Mac/PC from ChatGPT.",
   "author": {
     "name": "temiylin"
   }

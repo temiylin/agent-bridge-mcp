@@ -1,7 +1,7 @@
 {
   "name": "agent-bridge",
-  "version": "1.0.0",
-  "description": "本地安全状态查询与 Agent 桥接（只读系统信息、文件读取及任务调度）",
+  "version": "1.1.0",
+  "description": "本地安全状态查询与 Agent 桥接（只读系统信息、项目管理、多步计划、文件与 PR 操作及任务调度）",
   "author": {
     "name": "temiylin"
   },
@@ -12,14 +12,16 @@
     "device-info",
     "system-monitor",
     "desktop-commander",
-    "safe-read"
+    "safe-read",
+    "plans",
+    "projects"
   ],
   "mcpServers": "./.mcp.json",
   "skills": "./skills/",
   "interface": {
     "displayName": "Agent Bridge",
     "shortDescription": "本地安全状态查询与 Agent 桥接",
-    "longDescription": "提供只读设备硬件与系统信息查询（device_info）、Git 仓库状态（repo_status）、本地文件只读安全浏览（list_directory, read_file, get_file_info）、Worker 状态监控及任务调度能力，内置系统凭据安全保护。",
+    "longDescription": "提供只读设备硬件与系统信息查询（device_info）、Git 与 PR 操作（repo_status, pr_*）、项目配置管理（projects.json）、多步骤执行计划（create_plan, get_plan）、本地文件安全读写与代码检索、任务阶段推导与 Worker 调度能力，内置系统凭据与防推安全保护。",
     "developerName": "temiylin",
     "category": "Developer Tools",
     "capabilities": [
@@ -29,9 +31,9 @@
     "logo": "./assets/icon.png",
     "composerIcon": "./assets/icon.png",
     "defaultPrompt": [
-      "查询当前这台 Mac 的硬件架构、内存与磁盘剩余空间",
-      "检查 Git 仓库状态",
-      "查看 Worker 守护进程与任务列表"
+      "查询当前这台机器的硬件架构、内存与磁盘剩余空间",
+      "查看当前项目列表与多步骤计划执行进展",
+      "查看 Worker 守护进程与待处理任务状态"
     ]
   }
 }

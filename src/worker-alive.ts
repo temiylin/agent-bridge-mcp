@@ -4,6 +4,75 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 
+export interface WorkerLivenessResult {
+  alive: boolean;
+  pid?: number;
+  lastHeartbeat?: string;
+}
+
+export function checkWorkerLiveness(rootDir: string): WorkerLivenessResult {
+  let running = false;
+  let pid: number | undefined = undefined;
+  let lastActivity: string | undefined = undefined;
+
+  const logsDir = path.join(rootDir, "logs");
+  const pidPath = path.join(logsDir, "worker.pid");
+  const workerLogPath = path.join(logsDir, "worker.log");
+
+  // 1. Check worker.pid and probe with signal 0
+  try {
+    if (fs.existsSync(pidPath)) {
+      const content = fs.readFileSync(pidPath, "utf8").trim();
+      const parsedPid = parseInt(content, 10);
+      if (!Number.isNaN(parsedPid) && parsedPid > 0) {
+        pid = parsedPid;
+        try {
+          process.kill(parsedPid, 0);
+          running = true;
+        } catch (err: any) {
+          if (err.code === "EPERM") {
+            running = true;
+          } else {
+            running = false;
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Check last activity timestamp from logs/worker.log
+  try {
+    if (fs.existsSync(workerLogPath)) {
+      const stat = fs.statSync(workerLogPath);
+      const readSize = Math.min(stat.size, 64 * 1024);
+      const buffer = Buffer.alloc(readSize);
+      const fd = fs.openSync(workerLogPath, "r");
+      try {
+        fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+      } finally {
+        fs.closeSync(fd);
+      }
+      const text = buffer.toString("utf8");
+      const lines = text.split("\n");
+      const isoRegex = /^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\]/;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        const match = line.match(isoRegex);
+        if (match) {
+          lastActivity = match[1];
+          break;
+        }
+      }
+    }
+  } catch {}
+
+  return {
+    alive: running,
+    pid,
+    lastHeartbeat: lastActivity,
+  };
+}
+
 export function registerWorkerAliveTool(
   server: McpServer,
   rootDir: string,

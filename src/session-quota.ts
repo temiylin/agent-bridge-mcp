@@ -32,12 +32,14 @@ export function isQuotaExhaustedError(
   stdout: string,
   stderr: string
 ): boolean {
-  // Exit code 429 or specific AGY quota exit codes
-  if (exitCode === 429 || exitCode === 129) {
+  // Only an explicit 429 exit code counts on its own. Other non-zero codes (e.g. agy exit 3
+  // with an empty log, or 129/SIGHUP) are NOT quota evidence — require explicit text below.
+  if (exitCode === 429) {
     return true;
   }
 
   const combined = (stdout + "\n" + stderr).toLowerCase();
+  if (!combined.trim()) return false;
 
   const quotaPatterns = [
     /quota\s*(?:exceeded|exhausted|limit|reached)/i,
@@ -57,6 +59,45 @@ export function isQuotaExhaustedError(
   ];
 
   return quotaPatterns.some((pat) => pat.test(combined));
+}
+
+/** Detects explicit evidence that the agy login/credentials are invalid or expired. */
+export function isLoginInvalidError(stdout: string, stderr: string): boolean {
+  const combined = stdout + "\n" + stderr;
+  if (!combined.trim()) return false;
+  const patterns = [
+    /UNAUTHENTICATED/,
+    /invalid_grant/i,
+    /\b(?:status|code)[:\s(]*401\b/i,
+    /not\s+(?:logged|signed)\s+in/i,
+    /please\s+(?:log|sign)\s*in/i,
+    /(?:login|session|credentials?|refresh\s*token|oauth\s*token)\s+(?:has\s+)?(?:expired|revoked|invalid)/i,
+    /invalid\s+(?:authentication\s+)?credentials/i,
+    /re-?authenticate/i,
+  ];
+  return patterns.some((p) => p.test(combined));
+}
+
+export type AgyFailureKind = "quota" | "login" | "other";
+
+/** Classifies a non-zero agent exit. Quota only on explicit evidence. */
+export function classifyAgentFailure(exitCode: number | null, stdout: string, stderr: string): AgyFailureKind {
+  if (exitCode === 0) return "other";
+  if (isQuotaExhaustedError(exitCode, stdout, stderr)) return "quota";
+  if (isLoginInvalidError(stdout, stderr)) return "login";
+  return "other";
+}
+
+/**
+ * Parses "Resets in 68h38m30s" style hints into an absolute ISO time.
+ * Returns undefined when no hint is present.
+ */
+export function parseQuotaResetTime(text: string, now: number = Date.now()): string | undefined {
+  const m = /resets?\s+in\s+(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m(?!s))?\s*(?:(\d+)\s*s)?/i.exec(text || "");
+  if (!m || !(m[1] || m[2] || m[3] || m[4])) return undefined;
+  const sec = (+(m[1] || 0)) * 86400 + (+(m[2] || 0)) * 3600 + (+(m[3] || 0)) * 60 + (+(m[4] || 0));
+  if (sec <= 0) return undefined;
+  return new Date(now + sec * 1000).toISOString();
 }
 
 /**

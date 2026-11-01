@@ -4,8 +4,23 @@ import crypto from "node:crypto";
 import { resolveBridgeRoot } from "./config.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
 import { getLastLogLine, extractPrUrl } from "./recent-tasks.js";
+import { readStatus } from "./status.js";
+import { deriveStage, type TaskStage, type TaskOutcome } from "./task-stage.js";
 
-export type WebhookEvent = "completed" | "failed" | "pr_opened";
+export type WebhookEvent = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
+
+export type WebhookPayloadStatus = "completed" | "failed" | "pr_opened" | "stalled" | "timeout" | "stuck" | "overdue" | "cancelled";
+
+export const TERMINAL_WEBHOOK_STATUSES = new Set<string>([
+  "completed",
+  "failed",
+  "cancelled",
+  "timeout",
+  "paused_quota",
+]);
+
+const inMemoryDeliveredTerminalTasks = new Set<string>();
+const inMemoryInFlightTerminalTasks = new Set<string>();
 
 export interface TaskWebhookConfig {
   url: string;
@@ -17,10 +32,16 @@ export interface TaskWebhookConfig {
 export interface WebhookPayload {
   taskId: string;
   session_id?: string;
-  status: "completed" | "failed" | "pr_opened";
+  status: WebhookPayloadStatus;
+  stage?: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
   pr_url?: string;
   elapsed_ms?: number;
   last_log_snippet?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
 }
 
 export function getWebhooksDir(rootDir: string = resolveBridgeRoot()): string {
@@ -95,6 +116,11 @@ export function clearTaskWebhook(rootDir: string, taskId: string): boolean {
   if (fs.existsSync(targetPath)) {
     try {
       fs.unlinkSync(targetPath);
+      inMemoryDeliveredTerminalTasks.delete(taskId);
+      try {
+        const deliveredPath = path.join(webhooksDir, `${taskId}.delivered`);
+        if (fs.existsSync(deliveredPath)) fs.unlinkSync(deliveredPath);
+      } catch {}
       return true;
     } catch {
       return false;
@@ -108,6 +134,52 @@ export function clearTaskWebhook(rootDir: string, taskId: string): boolean {
  */
 export function computeHmacSignature(payload: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(payload, "utf8").digest("hex");
+}
+
+/**
+ * Maps worker terminal / alert states to webhook payload status with event-filter fallback.
+ */
+export function resolveWebhookDelivery(
+  terminalStatus: string,
+  allowedEvents: WebhookEvent[]
+): { deliver: boolean; payloadStatus: WebhookPayloadStatus } | null {
+  const normalized = terminalStatus.toLowerCase();
+
+  if (normalized === "completed") {
+    return allowedEvents.includes("completed") ? { deliver: true, payloadStatus: "completed" } : null;
+  }
+  if (normalized === "suspected_stalled" || normalized === "stalled") {
+    return allowedEvents.includes("stalled") ? { deliver: true, payloadStatus: "stalled" } : null;
+  }
+  if (normalized === "overdue") {
+    return allowedEvents.includes("overdue") ? { deliver: true, payloadStatus: "overdue" } : null;
+  }
+  if (normalized === "stuck") {
+    return allowedEvents.includes("stuck") ? { deliver: true, payloadStatus: "stuck" } : null;
+  }
+  if (normalized === "timeout") {
+    if (allowedEvents.includes("timeout")) {
+      return { deliver: true, payloadStatus: "timeout" };
+    }
+    if (allowedEvents.includes("failed")) {
+      return { deliver: true, payloadStatus: "failed" };
+    }
+    return null;
+  }
+  if (normalized === "cancelled") {
+    if (allowedEvents.includes("cancelled")) {
+      return { deliver: true, payloadStatus: "cancelled" };
+    }
+    if (allowedEvents.includes("failed")) {
+      return { deliver: true, payloadStatus: "failed" };
+    }
+    return null;
+  }
+  if (normalized === "paused_quota") {
+    return allowedEvents.includes("failed") ? { deliver: true, payloadStatus: "failed" } : null;
+  }
+  // failed and other error states
+  return allowedEvents.includes("failed") ? { deliver: true, payloadStatus: "failed" } : null;
 }
 
 /**
@@ -169,7 +241,7 @@ export async function deliverWebhookWithRetry(
 export async function triggerTaskWebhook(
   rootDir: string,
   taskId: string,
-  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota",
+  terminalStatus: "completed" | "failed" | "cancelled" | "paused_quota" | "suspected_stalled" | "timeout" | "overdue" | "stuck" | string,
   sessionId?: string,
   elapsedMs?: number
 ): Promise<void> {
@@ -180,16 +252,19 @@ export async function triggerTaskWebhook(
       return;
     }
 
-    // Determine matching event
-    const status = terminalStatus === "completed" ? "completed" : "failed";
     const allowedEvents = config.events || ["completed", "failed"];
+    const resolved = resolveWebhookDelivery(terminalStatus, allowedEvents);
+    if (!resolved) {
+      return;
+    }
 
-    // Check if PR URL exists in outputs
+    // Check if PR URL exists in status report or outputs
     const outPath = path.join(rootDir, "logs", `${taskId}.out`);
     const resPath = path.join(rootDir, "results", `${taskId}.md`);
-    let prUrl: string | undefined = undefined;
+    const statusInfo = readStatus(rootDir, taskId);
+    let prUrl: string | undefined = (statusInfo?.pr_url ?? statusInfo?.report?.pr_url) || undefined;
 
-    if (fs.existsSync(outPath)) {
+    if (!prUrl && fs.existsSync(outPath)) {
       try {
         prUrl = extractPrUrl(fs.readFileSync(outPath, "utf8"));
       } catch {}
@@ -200,11 +275,28 @@ export async function triggerTaskWebhook(
       } catch {}
     }
 
-    const isPrEvent = !!prUrl && allowedEvents.includes("pr_opened");
-    const isStatusEvent = allowedEvents.includes(status);
+    const isPrEvent = !!prUrl && allowedEvents.includes("pr_opened") && resolved.payloadStatus === "completed";
 
-    if (!isStatusEvent && !isPrEvent) {
+    if (!isPrEvent && !resolved.deliver) {
       return;
+    }
+
+    // Deduplicate terminal webhooks so each task fires at most once for terminal states
+    const isTerminal = !isPrEvent && (
+      TERMINAL_WEBHOOK_STATUSES.has(resolved.payloadStatus) ||
+      TERMINAL_WEBHOOK_STATUSES.has(terminalStatus.toLowerCase())
+    );
+    const webhooksDir = getWebhooksDir(rootDir);
+    const deliveredPath = path.join(webhooksDir, `${taskId}.delivered`);
+    if (isTerminal) {
+      if (
+        inMemoryDeliveredTerminalTasks.has(taskId) ||
+        inMemoryInFlightTerminalTasks.has(taskId) ||
+        fs.existsSync(deliveredPath)
+      ) {
+        return;
+      }
+      inMemoryInFlightTerminalTasks.add(taskId);
     }
 
     // Extract last log snippet <= 200 chars
@@ -213,16 +305,60 @@ export async function triggerTaskWebhook(
       snippet = getLastLogLine(resPath, 200);
     }
 
+    const effectiveOutcome: TaskOutcome | undefined =
+      statusInfo?.outcome ??
+      statusInfo?.report?.outcome ??
+      (terminalStatus === "cancelled"
+        ? "dropped"
+        : terminalStatus === "failed" || terminalStatus === "timeout"
+          ? "failed"
+          : terminalStatus === "paused_quota" || terminalStatus === "suspected_stalled" || terminalStatus === "stalled"
+            ? "blocked"
+            : "ready");
+
+    const effectiveQuestion = statusInfo?.question ?? statusInfo?.report?.question ?? null;
+
+    const effectiveStage =
+      statusInfo?.stage ||
+      deriveStage({
+        state: terminalStatus,
+        status: resolved.payloadStatus,
+        report: statusInfo?.report,
+        outcome: effectiveOutcome,
+        pr_url: prUrl || null,
+        question: effectiveQuestion,
+        pr_open: statusInfo?.pr_open,
+        hasFollowUp: statusInfo?.hasFollowUp,
+      });
+
     const payload: WebhookPayload = {
       taskId,
       session_id: sessionId,
-      status: (isPrEvent && status === "completed" ? "pr_opened" : status) as any,
+      status: isPrEvent ? "pr_opened" : resolved.payloadStatus,
+      stage: effectiveStage,
+      outcome: effectiveOutcome,
+      question: effectiveQuestion,
       pr_url: prUrl,
       elapsed_ms: elapsedMs,
       last_log_snippet: snippet ? snippet.slice(0, 200) : undefined,
+      ...(statusInfo?.plan_id || statusInfo?.planId ? { plan_id: statusInfo.plan_id || statusInfo.planId } : {}),
+      ...(statusInfo?.step_id || statusInfo?.stepId ? { step_id: statusInfo.step_id || statusInfo.stepId } : {}),
+      ...(statusInfo?.plan_title || statusInfo?.planTitle ? { plan_title: statusInfo.plan_title || statusInfo.planTitle } : {}),
     };
 
-    // Deliver with retry (non-blocking)
-    deliverWebhookWithRetry(config.url, payload, config.headers, config.secret).catch(() => {});
+    // Deliver with retry and only persist .delivered after successful delivery
+    deliverWebhookWithRetry(config.url, payload, config.headers, config.secret)
+      .then((ok) => {
+        inMemoryInFlightTerminalTasks.delete(taskId);
+        if (ok && isTerminal) {
+          inMemoryDeliveredTerminalTasks.add(taskId);
+          try {
+            fs.writeFileSync(deliveredPath, resolved.payloadStatus, "utf8");
+          } catch {}
+        }
+      })
+      .catch(() => {
+        inMemoryInFlightTerminalTasks.delete(taskId);
+      });
   } catch {}
 }

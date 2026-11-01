@@ -1,4 +1,8 @@
 node_modules/
+node_modules
 dist/
+dist.bak*/
 bin/
 *.log
+web/node_modules/
+web/dist/

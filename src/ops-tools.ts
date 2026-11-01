@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
-import { readStatus } from "./status.js";
+import { readStatus, writeStatus, ACTIVE_STATES } from "./status.js";
+import { readReconciledStatus, reconcileTaskStatus, isPidAlive, getDescendantPids } from "./task-reconcile.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
+import { deriveStage } from "./task-stage.js";
 
 export function getControlDir(root: string): string {
   const controlDir = path.join(root, "control");
@@ -15,43 +18,6 @@ export function getControlDir(root: string): string {
   return controlDir;
 }
 
-/**
- * Intelligently extracts concise, concrete action progress from an agent's execution stdout log.
- * Strictly filters out:
- * 1. Inner monologue / thinking processes (<thought>...</thought>, Thinking Process: ...)
- * 2. Large command outputs / raw file dumps (```...```)
- * Returns the most recent 2-4 lines of concrete actions, test outcomes, section headers, or file modifications.
- */
-export function extractActionProgress(raw: string): string {
-  if (!raw || !raw.trim()) return "任务已在后台启动，Agent 正在分析上下文与准备环境...";
-
-  // 1. Strip internal thoughts (<thought>...</thought>, <thinking>...</thinking>)
-  let clean = raw.replace(/<(thought|thinking)>[\s\S]*?<\/\1>/gi, "");
-  clean = clean.replace(/^(Thinking Process:|Thought for \d+s|思考过程[：:])[\s\S]*?\n\n/gim, "");
-
-  // 2. Strip large code blocks to prevent raw terminal / file dumps
-  clean = clean.replace(/```[\s\S]*?```/g, (match) => {
-    const lines = match.split("\n").length;
-    return lines > 3 ? "" : match;
-  });
-
-  // 3. Split by lines and clean
-  const lines = clean
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith("```") && !l.startsWith("|") && !/^[-=]{3,}$/.test(l));
-
-  if (lines.length === 0) {
-    return "Agent 正在分析上下文与执行阶段性操作...";
-  }
-
-  // 4. Prioritize lines that indicate real actions, progress, files, commits, tests, or section headers
-  const actionKeywords = /测试|修改|通过|失败|passed|failed|分支|commit|worktree|文件|归一|修复|完成|执行|正在|新增|改动|运行|分析|检查|调用链|发现|结论|^#{1,4}\s/i;
-  const actionLines = lines.filter((l) => actionKeywords.test(l));
-
-  const chosen = actionLines.length > 0 ? actionLines.slice(-4) : lines.slice(-3);
-  return chosen.join("\n");
-}
 
 export function registerOpsTools(
   server: McpServer,
@@ -85,15 +51,68 @@ export function registerOpsTools(
         };
       }
 
-      // Check status file first
-      const status = readStatus(rootDir, task_id);
+      // Helper to read project and plan metadata from tasks/<task_id>.md if not already on status
+      const readProjectMetaFromTaskFile = (): {
+        projectId?: string;
+        projectName?: string;
+        plan_id?: string;
+        step_id?: string;
+        plan_title?: string;
+      } => {
+        try {
+          const tf = resolveSafePath(tasksDir, rootDir, `${task_id}.md`);
+          if (fs.existsSync(tf)) {
+            const c = fs.readFileSync(tf, "utf8");
+            const idM = c.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const nameM = c.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/im);
+            const planIdM = c.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const planStepIdM = c.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const planTitleM = c.match(/^-[ \t]*\*\*Plan Title\*\*:[ \t]*([^\r\n]*)$/im);
+            return {
+              projectId: idM ? idM[1].trim() : undefined,
+              projectName: nameM ? nameM[1].trim() : undefined,
+              plan_id: planIdM ? planIdM[1].trim() : undefined,
+              step_id: planStepIdM ? planStepIdM[1].trim() : undefined,
+              plan_title: planTitleM ? planTitleM[1].trim() : undefined,
+            };
+          }
+        } catch {}
+        return {};
+      };
+
+      // Check status file first (reconciled against the real worker/agent processes)
+      const status = readReconciledStatus(rootDir, task_id);
       if (status) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: status.state });
+        const { logTail, ...sanitizedStatus } = status;
+        const pm = readProjectMetaFromTaskFile();
+        if (!sanitizedStatus.projectId && pm.projectId) sanitizedStatus.projectId = pm.projectId;
+        if (!sanitizedStatus.projectName && pm.projectName) sanitizedStatus.projectName = pm.projectName;
+        if (!sanitizedStatus.plan_id && pm.plan_id) sanitizedStatus.plan_id = pm.plan_id;
+        if (!sanitizedStatus.step_id && pm.step_id) sanitizedStatus.step_id = pm.step_id;
+        if (!sanitizedStatus.plan_title && pm.plan_title) sanitizedStatus.plan_title = pm.plan_title;
+        const now = Date.now();
+        const lastAct = sanitizedStatus.last_activity_at || sanitizedStatus.lastActivityAt;
+        const lastActMs = lastAct ? new Date(lastAct).getTime() : (sanitizedStatus.startedAt ? new Date(sanitizedStatus.startedAt).getTime() : now);
+        const idleSec = Math.max(0, Math.floor((now - lastActMs) / 1000));
+        if (sanitizedStatus.idle_seconds === undefined) {
+          sanitizedStatus.idle_seconds = idleSec;
+        }
+        if (!sanitizedStatus.activity) {
+          sanitizedStatus.activity = ACTIVE_STATES.includes(sanitizedStatus.state) && idleSec < 30 ? "active" : "idle";
+        }
+        if (!sanitizedStatus.last_activity_at && lastAct) {
+          sanitizedStatus.last_activity_at = lastAct;
+        }
+        if (!sanitizedStatus.activity_source) {
+          sanitizedStatus.activity_source = "none";
+        }
+        sanitizedStatus.stage = deriveStage(sanitizedStatus);
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(status, null, 2),
+              text: JSON.stringify(sanitizedStatus, null, 2),
             },
           ],
         };
@@ -112,11 +131,24 @@ export function registerOpsTools(
 
       if (fs.existsSync(taskFilePath)) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: "queued" });
+        const pm = readProjectMetaFromTaskFile();
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ taskId: task_id, state: "queued" }, null, 2),
+              text: JSON.stringify({
+                taskId: task_id,
+                state: "queued",
+                stage: deriveStage({ state: "queued" }),
+                ...(pm.projectId ? { projectId: pm.projectId } : {}),
+                ...(pm.projectName ? { projectName: pm.projectName } : {}),
+                ...(pm.plan_id ? { plan_id: pm.plan_id } : {}),
+                ...(pm.step_id ? { step_id: pm.step_id } : {}),
+                ...(pm.plan_title ? { plan_title: pm.plan_title } : {}),
+                activity: "idle",
+                idle_seconds: 0,
+                activity_source: "none",
+              }, null, 2),
             },
           ],
         };
@@ -132,7 +164,14 @@ export function registerOpsTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ taskId: task_id, state: "completed" }, null, 2),
+                text: JSON.stringify({
+                  taskId: task_id,
+                  state: "completed",
+                  stage: deriveStage({ state: "completed" }),
+                  activity: "idle",
+                  idle_seconds: 0,
+                  activity_source: "none",
+                }, null, 2),
               },
             ],
           };
@@ -202,6 +241,23 @@ export function registerOpsTools(
         }
       } catch {}
 
+      // Ghost task (status says running but no live worker/agent): resolve it directly.
+      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
+        const after = reconcileTaskStatus(rootDir, { taskId: task_id, ...currentStatus }, { graceMs: 0, childExitGraceMs: 0, finalState: "cancelled" });
+        if (after.state === "cancelled") {
+          audit(rootDir, { tool: "cancel_task", taskId: task_id, state: "cancelled" });
+          logger.info(`cancel_task: ${task_id} had no live process; marked cancelled`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Task "${task_id}" had no live worker/agent process (ghost); marked cancelled.\nreason: ${after.reason}`,
+              },
+            ],
+          };
+        }
+      }
+
       // Write control/<task_id>.cancel
       let cancelFilePath: string;
       try {
@@ -216,6 +272,42 @@ export function registerOpsTools(
       fs.writeFileSync(cancelFilePath, new Date().toISOString(), "utf8");
       audit(rootDir, { tool: "cancel_task", taskId: task_id, state: "cancel_requested" });
       logger.info(`cancel_task: wrote control file for taskId=${task_id}`);
+
+      // Persist status as cancelled BEFORE killing process
+      try {
+        const existingStatus = readStatus(rootDir, task_id) || {};
+        writeStatus(rootDir, task_id, {
+          taskId: task_id,
+          ...existingStatus,
+          state: "cancelled",
+          reason: "cancelled by request",
+          activity: "idle",
+        });
+      } catch {}
+
+      // Immediately signal active agent process
+      if (currentStatus && ACTIVE_STATES.includes(currentStatus.state)) {
+        if (currentStatus.pid && isPidAlive(currentStatus.pid)) {
+          const childPid = currentStatus.pid;
+          const logMsg = `[${new Date().toISOString()}] [WARN] Task ${task_id} cancellation requested. Sending SIGTERM to process.\n`;
+          try {
+            const logsDir = path.join(rootDir, "logs");
+            if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+            fs.appendFileSync(path.join(logsDir, "worker.log"), logMsg, "utf8");
+          } catch {}
+          const isWin = process.platform === "win32";
+          if (isWin) {
+            try {
+              spawnSync("taskkill", ["/T", "/PID", String(childPid)], { windowsHide: true });
+            } catch {}
+          } else {
+            const allPids = [childPid, ...getDescendantPids(childPid)];
+            for (const p of allPids) {
+              try { process.kill(p, "SIGTERM"); } catch {}
+            }
+          }
+        }
+      }
 
       return {
         content: [
@@ -542,21 +634,14 @@ export function registerOpsTools(
       logger.info(`wait_task: timed out waiting for taskId=${task_id} after ${clampedTimeout}s`);
       audit(rootDir, { tool: "wait_task", taskId: task_id, state: currentStatus.state });
 
-      // Read live stdout progress from logs/<taskId>.out
-      let progressReport = "任务正在初始化或 Agent 正在分析上下文...";
+      // Read live stdout progress stats (bytes/size) without leaking repetitive partial text
       let outputStats = "";
       try {
         const outFilePath = resolveSafePath(logsDir, rootDir, `${task_id}.out`);
         if (fs.existsSync(outFilePath)) {
-          const rawOutput = fs.readFileSync(outFilePath, "utf8");
-          const sizeBytes = Buffer.byteLength(rawOutput, "utf8");
-          const charCount = rawOutput.length;
-          if (sizeBytes > 0) {
-            outputStats = ` (已产生分析内容约 ${charCount} 字 / ${(sizeBytes / 1024).toFixed(1)} KB)`;
-          }
-          const extracted = extractActionProgress(rawOutput);
-          if (extracted && extracted.trim().length > 0) {
-            progressReport = extracted.trim();
+          const stat = fs.statSync(outFilePath);
+          if (stat.size > 0) {
+            outputStats = `，后台已生成 ${(stat.size / 1024).toFixed(1)} KB`;
           }
         }
       } catch {}
@@ -564,22 +649,20 @@ export function registerOpsTools(
       let elapsedStr = "";
       if (currentStatus.startedAt) {
         const elapsedSec = Math.max(1, Math.round((Date.now() - new Date(currentStatus.startedAt).getTime()) / 1000));
-        elapsedStr = ` | 已执行 ${elapsedSec}s`;
+        elapsedStr = `已执行 ${elapsedSec}s`;
       }
 
-      const agentLabel = currentStatus.agent ? `Agent: ${currentStatus.agent}` : "Agent 执行中";
-      const modelLabel = currentStatus.model ? ` | 模型: ${currentStatus.model}` : "";
+      const agentPart = currentStatus.agent ? `[${currentStatus.agent}]` : "";
+      const metaInfo = [elapsedStr, outputStats].filter(Boolean).join("");
+      const metaPart = metaInfo ? `(${metaInfo})` : "";
+      const details = [agentPart, metaPart].filter(Boolean).join(" ");
+      const prefix = details ? ` ${details}` : "";
 
       return {
         content: [
           {
             type: "text",
-            text: `Status: Pending. Task "${task_id}" 仍在执行，可再次调用 wait_task。${clampNote}
-
---- [实时执行进度 / In-Progress Update] ---
-[${agentLabel}${modelLabel} | 状态: ${currentStatus.state || "running"}${elapsedStr}]${outputStats}
-${progressReport}
-------------------------------------------`,
+            text: `Status: Pending. Task "${task_id}"${prefix} 仍在执行，可再次调用 wait_task。${clampNote}`,
           },
         ],
       };

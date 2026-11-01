@@ -6,18 +6,65 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeRoot, ensureBridgeDirectories } from "./config.js";
 import { isValidTaskId } from "./validator.js";
-import { loadAgents, AgentRegistry, AgentConfig } from "./agents.js";
-import { writeStatus } from "./status.js";
+import { loadAgents, AgentRegistry, AgentConfig, agentSupportsEffort } from "./agents.js";
+import {
+  reconcileAllTasks,
+  newestMtime,
+  getStallThresholdMs,
+  getDescendantPids,
+  getProcessTreeCpuTime,
+} from "./task-reconcile.js";
+import { TaskSessionTracker } from "./session-tracker.js";
+import { AgySdkStreamParser, capTailString, MAX_SDK_BUFFER_BYTES } from "./agy-sdk-stream.js";
+import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
-import { onTaskFinished, reconcileQueues } from "./queue-dispatcher.js";
+import { onTaskFinished, reconcileQueues, isConversationLaneBusy, conversationLaneKey } from "./queue-dispatcher.js";
 import { triggerTaskWebhook } from "./webhook.js";
-import { isQuotaExhaustedError, stashQuotaTask } from "./session-quota.js";
+import { classifyAgentFailure, isLoginInvalidError, parseQuotaResetTime, stashQuotaTask } from "./session-quota.js";
+import {
+  recordTaskStartUnderProfile,
+  handlePoolQuotaPaused,
+  markProfileNeedsRelogin,
+} from "./account-pool.js";
+import {
+  acquireDualPoolAccount,
+  releaseSelection,
+  pauseEmail,
+  type AccountSelection,
+} from "./dual-pool.js";
+import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
+import { sendCompletionCallback, extractPrUrl } from "./callback.js";
+import { setupGitWorktree } from "./worktree.js";
+import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
+import { recordTaskResultInPlan } from "./plans.js";
+import {
+  deriveStage,
+  getTaskReportDir,
+  buildReportJsonPromptInstruction,
+  readOrFallbackTaskReport,
+} from "./task-stage.js";
+import {
+  sendDesktopNotification,
+  buildOsascriptNotifyArgs,
+  NotificationLevel,
+  NotificationChannel,
+  dispatchTaskLifecycleNotification,
+} from "./notifier.js";
 
 // Configuration from environment variables
 const rootDir = resolveBridgeRoot();
 const pollIntervalMs = parseInt(process.env.AGENT_BRIDGE_POLL_MS || "3000", 10);
 const taskTimeoutMs = parseInt(process.env.AGENT_BRIDGE_TIMEOUT_MS || "1800000", 10);
+/** Minimum implicit hard-kill cap when send_task omits timeout_seconds (6 hours). */
+export const HARD_KILL_SAFETY_CAP_MS = 6 * 60 * 60 * 1000;
+
+export function resolveHardKillTimeoutMs(hardTimeoutSeconds: number | undefined, envTimeoutMs: number = taskTimeoutMs): number {
+  if (hardTimeoutSeconds && hardTimeoutSeconds > 0) {
+    return hardTimeoutSeconds * 1000;
+  }
+  return Math.max(envTimeoutMs, HARD_KILL_SAFETY_CAP_MS);
+}
 
 const { tasksDir, resultsDir, logsDir } = ensureBridgeDirectories(rootDir);
 const workerLogFile = path.join(logsDir, "worker.log");
@@ -40,26 +87,32 @@ export function logWorker(level: "INFO" | "WARN" | "ERROR", message: string): vo
 
 /**
  * Constructs the argument array for osascript notification.
+ * Backward compatible with legacy 2-argument signature.
  */
-export function buildNotifyArgs(title: string, message: string): string[] {
-  return [
-    "-e",
-    "on run argv",
-    "-e",
-    "display notification (item 1 of argv) with title (item 2 of argv)",
-    "-e",
-    "end run",
-    message,
-    title,
-  ];
+export function buildNotifyArgs(
+  title: string,
+  message: string,
+  subtitle: string = "",
+  soundName: string = ""
+): string[] {
+  return buildOsascriptNotifyArgs(title, message, subtitle, soundName);
 }
 
 /**
- * Sends a native macOS desktop notification using osascript.
- * Skipped on win32/linux or if AGENT_BRIDGE_NOTIFY === "0".
+ * Sends a native desktop notification across platforms (macOS, Windows, Linux).
+ * Skipped if AGENT_BRIDGE_NOTIFY === "0".
  */
-export function notify(title: string, message: string): void {
-  if (process.platform !== "darwin") {
+export function notify(
+  title: string,
+  message: string,
+  options?: {
+    subtitle?: string;
+    level?: NotificationLevel;
+    sound?: boolean | string;
+    channel?: NotificationChannel;
+  }
+): void {
+  if (process.platform !== "darwin" && process.platform !== "win32" && process.platform !== "linux") {
     logWorker("INFO", `Notification skipped on platform ${process.platform}: [${title}] ${message}`);
     return;
   }
@@ -70,20 +123,22 @@ export function notify(title: string, message: string): void {
   }
 
   try {
-    const args = buildNotifyArgs(title, message);
-    const child = spawn("osascript", args, { shell: false });
-
-    child.on("error", (err) => {
-      logWorker("WARN", `Notification failed to spawn osascript: ${err.message}`);
+    const res = sendDesktopNotification({
+      title,
+      message,
+      subtitle: options?.subtitle,
+      level: options?.level || "info",
+      sound: options?.sound !== undefined ? options?.sound : true,
+      channel: options?.channel || "desktop",
     });
 
-    child.on("close", (code) => {
-      if (code !== 0) {
-        logWorker("WARN", `osascript exited with code ${code}`);
-      } else {
-        logWorker("INFO", `Notification sent successfully: [${title}] ${message}`);
-      }
-    });
+    if (res.disabled) {
+      logWorker("INFO", `Notification disabled by AGENT_BRIDGE_NOTIFY=0: [${title}] ${message}`);
+    } else if (res.success) {
+      logWorker("INFO", `Notification sent successfully: [${title}] ${message}`);
+    } else {
+      logWorker("WARN", `Notification failed: [${title}] ${message} (${res.details || "unknown error"})`);
+    }
   } catch (err: any) {
     logWorker("WARN", `Notification error: ${err?.message || String(err)}`);
   }
@@ -121,9 +176,89 @@ export function parseTaskFile(content: string): {
   reasoningEffort?: string;
   continueSession?: boolean;
   sessionId?: string;
+  account?: string;
+  notify?: boolean;
+  notifyChannel?: NotificationChannel;
+  notifySound?: boolean | string;
+  notifyOn?: Set<string>;
+  hardTimeoutSeconds?: number;
+  notifyOverdueSeconds?: number;
+  projectId?: string;
+  projectName?: string;
+  projectRepo?: string;
+  projectDir?: string;
+  slackChannel?: string;
+  slackWebhookEnv?: string;
+  callbackUrl?: string;
+  callbackHeaders?: Record<string, string>;
+  worktreeName?: string;
+  worktreeBaseBranch?: string;
+  onSuccess?: any;
+  planId?: string;
+  planStepId?: string;
+  planVersion?: number;
+  planTitle?: string;
 } {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
+
+  const projectIdMatch = content.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectId = projectIdMatch ? projectIdMatch[1].trim() : undefined;
+
+  const projectNameMatch = content.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectName = projectNameMatch ? projectNameMatch[1].trim() : undefined;
+
+  const projectRepoMatch = content.match(/^-[ \t]*\*\*Project Repo\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectRepo = projectRepoMatch ? projectRepoMatch[1].trim() : undefined;
+
+  const projectDirMatch = content.match(/^-[ \t]*\*\*Project Dir\*\*:[ \t]*([^\r\n]*)$/m);
+  const projectDir = projectDirMatch ? projectDirMatch[1].trim() : undefined;
+
+  const slackChannelMatch = content.match(/^-[ \t]*\*\*Slack Channel\*\*:[ \t]*([^\r\n]*)$/m);
+  const slackChannel = slackChannelMatch ? slackChannelMatch[1].trim() : undefined;
+
+  const slackWebhookEnvMatch = content.match(/^-[ \t]*\*\*Slack Webhook Env\*\*:[ \t]*([^\r\n]*)$/m);
+  const slackWebhookEnv = slackWebhookEnvMatch ? slackWebhookEnvMatch[1].trim() : undefined;
+
+  const callbackUrlMatch = content.match(/^-[ \t]*\*\*Callback URL\*\*:[ \t]*([^\r\n]*)$/m);
+  const callbackUrl = callbackUrlMatch ? callbackUrlMatch[1].trim() : undefined;
+
+  const callbackHeadersMatch = content.match(/^-[ \t]*\*\*Callback Headers\*\*:[ \t]*([^\r\n]*)$/m);
+  let callbackHeaders: Record<string, string> | undefined;
+  if (callbackHeadersMatch) {
+    try {
+      callbackHeaders = JSON.parse(callbackHeadersMatch[1].trim());
+    } catch {}
+  }
+
+  const worktreeNameMatch = content.match(/^-[ \t]*\*\*Worktree Name\*\*:[ \t]*([^\r\n]*)$/m);
+  const worktreeName = worktreeNameMatch ? worktreeNameMatch[1].trim() : undefined;
+
+  const worktreeBaseBranchMatch = content.match(/^-[ \t]*\*\*Worktree Base Branch\*\*:[ \t]*([^\r\n]*)$/m);
+  const worktreeBaseBranch = worktreeBaseBranchMatch ? worktreeBaseBranchMatch[1].trim() : undefined;
+
+  const onSuccessMatch = content.match(/^-[ \t]*\*\*On Success\*\*:[ \t]*([^\r\n]*)$/m);
+  let onSuccess: any = undefined;
+  if (onSuccessMatch) {
+    try {
+      onSuccess = JSON.parse(onSuccessMatch[1].trim());
+    } catch {
+      onSuccess = onSuccessMatch[1].trim();
+    }
+  }
+
+  const planIdMatch = content.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const planId = planIdMatch ? planIdMatch[1].trim() : undefined;
+
+  const planStepIdMatch = content.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const planStepId = planStepIdMatch ? planStepIdMatch[1].trim() : undefined;
+
+  const planVersionMatch = content.match(/^-[ \t]*\*\*Plan Version\*\*:[ \t]*([^\r\n]*)$/m);
+  const planVersion =
+    planVersionMatch && parseInt(planVersionMatch[1], 10) > 0 ? parseInt(planVersionMatch[1], 10) : undefined;
+
+  const planTitleMatch = content.match(/^-[ \t]*\*\*Plan Title\*\*:[ \t]*([^\r\n]*)$/m);
+  const planTitle = planTitleMatch ? planTitleMatch[1].trim() : undefined;
 
   const modelMatch = content.match(/^-[ \t]*\*\*Model\*\*:[ \t]*([^\r\n]*)$/m);
   const model = modelMatch ? modelMatch[1].trim() : "";
@@ -136,6 +271,44 @@ export function parseTaskFile(content: string): {
 
   const sessionMatch = content.match(/^-[ \t]*\*\*Session ID\*\*:[ \t]*([^\r\n]*)$/m);
   const sessionId = sessionMatch ? sessionMatch[1].trim() : "";
+
+  const accountMatch = content.match(/^-[ \t]*\*\*Account\*\*:[ \t]*([^\r\n]*)$/m);
+  const account = accountMatch ? accountMatch[1].trim() : undefined;
+
+  const notifyMatch = content.match(/^-[ \t]*\*\*Notify\*\*:[ \t]*([^\r\n]*)$/m);
+  const notify = notifyMatch ? notifyMatch[1].trim().toLowerCase() !== "false" : true;
+
+  const notifyChannelMatch = content.match(/^-[ \t]*\*\*Notify Channel\*\*:[ \t]*([^\r\n]*)$/m);
+  const notifyChannel = (notifyChannelMatch ? notifyChannelMatch[1].trim().toLowerCase() : "desktop") as NotificationChannel;
+
+  const notifySoundMatch = content.match(/^-[ \t]*\*\*Notify Sound\*\*:[ \t]*([^\r\n]*)$/m);
+  let notifySound: boolean | string = false;
+  if (notifySoundMatch) {
+    const rawSound = notifySoundMatch[1].trim();
+    if (rawSound.toLowerCase() === "false") notifySound = false;
+    else if (rawSound.toLowerCase() === "true") notifySound = true;
+    else notifySound = rawSound;
+  }
+
+  const notifyOnMatch = content.match(/^-[ \t]*\*\*Notify On\*\*:[ \t]*([^\r\n]*)$/m);
+  const notifyOn = notifyOnMatch
+    ? new Set(notifyOnMatch[1].split(",").map((s) => s.trim().toLowerCase()))
+    : new Set(["completed", "failed", "timeout", "stuck", "overdue"]);
+
+  const hardTimeoutMatch = content.match(/^-[ \t]*\*\*Hard Timeout Seconds\*\*:[ \t]*([^\r\n]*)$/m);
+  const hardTimeoutSeconds =
+    hardTimeoutMatch && parseInt(hardTimeoutMatch[1], 10) > 0 ? parseInt(hardTimeoutMatch[1], 10) : undefined;
+
+  const notifyOverdueMatch = content.match(/^-[ \t]*\*\*Notify Overdue Seconds\*\*:[ \t]*([^\r\n]*)$/m);
+  let notifyOverdueSeconds =
+    notifyOverdueMatch && parseInt(notifyOverdueMatch[1], 10) > 0 ? parseInt(notifyOverdueMatch[1], 10) : undefined;
+
+  if (!notifyOverdueSeconds && !hardTimeoutSeconds) {
+    const legacyTimeoutMatch = content.match(/^-[ \t]*\*\*Timeout(?: Seconds)?\*\*:[ \t]*([^\r\n]*)$/m);
+    if (legacyTimeoutMatch && parseInt(legacyTimeoutMatch[1], 10) > 0) {
+      notifyOverdueSeconds = parseInt(legacyTimeoutMatch[1], 10);
+    }
+  }
 
   const promptHeaderIdx = content.indexOf("## Prompt");
   let prompt = "";
@@ -157,6 +330,28 @@ export function parseTaskFile(content: string): {
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(continueSession ? { continueSession: true } : {}),
     ...(sessionId ? { sessionId } : {}),
+    account,
+    notify,
+    notifyChannel,
+    notifySound,
+    notifyOn,
+    ...(hardTimeoutSeconds ? { hardTimeoutSeconds } : {}),
+    ...(notifyOverdueSeconds ? { notifyOverdueSeconds } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(projectName ? { projectName } : {}),
+    ...(projectRepo ? { projectRepo } : {}),
+    ...(projectDir ? { projectDir } : {}),
+    ...(slackChannel ? { slackChannel } : {}),
+    ...(slackWebhookEnv ? { slackWebhookEnv } : {}),
+    ...(callbackUrl ? { callbackUrl } : {}),
+    ...(callbackHeaders ? { callbackHeaders } : {}),
+    ...(worktreeName ? { worktreeName } : {}),
+    ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}),
+    onSuccess,
+    ...(planId ? { planId } : {}),
+    ...(planStepId ? { planStepId } : {}),
+    ...(planVersion !== undefined ? { planVersion } : {}),
+    ...(planTitle ? { planTitle } : {}),
   };
 }
 
@@ -173,7 +368,8 @@ export function writeResultFile(
   stderr: string,
   model?: string,
   reasoningEffort?: string,
-  sessionId?: string
+  sessionId?: string,
+  accountUsed?: string
 ): string {
   const finalResultPath = path.join(resultsDir, `${taskId}.md`);
   const tmpResultPath = path.join(resultsDir, `${taskId}.md.tmp`);
@@ -182,6 +378,7 @@ export function writeResultFile(
   if (model) metaLines += `- **Model**: ${model}\n`;
   if (reasoningEffort) metaLines += `- **Reasoning Effort**: ${reasoningEffort}\n`;
   if (sessionId) metaLines += `- **Session ID**: ${sessionId}\n`;
+  if (accountUsed) metaLines += `- **Account**: ${accountUsed}\n`;
   metaLines += `- **Started At**: ${startedAt}\n- **Finished At**: ${finishedAt}\n- **Exit Code**: ${exitCode !== null ? exitCode : "(none)"}\n`;
 
   let content = `# Execution Result for ${taskId}
@@ -282,6 +479,25 @@ export async function processTaskFile(
   }
 }
 
+function agentConfigCommandIsAgy(registry: AgentRegistry | null, agentName: string): boolean {
+  const cmd = registry?.[agentName]?.command || "";
+  if (cmd) {
+    const base = path.basename(cmd);
+    if (base === "agy" || base.startsWith("agy.")) return true;
+    return false;
+  }
+  return agentName === "agy" || agentName === "agy-sdk";
+}
+
+function isAgySdkStreamAgent(agentName: string, _command: string, args: string[]): boolean {
+  if (agentName === "agy-sdk") return true;
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--output-format" || args[i] === "-o") && args[i + 1] === "stream-json") return true;
+    if (args[i] === "--output-format=stream-json") return true;
+  }
+  return false;
+}
+
 async function executeTaskFile(
   taskFileName: string,
   taskId: string,
@@ -304,7 +520,51 @@ async function executeTaskFile(
   }
 
   const startedAt = new Date().toISOString();
-  const { agentName, prompt, model, reasoningEffort, continueSession, sessionId } = parseTaskFile(fileContent);
+
+  // Clear any stale non-cancelled status file if the same taskId is being re-dispatched
+  const existingStatusPath = path.join(currentRoot, "status", `${taskId}.json`);
+  const cancelFilePathEarly = path.join(controlDir, `${taskId}.cancel`);
+  if (fs.existsSync(existingStatusPath) && !fs.existsSync(cancelFilePathEarly)) {
+    try {
+      const prevSt = readStatus(currentRoot, taskId);
+      if (prevSt && prevSt.state !== "cancelled" && prevSt.state !== "queued") {
+        fs.unlinkSync(existingStatusPath);
+      }
+    } catch {}
+  }
+  const {
+    agentName,
+    prompt,
+    model,
+    reasoningEffort,
+    continueSession,
+    sessionId,
+    notify: notifyOpt,
+    notifyChannel,
+    notifySound,
+    notifyOn = new Set(["completed", "failed", "timeout", "stuck", "overdue"]),
+    hardTimeoutSeconds,
+    notifyOverdueSeconds,
+    projectId,
+    projectName,
+    projectRepo,
+    projectDir,
+    slackChannel,
+    slackWebhookEnv,
+    callbackUrl,
+    callbackHeaders,
+    worktreeName,
+    worktreeBaseBranch,
+    onSuccess,
+    account,
+    planId,
+    planStepId,
+    planVersion,
+    planTitle,
+  } = parseTaskFile(fileContent);
+
+  const effectiveHardTimeoutMs = resolveHardKillTimeoutMs(hardTimeoutSeconds, timeoutMs);
+  const isNotifyEnabled = notifyOpt !== false && notifyChannel !== "none";
 
   // Check cancellation before start
   const cancelFilePath = path.join(controlDir, `${taskId}.cancel`);
@@ -336,6 +596,21 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "cancelled", exitCode: 1 });
     logWorker("INFO", `Task ${taskId} cancelled before start by request`);
     notify("agent-bridge", `Task ${taskId} cancelled (cancelled by request) [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "cancelled",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
   }
 
@@ -367,6 +642,21 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("ERROR", `Task ${taskId} failed: agents.json not found`);
     notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "failed",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
   }
 
@@ -400,16 +690,174 @@ async function executeTaskFile(
     audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
     logWorker("WARN", `Task ${taskId} failed: ${errorMsg}`);
     notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+    if (callbackUrl) {
+      sendCompletionCallback({
+        url: callbackUrl,
+        headers: callbackHeaders,
+        taskId,
+        agent: agentName || "(none)",
+        status: "failed",
+        exitCode: 1,
+        durationSeconds: 0,
+        resultPath: path.join(resultsDir, `${taskId}.md`),
+        logPath: path.join(logsDir, `${taskId}.out`),
+        project: projectName || projectId,
+        logger: logWorker,
+      }).catch(() => {});
+    }
     return true;
+  }
+
+  // 1. Task Started Lifecycle Notification (Slack only, desktop silent on start)
+  let slackStartTs: string | undefined;
+  if (isNotifyEnabled && (slackChannel || slackWebhookEnv)) {
+    try {
+      const notifyRes = await dispatchTaskLifecycleNotification(
+        {
+          taskId,
+          event: "started",
+          projectName,
+          repo: projectRepo,
+          slackChannel,
+          slackWebhookEnv,
+          agent: agentName,
+          model,
+          promptSummary: prompt,
+          desktop: false,
+        },
+        logWorker
+      );
+      if (notifyRes && notifyRes.slackTs) {
+        slackStartTs = notifyRes.slackTs;
+      }
+    } catch (startNotifyErr: any) {
+      logWorker("WARN", `Error sending started notification: ${startNotifyErr?.message || String(startNotifyErr)}`);
+    }
+  }
+
+  // Dynamically handle session resumption / continuation
+  const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
+  const activeSessionId = targetSessionToResume || sessionId;
+
+  const waitMaxMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_WAIT_MS || String(6 * 3600 * 1000), 10);
+  const waitPollMs = parseInt(process.env.AGENT_BRIDGE_ACCOUNT_POLL_MS || "30000", 10);
+  const waitStart = Date.now();
+
+  // Same session + project_dir (or continue_session) must not run concurrently.
+  if (conversationLaneKey(activeSessionId, projectDir, continueSession)) {
+    let loggedLaneWait = false;
+    for (;;) {
+      if (
+        !isConversationLaneBusy(currentRoot, activeSessionId, projectDir, continueSession, taskId)
+      ) {
+        break;
+      }
+      if (fs.existsSync(path.join(controlDir, `${taskId}.cancel`)) || Date.now() - waitStart > waitMaxMs) {
+        const reasonTxt = "conversation lane busy (same session/project); timed out or cancelled";
+        writeStatus(currentRoot, taskId, {
+          state: "failed",
+          agent: agentName,
+          model,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          exitCode: null,
+          reason: reasonTxt,
+        });
+        saveProcessedTask(processedMap, taskId, new Date().toISOString());
+        logWorker("ERROR", `Task ${taskId}: ${reasonTxt}`);
+        return true;
+      }
+      if (!loggedLaneWait) {
+        logWorker("WARN", `Task ${taskId} queued: waiting for conversation lane (session/project serial execution)...`);
+        writeStatus(currentRoot, taskId, {
+          state: "queued",
+          agent: agentName,
+          model,
+          startedAt,
+          reason: "waiting for conversation lane (same session/project)",
+          workerPid: process.pid,
+        });
+        loggedLaneWait = true;
+      }
+      await new Promise((r) => setTimeout(r, waitPollMs));
+    }
+  }
+
+  // Resolve account across the dual pool (agy only): custom Profiles first, then the
+  // default pool (default HOME + Cockpit rotation). If nothing is available, wait (queued).
+  const isAgyTask = agentConfigCommandIsAgy(registry, agentName);
+  let accountSel: AccountSelection | undefined;
+  if (isAgyTask) {
+    let loggedWait = false;
+    for (;;) {
+      accountSel = await acquireDualPoolAccount(currentRoot, taskId, {
+        session_id: activeSessionId,
+        requestedAccount: account,
+        logger: logWorker,
+      });
+      if (accountSel.pool !== "none") break;
+      if (accountSel.kind === "no_quota") break; // tell the caller instead of hanging
+      if (fs.existsSync(path.join(controlDir, `${taskId}.cancel`)) || Date.now() - waitStart > waitMaxMs) break;
+      if (!loggedWait) {
+        logWorker("WARN", `Task ${taskId} queued: no agy account available (${accountSel.reason}). Waiting...`);
+        writeStatus(currentRoot, taskId, { state: "queued", agent: agentName, model, startedAt, reason: `waiting for account: ${accountSel.reason}`, workerPid: process.pid });
+        loggedWait = true;
+      }
+      await new Promise((r) => setTimeout(r, waitPollMs));
+    }
+    if (accountSel.pool === "none" && accountSel.kind === "no_quota") {
+      const fin = new Date().toISOString();
+      const reasonTxt = `no_quota: ${accountSel.reason}. Task stashed; resume with resume_after_account_switch.`;
+      try {
+        stashQuotaTask(currentRoot, { taskId, session_id: sessionId, agent: agentName, model, reasoningEffort, prompt, errorSnippet: reasonTxt, pausedAt: fin });
+      } catch {}
+      writeResultFile(resultsDir, taskId, "no_quota", agentName, startedAt, fin, null,
+        `No agy account has quota left (agent was NOT switched).\n\n${accountSel.reason}${accountSel.earliest_reset ? `\n\nearliest_reset: ${accountSel.earliest_reset}` : ""}`,
+        "", model, reasoningEffort, sessionId);
+      writeStatus(currentRoot, taskId, { state: "paused_quota", agent: agentName, model, startedAt, finishedAt: fin, exitCode: null, reason: reasonTxt });
+      saveProcessedTask(processedMap, taskId, fin);
+      logWorker("WARN", `Task ${taskId}: ${reasonTxt}`);
+      try { onTaskFinished(currentRoot, taskId, "paused_quota", sessionId, reasonTxt); } catch {}
+      return true;
+    }
+    if (accountSel.pool === "none") {
+      const reasonTxt = `no agy account available: ${accountSel.reason}`;
+      writeStatus(currentRoot, taskId, { state: "failed", agent: agentName, model, startedAt, finishedAt: new Date().toISOString(), exitCode: null, reason: reasonTxt });
+      saveProcessedTask(processedMap, taskId, new Date().toISOString());
+      logWorker("ERROR", `Task ${taskId}: ${reasonTxt}`);
+      return true;
+    }
+  }
+  const poolProfile = accountSel && accountSel.pool === "custom" ? accountSel : undefined;
+  const accountEmail = accountSel && accountSel.pool !== "none" ? accountSel.email : undefined;
+  const releaseAccount = () => releaseSelection(currentRoot, accountSel, taskId);
+  process.once("exit", releaseAccount);
+
+  const effectiveHome = poolProfile?.home || process.env.HOME || os.homedir();
+  const effectiveAccountAlias = poolProfile?.alias
+    || (accountSel?.pool === "default" && accountEmail ? `default:${accountEmail}` : undefined)
+    || (account && account !== "auto" ? account : undefined);
+  if (accountSel?.pool === "default") {
+    logWorker("INFO", `Task ${taskId} assigned to default pool (HOME ${effectiveHome}${accountEmail ? `, Cockpit account ${accountEmail}` : ", legacy"})`);
+  }
+
+  if (poolProfile) {
+    recordTaskStartUnderProfile(currentRoot, poolProfile.alias, taskId, activeSessionId);
+    logWorker("INFO", `Task ${taskId} assigned to account pool profile "${poolProfile.alias}" (home: ${poolProfile.home})`);
   }
 
   // Write running status and audit as execution begins
   writeStatus(currentRoot, taskId, {
     state: "running",
+    projectId,
+    projectName,
     agent: agentName,
     model,
     reasoningEffort,
+    account: effectiveAccountAlias,
     startedAt,
+    workerPid: process.pid,
+    ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
   });
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "running" });
 
@@ -417,9 +865,17 @@ async function executeTaskFile(
   const agentConfig: AgentConfig = registry[agentName];
   const command = agentConfig.command;
   const args = [...agentConfig.args];
+  const isAgyFamily = command.includes("agy") || agentName === "agy" || agentName === "agy-sdk";
 
-  // Dynamically handle session resumption / continuation
-  const targetSessionToResume = resolveSessionId(currentRoot, sessionId);
+  if (agentName === "agy-sdk") {
+    const hasOutputFormat = args.some(
+      (a) => a === "--output-format" || a === "-o" || a.startsWith("--output-format=")
+    );
+    if (!hasOutputFormat) {
+      args.push("--output-format", "stream-json");
+    }
+  }
+  const useSdkStreamParser = isAgySdkStreamAgent(agentName, command, args);
 
   if (targetSessionToResume || continueSession) {
     if (command.includes("codex") || agentName === "codex") {
@@ -437,12 +893,51 @@ async function executeTaskFile(
           args.unshift("resume", "--last");
         }
       }
-    } else if (command.includes("agy") || agentName === "agy") {
+    } else if (isAgyFamily) {
       if (targetSessionToResume) {
-        args.push("--conversation", targetSessionToResume);
+        const agyCliBase = process.env.GEMINI_CLI_HOME || path.join(effectiveHome, ".gemini", "antigravity-cli");
+        const convDbPath = path.join(agyCliBase, "conversations", `${targetSessionToResume}.db`);
+        const convBrainPath = path.join(agyCliBase, "brain", targetSessionToResume);
+        const defaultCliBase = path.join(os.homedir(), ".gemini", "antigravity-cli");
+        const existsInTargetHome = fs.existsSync(convDbPath) || fs.existsSync(convBrainPath);
+        const existsInDefaultHome =
+          fs.existsSync(path.join(defaultCliBase, "conversations", `${targetSessionToResume}.db`)) ||
+          fs.existsSync(path.join(defaultCliBase, "brain", targetSessionToResume));
+
+        if (!existsInTargetHome && existsInDefaultHome && effectiveHome !== os.homedir()) {
+          logWorker(
+            "WARN",
+            `Task ${taskId}: conversation "${targetSessionToResume}" does not exist in switched profile HOME (${effectiveHome}); falling back to fresh conversation run.`
+          );
+        } else {
+          args.push("--conversation", targetSessionToResume);
+        }
       } else if (continueSession) {
         args.push("--continue");
       }
+    }
+  }
+
+  // Prepare per-task structured report directory ($TASK_DIR) and ensure prompt instructs writing $TASK_DIR/report.json
+  const taskReportDir = getTaskReportDir(currentRoot, taskId);
+  try {
+    if (!fs.existsSync(taskReportDir)) {
+      fs.mkdirSync(taskReportDir, { recursive: true });
+    }
+  } catch {}
+  const effectivePrompt = prompt.includes("[Structured Report Requirement]")
+    ? prompt
+    : `${prompt}${buildReportJsonPromptInstruction(taskReportDir)}`;
+
+  // agy agent requirement: use --print mode for non-interactive runs
+  // Prompt is attached directly to the flag (--print=<prompt>) or passed as a flag argument
+  // to prevent consuming subsequent options like --dangerously-skip-permissions, --model, etc.
+  if (isAgyFamily) {
+    const hasPrintFlag = args.some(
+      (a) => a === "--print" || a === "-p" || a.startsWith("--print=") || a.startsWith("-p=")
+    );
+    if (!hasPrintFlag) {
+      args.push(`--print=${effectivePrompt}`);
     }
   }
 
@@ -450,24 +945,35 @@ async function executeTaskFile(
   if (model) {
     if (command.includes("codex") || agentName === "codex") {
       args.push("-m", model);
-    } else if (command.includes("agy") || agentName === "agy") {
+    } else if (isAgyFamily) {
       args.push("--model", model);
     } else {
       args.push("--model", model);
     }
   }
 
-  // Dynamically inject reasoning effort if specified
+  // Dynamically inject reasoning effort if specified AND supported by agent/model capability
   if (reasoningEffort) {
-    if (command.includes("codex") || agentName === "codex") {
-      args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-    } else if (command.includes("agy") || agentName === "agy") {
+    const isCodex = command.includes("codex") || agentName === "codex";
+    const isAgy = isAgyFamily;
+    const supportsEffort = isCodex || agentSupportsEffort(agentConfig, model);
+
+    if (isCodex) {
+      if (supportsEffort) {
+        args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+      }
+    } else if (isAgy) {
+      // agy agent: never pass --effort/reasoning_effort unless the agent registry explicitly marks the model as supporting it
+      if (supportsEffort) {
+        args.push("--effort", reasoningEffort);
+      }
+    } else if (supportsEffort) {
       args.push("--effort", reasoningEffort);
     }
   }
 
-  if (agentConfig.input === "arg") {
-    args.push(prompt);
+  if (agentConfig.input === "arg" && !isAgyFamily) {
+    args.push(effectivePrompt);
   }
 
   let stdoutData = "";
@@ -475,36 +981,211 @@ async function executeTaskFile(
   let child: ChildProcess | null = null;
   let isTimeout = false;
   let isCancelled = false;
+  let seenCancelRequested = false;
   let exitCode: number | null = null;
 
-  // Prepare incremental stdout file in logs/<task_id>.out
+  // Prepare incremental stdout file in logs/<task_id>.out (and .events.jsonl for agy-sdk)
   const taskLogsDir = path.join(currentRoot, "logs");
   const taskOutFilePath = path.join(taskLogsDir, `${taskId}.out`);
+  const taskEventsFilePath = path.join(taskLogsDir, `${taskId}.events.jsonl`);
+  let sdkParser: AgySdkStreamParser | null = null as AgySdkStreamParser | null;
+  let sessionTrackerRef: TaskSessionTracker | null = null as TaskSessionTracker | null;
   try {
     if (!fs.existsSync(taskLogsDir)) fs.mkdirSync(taskLogsDir, { recursive: true });
     fs.writeFileSync(taskOutFilePath, "", "utf8");
+    if (useSdkStreamParser) {
+      fs.writeFileSync(taskEventsFilePath, "", "utf8");
+    }
   } catch {}
+
+  let effectiveWorkingDir = projectDir && fs.existsSync(projectDir) ? projectDir : undefined;
+  let matchedTaskProj = undefined as ReturnType<typeof loadProjectsConfig>["projects"][string] | undefined;
+  try {
+    const projConfig = loadProjectsConfig(currentRoot);
+    matchedTaskProj = Object.values(projConfig.projects).find(
+      (p) =>
+        (projectId && p.id.toLowerCase() === projectId.toLowerCase()) ||
+        (projectDir && (getProjectRepoPath(p) === projectDir || (p.paths && p.paths.includes(projectDir))))
+    );
+  } catch {}
+
+  // Worktree setup if requested
+  if (worktreeName) {
+    if (!effectiveWorkingDir) {
+      const errMsg = `Worktree requested ("${worktreeName}"), but no valid project directory or repository path was resolved (projectDir="${projectDir || ""}"). Cannot create worktree without base repo.`;
+      const fin = new Date().toISOString();
+      writeResultFile(resultsDir, taskId, "failed (worktree setup failed)", agentName, startedAt, fin, 1, "", errMsg);
+      writeStatus(currentRoot, taskId, {
+        state: "failed",
+        agent: agentName,
+        model,
+        account: effectiveAccountAlias,
+        startedAt,
+        finishedAt: fin,
+        exitCode: 1,
+        reason: errMsg,
+      });
+      releaseAccount();
+      process.removeListener("exit", releaseAccount);
+      saveProcessedTask(processedMap, taskId, fin);
+      audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
+      logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
+      notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+      if (callbackUrl) {
+        sendCompletionCallback({
+          url: callbackUrl,
+          headers: callbackHeaders,
+          allowedEnv: matchedTaskProj?.allowed_env,
+          taskId,
+          agent: agentName,
+          status: "failed",
+          exitCode: 1,
+          durationSeconds: 0,
+          resultPath: path.join(resultsDir, `${taskId}.md`),
+          logPath: taskOutFilePath,
+          project: projectName || projectId,
+          logger: logWorker,
+        }).catch(() => {});
+      }
+      try { onTaskFinished(currentRoot, taskId, "failed", activeSessionId || sessionId, errMsg); } catch {}
+      try { triggerTaskWebhook(currentRoot, taskId, "failed", activeSessionId || sessionId, 0).catch(() => {}); } catch {}
+      return true;
+    }
+
+    try {
+      const projConfig = loadProjectsConfig(currentRoot);
+      const matchedProj = Object.values(projConfig.projects).find(
+        (p) =>
+          (projectId && p.id.toLowerCase() === projectId.toLowerCase()) ||
+          (projectDir && (getProjectRepoPath(p) === projectDir || (p.paths && p.paths.includes(projectDir))))
+      );
+      const wtRes = setupGitWorktree({
+        repoDir: effectiveWorkingDir,
+        worktreeName,
+        baseBranch: worktreeBaseBranch || matchedProj?.default_base_branch,
+        worktreeRoot: matchedProj?.worktree_root,
+        symlinkDirs: matchedProj?.symlink_dirs,
+        logger: logWorker,
+      });
+      effectiveWorkingDir = wtRes.worktreeDir;
+      logWorker("INFO", `Task ${taskId} executing inside git worktree: ${effectiveWorkingDir}`);
+    } catch (wtErr: any) {
+      const errMsg = `Failed to setup git worktree "${worktreeName}": ${wtErr?.message || String(wtErr)}`;
+      const fin = new Date().toISOString();
+      writeResultFile(resultsDir, taskId, "failed (worktree setup failed)", agentName, startedAt, fin, 1, "", errMsg);
+      writeStatus(currentRoot, taskId, {
+        state: "failed",
+        agent: agentName,
+        model,
+        account: effectiveAccountAlias,
+        startedAt,
+        finishedAt: fin,
+        exitCode: 1,
+        reason: errMsg,
+      });
+      releaseAccount();
+      process.removeListener("exit", releaseAccount);
+      saveProcessedTask(processedMap, taskId, fin);
+      audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
+      logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
+      notify("agent-bridge", `Task ${taskId} failed [${agentName || "(none)"}]`);
+      if (callbackUrl) {
+        sendCompletionCallback({
+          url: callbackUrl,
+          headers: callbackHeaders,
+          allowedEnv: matchedTaskProj?.allowed_env,
+          taskId,
+          agent: agentName,
+          status: "failed",
+          exitCode: 1,
+          durationSeconds: 0,
+          resultPath: path.join(resultsDir, `${taskId}.md`),
+          logPath: taskOutFilePath,
+          project: projectName || projectId,
+          logger: logWorker,
+        }).catch(() => {});
+      }
+      try { onTaskFinished(currentRoot, taskId, "failed", activeSessionId || sessionId, errMsg); } catch {}
+      try { triggerTaskWebhook(currentRoot, taskId, "failed", activeSessionId || sessionId, 0).catch(() => {}); } catch {}
+      return true;
+    }
+  }
+
+  let gitHeadBefore: string | undefined;
+  if (effectiveWorkingDir) {
+    try {
+      const gitHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: effectiveWorkingDir, encoding: "utf8" });
+      if (gitHead.status === 0 && gitHead.stdout) {
+        gitHeadBefore = gitHead.stdout.trim();
+      }
+    } catch {}
+  }
 
   try {
     await new Promise<void>((resolve, reject) => {
       let timer: NodeJS.Timeout | null = null;
+      let overdueTimer: NodeJS.Timeout | null = null;
+      let overdueAlertFired = false;
       let killTimer: NodeJS.Timeout | null = null;
       let cancelCheckInterval: NodeJS.Timeout | null = null;
+
+      const clearOverdueTimer = () => {
+        if (overdueTimer) {
+          clearTimeout(overdueTimer);
+          overdueTimer = null;
+        }
+      };
+
+      const fireOverdueAlert = () => {
+        if (overdueAlertFired) return;
+        overdueAlertFired = true;
+        const elapsedMs = Date.now() - new Date(startedAt).getTime();
+        const elapsedSec = Math.max(0, Math.round(elapsedMs / 1000));
+        logWorker("WARN", `Task ${taskId} overdue after ${elapsedSec}s (process still running; alert only)`);
+        if (isNotifyEnabled && notifyOn.has("overdue")) {
+          notify("agent-bridge", `Task ${taskId} overdue after ${elapsedSec}s (still running) [${agentName}]`, {
+            subtitle: "任务超时告警（未终止）",
+            level: "warning",
+            channel: notifyChannel,
+            sound: notifySound,
+          });
+        }
+        if (callbackUrl) {
+          sendCompletionCallback({
+            url: callbackUrl,
+            headers: callbackHeaders,
+            allowedEnv: matchedTaskProj?.allowed_env,
+            taskId,
+            agent: agentName,
+            status: "overdue",
+            exitCode: null,
+            durationSeconds: elapsedSec,
+            resultPath: path.join(resultsDir, `${taskId}.md`),
+            logPath: taskOutFilePath,
+            outputLog: stdoutData + "\n" + stderrData,
+            project: projectName || projectId,
+            logger: logWorker,
+          }).catch(() => {});
+        }
+        triggerTaskWebhook(currentRoot, taskId, "overdue", sessionId, elapsedMs).catch(() => {});
+      };
 
       const isWin = process.platform === "win32";
       const killChild = (sig: "SIGTERM" | "SIGKILL") => {
         const activeChild = child as ChildProcess | null;
         if (activeChild && activeChild.pid !== undefined && activeChild.exitCode === null && activeChild.signalCode === null) {
+          const childPid = activeChild.pid;
           if (isWin) {
             try {
-              const killArgs = ["/T", "/PID", String(activeChild.pid)];
+              const killArgs = ["/T", "/PID", String(childPid)];
               if (sig === "SIGKILL") killArgs.push("/F");
               spawnSync("taskkill", killArgs, { shell: false, windowsHide: true });
             } catch {}
           } else {
-            try {
-              activeChild.kill(sig);
-            } catch {}
+            const allPids = [childPid, ...getDescendantPids(childPid)];
+            for (const p of allPids) {
+              try { process.kill(p, sig); } catch {}
+            }
           }
         }
       };
@@ -538,75 +1219,393 @@ async function executeTaskFile(
         const combinedPath = Array.from(new Set([...extraPaths, ...currentPath.split(pathSep)].filter(Boolean))).join(pathSep);
 
         child = spawn(command, args, {
+          cwd: effectiveWorkingDir,
           shell: false,
           windowsHide: true,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
             ...process.env,
             [pathKey]: combinedPath,
-            HOME: process.env.HOME || os.homedir(),
+            HOME: effectiveHome,
+            TASK_DIR: taskReportDir,
           },
         });
       } catch (spawnErr: any) {
         return reject(spawnErr);
       }
 
-      if (timeoutMs > 0) {
+      // Initialize per-task session tracker for accurate stuck detection without global scans
+      const sessionTracker = new TaskSessionTracker({
+        taskId,
+        agentName,
+        command,
+        workDir: effectiveWorkingDir,
+        prompt,
+        sessionId: useSdkStreamParser ? undefined : (targetSessionToResume || sessionId),
+        profileHome: poolProfile?.home,
+        startedAtMs: new Date(startedAt).getTime(),
+      });
+      sessionTrackerRef = sessionTracker;
+
+      const statusThrottleMs = parseInt(process.env.AGENT_BRIDGE_SDK_STATUS_THROTTLE_MS || "5000", 10);
+      let lastSdkStatusWriteMs = 0;
+      let lastSdkWrittenState = "";
+      let lastSdkWrittenConvId = "";
+      let lastSdkEventTime = Date.now();
+
+      if (useSdkStreamParser) {
+        sdkParser = new AgySdkStreamParser({
+          onEvent: (_ev, compactLine) => {
+            try {
+              fs.appendFileSync(taskEventsFilePath, `${compactLine}\n`, "utf8");
+            } catch {}
+          },
+          onActivity: (update) => {
+            if (isCancelled || seenCancelRequested) return;
+            const now = Date.now();
+            lastSdkEventTime = now;
+            lastOutputTime = now;
+            stuckWarned = false;
+            clearStall();
+            const act = sessionTracker.recordSdkEvent({
+              conversationId: update.conversationId,
+              source: update.source,
+              timestampMs: now,
+            });
+            const curState = stallFlagged ? "suspected_stalled" : "running";
+            const convChanged = Boolean(update.conversationId && update.conversationId !== lastSdkWrittenConvId);
+            const stateChanged = curState !== lastSdkWrittenState;
+            const shouldWriteNow =
+              Boolean(update.immediate) ||
+              convChanged ||
+              stateChanged ||
+              now - lastSdkStatusWriteMs >= statusThrottleMs;
+
+            if (!shouldWriteNow) return;
+            lastSdkStatusWriteMs = now;
+            lastSdkWrittenState = curState;
+            if (update.conversationId) lastSdkWrittenConvId = update.conversationId;
+
+            try {
+              writeStatus(currentRoot, taskId, {
+                state: curState,
+                agent: agentName,
+                model,
+                reasoningEffort,
+                account: effectiveAccountAlias,
+                startedAt,
+                ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+                ...(update.conversationId ? { sessionId: update.conversationId } : {}),
+                pid: child?.pid,
+                workerPid: process.pid,
+                logPath: taskOutFilePath,
+                workDir: effectiveWorkingDir,
+                lastActivityAt: act.last_activity_at,
+                activity: act.activity,
+                last_activity_at: act.last_activity_at,
+                idle_seconds: act.idle_seconds,
+                activity_source: act.activity_source,
+              });
+            } catch {}
+          },
+        });
+      }
+
+      // Record child/worker pid, log path and work dir so status readers can detect ghosts.
+      try {
+        writeStatus(currentRoot, taskId, {
+          state: "running",
+          agent: agentName,
+          model,
+          reasoningEffort,
+          account: effectiveAccountAlias,
+          startedAt,
+          ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+          pid: child.pid,
+          workerPid: process.pid,
+          logPath: taskOutFilePath,
+          workDir: effectiveWorkingDir,
+          lastActivityAt: startedAt,
+          activity: "active",
+          last_activity_at: startedAt,
+          idle_seconds: 0,
+          activity_source: "none",
+        });
+      } catch {}
+
+      if (notifyOverdueSeconds && notifyOverdueSeconds > 0) {
+        overdueTimer = setTimeout(fireOverdueAlert, notifyOverdueSeconds * 1000);
+      }
+
+      if (effectiveHardTimeoutMs > 0) {
         timer = setTimeout(() => {
           isTimeout = true;
-          logWorker("WARN", `Task ${taskId} timed out after ${timeoutMs}ms. Sending SIGTERM to process.`);
+          logWorker("WARN", `Task ${taskId} hard timed out after ${effectiveHardTimeoutMs}ms. Sending SIGTERM to process.`);
           killChild("SIGTERM");
           killTimer = setTimeout(() => {
             logWorker("WARN", `Task ${taskId} process still running after 5s. Sending SIGKILL.`);
             killChild("SIGKILL");
           }, 5000);
-        }, timeoutMs);
+        }, effectiveHardTimeoutMs);
       }
 
-      // Check for control/<taskId>.cancel every 1 second
+      // Stuck detection:
+      // - For `useSdkStreamParser` (`agy-sdk`): default threshold is 600s (10 min), and activity is judged
+      //   STRICTLY by structured event arrival time (`checkSdkEventOnlyActivity`), never by CPU or file scans.
+      // - For standard CLI runners: default threshold is 180s, checking the 4 per-task signals.
+      const defaultStuckMs = useSdkStreamParser ? "600000" : "180000";
+      const stuckThresholdMs = parseInt(
+        (useSdkStreamParser ? process.env.AGENT_BRIDGE_SDK_STUCK_MS : undefined) ||
+          process.env.AGENT_BRIDGE_STUCK_MS ||
+          defaultStuckMs,
+        10
+      );
+      let lastOutputTime = Date.now();
+      let stuckWarned = false;
+      let stuckCheckInterval: NodeJS.Timeout | null = null;
+      if (isNotifyEnabled && notifyOn.has("stuck")) {
+        stuckCheckInterval = setInterval(() => {
+          if (stuckWarned || isCancelled || seenCancelRequested) return;
+          try {
+            if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+              seenCancelRequested = true;
+              return;
+            }
+          } catch {}
+
+          const act = useSdkStreamParser
+            ? sessionTracker.checkSdkEventOnlyActivity(stuckThresholdMs)
+            : sessionTracker.checkActivity({
+                childPid: child?.pid,
+                stdoutLen: stdoutData.length,
+                stderrLen: stderrData.length,
+                stuckThresholdMs,
+              });
+
+          // Update task status with compact activity fields
+          try {
+            writeStatus(currentRoot, taskId, {
+              state: stallFlagged ? "suspected_stalled" : "running",
+              agent: agentName,
+              model,
+              reasoningEffort,
+              account: effectiveAccountAlias,
+              startedAt,
+              ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+              ...(sdkParser?.getConversationId() ? { sessionId: sdkParser.getConversationId()! } : {}),
+              pid: child?.pid,
+              workerPid: process.pid,
+              logPath: taskOutFilePath,
+              workDir: effectiveWorkingDir,
+              lastActivityAt: act.last_activity_at,
+              activity: act.activity,
+              last_activity_at: act.last_activity_at,
+              idle_seconds: act.idle_seconds,
+              activity_source: act.activity_source,
+            });
+          } catch {}
+
+          // For SDK stream tasks: only check event idle time (`now - lastSdkEventTime >= stuckThresholdMs`).
+          // For CLI tasks: check both output quiet time and 4-signal idle time.
+          const now = Date.now();
+          const isStuckNow = useSdkStreamParser
+            ? now - lastSdkEventTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs
+            : now - lastOutputTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs;
+
+          if (isStuckNow) {
+            stuckWarned = true;
+            logWorker("WARN", `Task ${taskId} has produced no output or progress for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
+            notify("agent-bridge", `Task ${taskId} 超过 ${Math.round(stuckThresholdMs / 1000)}s 无新输出或活动，可能已卡住 [${agentName}]`, {
+              subtitle: "任务可能卡住",
+              level: "warning",
+              channel: notifyChannel,
+              sound: notifySound,
+            });
+            if (callbackUrl) {
+              const stuckDuration = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+              sendCompletionCallback({
+                url: callbackUrl,
+                headers: callbackHeaders,
+                taskId,
+                agent: agentName,
+                status: "stuck",
+                exitCode: null,
+                durationSeconds: stuckDuration,
+                resultPath: path.join(resultsDir, `${taskId}.md`),
+                logPath: taskOutFilePath,
+                outputLog: stdoutData + "\n" + stderrData,
+                project: projectName || projectId,
+                logger: logWorker,
+              }).catch(() => {});
+            }
+          }
+        }, Math.min(10000, Math.max(250, Math.floor(stuckThresholdMs / 4))));
+      }
+
+      // Stall detection: no log output AND no work-dir change for AGENT_BRIDGE_STALL_MINUTES.
+      const stallMs = getStallThresholdMs();
+      let stallFlagged = false;
+      const stallCheckInterval: NodeJS.Timeout | null = stallMs > 0 ? setInterval(() => {
+        if (stallFlagged || isCancelled || seenCancelRequested) return;
+        try {
+          if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+            seenCancelRequested = true;
+            return;
+          }
+        } catch {}
+        const now = Date.now();
+        if (now - lastOutputTime < stallMs) return;
+        const dirMtime = newestMtime(effectiveWorkingDir);
+        if (dirMtime && now - dirMtime < stallMs) return;
+        stallFlagged = true;
+        const mins = Math.round(stallMs / 60000);
+        const reason = `suspected stall: no log output and no change in ${effectiveWorkingDir || "work dir"} for ${mins} min (process ${child?.pid} still alive)`;
+        logWorker("WARN", `Task ${taskId} ${reason}`);
+        try {
+          writeStatus(currentRoot, taskId, {
+            state: "suspected_stalled",
+            agent: agentName, model, reasoningEffort, account: effectiveAccountAlias, startedAt,
+            ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+            pid: child?.pid, workerPid: process.pid, logPath: taskOutFilePath, workDir: effectiveWorkingDir,
+            lastActivityAt: new Date(Math.max(lastOutputTime, dirMtime || 0)).toISOString(),
+            reason,
+            logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined,
+          });
+        } catch {}
+        triggerTaskWebhook(currentRoot, taskId, "suspected_stalled", sessionId, now - new Date(startedAt).getTime()).catch(() => {});
+      }, Math.min(30000, Math.max(1000, Math.floor(stallMs / 4)))) : null;
+      const clearStall = () => {
+        if (!stallFlagged || isCancelled || seenCancelRequested) return;
+        stallFlagged = false;
+        try {
+          if (fs.existsSync(cancelFilePath) || readStatus(currentRoot, taskId)?.state === "cancelled") {
+            seenCancelRequested = true;
+            return;
+          }
+          writeStatus(currentRoot, taskId, {
+            state: "running", agent: agentName, model, reasoningEffort, account: effectiveAccountAlias, startedAt,
+            ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+            pid: child?.pid, workerPid: process.pid, logPath: taskOutFilePath, workDir: effectiveWorkingDir,
+            lastActivityAt: new Date().toISOString(),
+          });
+        } catch {}
+      };
+
+      let seenCancelRequested = false;
+      // Check for control/<taskId>.cancel every 250ms (responsive cancellation)
       cancelCheckInterval = setInterval(() => {
+        let cancelRequested = false;
         if (fs.existsSync(cancelFilePath)) {
+          cancelRequested = true;
           try {
             fs.unlinkSync(cancelFilePath);
           } catch {}
+        }
+        if (!cancelRequested) {
+          try {
+            const currentSt = readStatus(currentRoot, taskId);
+            if (currentSt?.state === "cancelled") {
+              cancelRequested = true;
+            }
+          } catch {}
+        }
+
+        if (cancelRequested) {
+          seenCancelRequested = true;
+        }
+
+        if (cancelRequested && !isCancelled) {
           isCancelled = true;
           logWorker("WARN", `Task ${taskId} cancellation requested. Sending SIGTERM to process.`);
           killChild("SIGTERM");
           killTimer = setTimeout(() => {
-            logWorker("WARN", `Task ${taskId} process still running after 5s of cancellation. Sending SIGKILL.`);
+            logWorker("WARN", `Task ${taskId} process still running after 2s of cancellation. Sending SIGKILL.`);
             killChild("SIGKILL");
-          }, 5000);
+          }, 2000);
         }
-      }, 1000);
+      }, 250);
 
       if (agentConfig.input === "stdin" && child.stdin) {
-        child.stdin.write(prompt);
-        child.stdin.end();
+        child.stdin.on("error", () => {});
+        try {
+          child.stdin.write(effectivePrompt);
+          child.stdin.end();
+        } catch {}
       }
 
       child.stdout?.on("data", (chunk) => {
-        const text = chunk.toString("utf8");
-        stdoutData += text;
-        try {
-          fs.appendFileSync(taskOutFilePath, text, "utf8");
-        } catch {}
+        lastOutputTime = Date.now();
+        clearStall();
+        const rawText = chunk.toString("utf8");
+        if (sdkParser) {
+          const readable = sdkParser.feedChunk(rawText);
+          if (readable) {
+            stdoutData = capTailString(stdoutData + readable, MAX_SDK_BUFFER_BYTES);
+            try {
+              fs.appendFileSync(taskOutFilePath, readable, "utf8");
+            } catch {}
+          }
+          // In stream-json mode, activity & conversationId are driven ONLY by parsed SDK events (via sdkParser onActivity)
+        } else {
+          stuckWarned = false;
+          stdoutData = capTailString(stdoutData + rawText, MAX_SDK_BUFFER_BYTES);
+          try {
+            fs.appendFileSync(taskOutFilePath, rawText, "utf8");
+          } catch {}
+          const extracted = extractSessionIdFromOutput(rawText);
+          sessionTracker.checkActivity({
+            extractedSessionId: extracted,
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
+        }
       });
 
       child.stderr?.on("data", (chunk) => {
-        stderrData += chunk.toString("utf8");
+        lastOutputTime = Date.now();
+        clearStall();
+        const errText = chunk.toString("utf8");
+        stderrData = capTailString(stderrData + errText, MAX_SDK_BUFFER_BYTES);
+        try {
+          fs.appendFileSync(taskOutFilePath.replace(/\.out$/, ".err"), errText, "utf8");
+        } catch {}
+        if (!sdkParser) {
+          stuckWarned = false;
+          sessionTracker.checkActivity({
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
+        }
       });
 
       child.on("error", (err) => {
         if (timer) clearTimeout(timer);
+        clearOverdueTimer();
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
+        if (stuckCheckInterval) clearInterval(stuckCheckInterval);
+        if (stallCheckInterval) clearInterval(stallCheckInterval);
         reject(err);
       });
 
       child.on("close", (code, signal) => {
         if (timer) clearTimeout(timer);
+        clearOverdueTimer();
         if (killTimer) clearTimeout(killTimer);
         if (cancelCheckInterval) clearInterval(cancelCheckInterval);
+        if (stuckCheckInterval) clearInterval(stuckCheckInterval);
+        if (stallCheckInterval) clearInterval(stallCheckInterval);
+        if (sdkParser) {
+          const trailing = sdkParser.flush();
+          if (trailing) {
+            stdoutData = capTailString(stdoutData + trailing, MAX_SDK_BUFFER_BYTES);
+            try {
+              fs.appendFileSync(taskOutFilePath, trailing, "utf8");
+            } catch {}
+          }
+        }
         exitCode = code !== null ? code : (signal ? 1 : 0);
         resolve();
       });
@@ -616,50 +1615,126 @@ async function executeTaskFile(
     if (exitCode === null) exitCode = 1;
   }
 
-  const extractedSessionId = extractSessionIdFromOutput(stdoutData);
-  const finalSessionId = extractedSessionId || targetSessionToResume;
-  if (finalSessionId) {
-    recordSession(currentRoot, taskId, finalSessionId);
-    if (sessionId) {
-      recordSession(currentRoot, sessionId, finalSessionId);
-    }
-  }
-
   const finishedAt = new Date().toISOString();
   let status = "completed";
   let state: "completed" | "failed" | "cancelled" | "paused_quota" = "completed";
   let reason: string | undefined = undefined;
 
-  if (isCancelled) {
+  // Check cancellation before writing final result:
+  // status is cancelled, or control cancel file exists, or seenCancelRequested, or isCancelled
+  let wasCancelled = isCancelled || seenCancelRequested;
+  try {
+    if (fs.existsSync(cancelFilePath)) {
+      wasCancelled = true;
+      try { fs.unlinkSync(cancelFilePath); } catch {}
+    }
+  } catch {}
+  if (!wasCancelled) {
+    try {
+      const currentSt = readStatus(currentRoot, taskId);
+      if (currentSt?.state === "cancelled") {
+        wasCancelled = true;
+      }
+    } catch {}
+  }
+
+  // agy early exit check: If agy exits within 30s with an error, mark task failed with the error text (fail fast, notify)
+  // Quota exhaustion takes precedence over agy early-exit fail-fast so sessions can be resumed after account switch.
+  const isAgy = isAgyFamily;
+  if (sdkParser) {
+    const sdkClean = sdkParser.getCleanOutput();
+    if (sdkClean && sdkClean.trim().length > 0) {
+      stdoutData = capTailString(sdkClean, MAX_SDK_BUFFER_BYTES);
+    }
+    const sdkErrors = sdkParser.getErrorMessages();
+    if (sdkErrors.length > 0 && !stderrData.includes(sdkErrors[0])) {
+      stderrData = capTailString((stderrData ? `${stderrData}\n` : "") + sdkErrors.join("\n"), MAX_SDK_BUFFER_BYTES);
+    }
+    const sdkResult = sdkParser.getResultPayload();
+    if ((sdkResult?.status === "ERROR" || sdkResult?.finished_reason === "error") && (exitCode === 0 || exitCode === null)) {
+      exitCode = 1;
+    }
+  }
+  const failureKind: "login" | "quota" | "other" = exitCode !== 0 && !wasCancelled && !isTimeout
+    ? (isLoginInvalidError(stdoutData, stderrData)
+        ? "login"
+        : sdkParser
+          ? (sdkParser.isQuotaError(exitCode, `${stderrData}\n${stdoutData}`) ? "quota" : "other")
+          : classifyAgentFailure(exitCode, stdoutData, stderrData))
+    : "other";
+  const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+  if (wasCancelled) {
     status = "cancelled (cancelled by request)";
     state = "cancelled";
     reason = "cancelled by request";
+    isCancelled = true;
+    if (exitCode === null || exitCode === 0) exitCode = 1;
   } else if (isTimeout) {
     status = "failed (timeout)";
     state = "failed";
     reason = "timeout";
+  } else if (exitCode !== 0 && failureKind === "login") {
+    status = "failed";
+    state = "failed";
+    reason = `agy login invalid (needs re-login); retryable after re-login`;
+    const detail = (stderrData || stdoutData).trim().split(/\r?\n/).filter(l => l.trim()).slice(-1).join(" ").slice(0, 200);
+    if (poolProfile) {
+      try { markProfileNeedsRelogin(currentRoot, poolProfile.alias, detail); } catch {}
+      logWorker("WARN", `Pool profile "${poolProfile.alias}" marked needs_relogin (not a quota pause).`);
+    }
+  } else if (exitCode !== 0 && failureKind === "quota") {
+    status = "paused_quota";
+    state = "paused_quota";
+    reason = "quota or rate limit exhausted";
+    try {
+      const extractedEarly = useSdkStreamParser
+        ? (sdkParser?.getConversationId() ?? undefined)
+        : extractSessionIdFromOutput(stdoutData);
+      const earlySessionId = extractedEarly || targetSessionToResume;
+      stashQuotaTask(currentRoot, {
+        taskId,
+        session_id: earlySessionId || sessionId,
+        agent: agentName,
+        model,
+        reasoningEffort,
+        prompt,
+        errorSnippet: (stderrData || stdoutData).slice(-300),
+        pausedAt: finishedAt,
+      });
+      logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
+      const resetAt = parseQuotaResetTime(stderrData + "\n" + stdoutData) || new Date(Date.now() + 5 * 3600 * 1000).toISOString();
+      if (poolProfile) {
+        handlePoolQuotaPaused(currentRoot, poolProfile.alias, resetAt);
+        logWorker("INFO", `Pool profile "${poolProfile.alias}" paused until ${resetAt} due to explicit quota evidence.`);
+      }
+      if (accountEmail) {
+        pauseEmail(currentRoot, accountEmail, resetAt, "quota");
+        logWorker("INFO", `Account ${accountEmail} paused (shared across pools) until ${resetAt}.`);
+      }
+    } catch {}
+  } else if (exitCode !== 0 && runDurationMs <= 30000) {
+    // Fast failure (any agent): surface the error text as the reason.
+    status = "failed";
+    state = "failed";
+    const errText = (stderrData || stdoutData).trim();
+    reason = errText
+      ? `exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-8).join("\n").slice(-800)}`
+      : `${isAgy ? "agy" : agentName} exited with code ${exitCode} after ${Math.round(runDurationMs / 1000)}s with no output (not treated as quota; retryable)`;
   } else if (exitCode !== 0) {
-    if (isQuotaExhaustedError(exitCode, stdoutData, stderrData)) {
-      status = "paused_quota";
-      state = "paused_quota";
-      reason = "quota or rate limit exhausted";
-      // Stash last prompt, session, and metadata for seamless resumption
-      try {
-        stashQuotaTask(currentRoot, {
-          taskId,
-          session_id: finalSessionId || sessionId,
-          agent: agentName,
-          model,
-          reasoningEffort,
-          prompt,
-          errorSnippet: (stderrData || stdoutData).slice(-300),
-          pausedAt: finishedAt,
-        });
-        logWorker("WARN", `Task ${taskId} encountered quota exhaustion. Marked paused_quota and stashed session context.`);
-      } catch {}
-    } else {
-      status = "failed";
-      state = "failed";
+    status = "failed";
+    state = "failed";
+    const errText = (stderrData || stdoutData).trim();
+    reason = `exited with code ${exitCode}${errText ? `: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-5).join("\n").slice(-500)}` : ""}`;
+  }
+
+  const extractedSessionId = useSdkStreamParser
+    ? (sdkParser?.getConversationId() ?? undefined)
+    : (sessionTrackerRef?.getBoundConversationId() || extractSessionIdFromOutput(stdoutData));
+  const finalSessionId = extractedSessionId || targetSessionToResume;
+  if (finalSessionId) {
+    recordSession(currentRoot, taskId, finalSessionId, effectiveAccountAlias);
+    if (sessionId) {
+      recordSession(currentRoot, sessionId, finalSessionId, effectiveAccountAlias);
     }
   }
 
@@ -675,25 +1750,275 @@ async function executeTaskFile(
     stderrData,
     model,
     reasoningEffort,
-    finalSessionId || sessionId
+    finalSessionId || sessionId,
+    poolProfile ? `${poolProfile.alias}${accountEmail ? ` <${accountEmail}>` : ""} (custom pool)`
+      : accountSel?.pool === "default" ? `${accountEmail || "default HOME"} (default pool)` : undefined
   );
+
+  const combinedRawOutput = `${stdoutData}\n${stderrData}`;
+  const heuristicPrUrl = extractPrUrl(combinedRawOutput) || null;
+  const heuristicSummary = extractExecutionSummary(stdoutData, stderrData) || reason || "";
+  const { report: finalReport, report_source: finalReportSource, validation_error: reportValErr } =
+    readOrFallbackTaskReport(taskReportDir, {
+      state: isTimeout ? "timeout" : state,
+      prUrl: heuristicPrUrl,
+      summaryText: heuristicSummary,
+      reason,
+      rawOutput: combinedRawOutput,
+    });
+  if (reportValErr) {
+    logWorker("WARN", `Task ${taskId}: report.json validation failed (${reportValErr}); fell back to heuristic.`);
+  }
+  const finalPrUrl = finalReport.pr_url || heuristicPrUrl;
+  if (!finalReport.pr_url && finalPrUrl) {
+    finalReport.pr_url = finalPrUrl;
+  }
+  const finalStage = deriveStage({
+    state: isTimeout ? "timeout" : state,
+    status,
+    reason,
+    report: finalReport,
+    outcome: finalReport.outcome,
+    pr_url: finalPrUrl,
+    question: finalReport.question,
+  });
+
+  if (planId && planStepId) {
+    try {
+      recordTaskResultInPlan(currentRoot, {
+        planId,
+        stepId: planStepId,
+        taskId,
+        state: isTimeout ? "timeout" : state,
+        outcome: finalReport.outcome,
+        prUrl: finalPrUrl,
+      });
+    } catch (planErr: any) {
+      logWorker("WARN", `Task ${taskId}: failed to record result to plan ${planId}: ${planErr?.message || String(planErr)}`);
+    }
+  }
 
   writeStatus(currentRoot, taskId, {
     state,
+    stage: finalStage,
     agent: agentName,
     model,
     reasoningEffort,
+    account: effectiveAccountAlias,
     startedAt,
     finishedAt,
-    exitCode,
+    exitCode: state === "cancelled" ? (exitCode ?? 1) : exitCode,
+    ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
     ...(finalSessionId || sessionId ? { sessionId: finalSessionId || sessionId } : {}),
     ...(reason ? { reason } : {}),
+    logPath: taskOutFilePath,
+    workDir: effectiveWorkingDir,
+    lastActivityAt: finishedAt,
+    activity: "idle",
+    last_activity_at: finishedAt,
+    idle_seconds: 0,
+    activity_source: state === "cancelled" ? "cancelled" : (sdkParser?.hasStructuredEvents() ? sdkParser.getLastActivitySource() : "none"),
+    ...(state === "failed" ? { logTail: (stdoutData + (stderrData ? "\n[stderr]\n" + stderrData : "")).split(/\r?\n/).filter(l => l.trim()).slice(-15).join("\n").slice(-1500) || undefined } : {}),
+    report: finalReport,
+    report_source: finalReportSource,
+    outcome: finalReport.outcome,
+    pr_url: finalPrUrl,
+    question: finalReport.question,
+    ...(planId ? { plan_id: planId } : {}),
+    ...(planStepId ? { step_id: planStepId } : {}),
+    ...(planVersion !== undefined ? { plan_version: planVersion } : {}),
+    ...(planTitle ? { plan_title: planTitle } : {}),
   });
 
+  releaseAccount();
+  process.removeListener("exit", releaseAccount);
   saveProcessedTask(processedMap, taskId, finishedAt);
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);
-  notify("agent-bridge", `Task ${taskId} ${status} [${agentName}]`);
+  if (isNotifyEnabled) {
+    if (isTimeout && notifyOn.has("timeout")) {
+      notify("agent-bridge", `Task ${taskId} timed out after ${Math.round(effectiveHardTimeoutMs / 1000)}s [${agentName}]`, {
+        subtitle: "执行超时警告",
+        level: "warning",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "completed" && notifyOn.has("completed")) {
+      notify("agent-bridge", `Task ${taskId} completed [${agentName}]`, {
+        subtitle: "任务执行完成",
+        level: "success",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "failed" && notifyOn.has("failed")) {
+      notify("agent-bridge", `Task ${taskId} failed [${agentName}]`, {
+        subtitle: "任务执行失败",
+        level: "error",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    } else if (state === "cancelled") {
+      notify("agent-bridge", `Task ${taskId} cancelled (cancelled by request) [${agentName}]`, {
+        subtitle: "任务已取消",
+        level: "info",
+        channel: notifyChannel,
+        sound: notifySound,
+      });
+    }
+
+    // Dispatch Slack lifecycle card if slackChannel or slackWebhookEnv is configured
+    if (slackChannel || slackWebhookEnv) {
+      if (!slackStartTs) {
+        try {
+          const currentStatus = readStatus(currentRoot, taskId);
+          if (currentStatus?.slackMessageTs) {
+            slackStartTs = currentStatus.slackMessageTs;
+          }
+        } catch {}
+      }
+
+      const durationSeconds = Math.max(1, Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+      let slackEvent: "completed" | "failed" | "timeout" | "cancelled" = "completed";
+      if (isTimeout) slackEvent = "timeout";
+      else if (state === "failed") slackEvent = "failed";
+      else if (state === "cancelled") slackEvent = "cancelled";
+
+      // 1. Extract accurate, real output summary without fabrication
+      const realSummary = extractExecutionSummary(stdoutData, stderrData);
+
+      // 2. Extract error output for non-zero exit codes (last 20 lines)
+      let rawErrorOutput = stderrData || "";
+      if (!rawErrorOutput && fs.existsSync(taskOutFilePath)) {
+        try {
+          rawErrorOutput = fs.readFileSync(taskOutFilePath, "utf8");
+        } catch {}
+      }
+      if (!rawErrorOutput && stdoutData) {
+        rawErrorOutput = stdoutData;
+      }
+
+      // 3. Extract Git PR and commit links
+      const gitLinks = extractGitLinks(stdoutData + "\n" + stderrData, projectRepo);
+      if (effectiveWorkingDir && projectRepo) {
+        try {
+          const gitHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: effectiveWorkingDir, encoding: "utf8" });
+          if (gitHead.status === 0 && gitHead.stdout) {
+            const gitHeadAfter = gitHead.stdout.trim();
+            if (gitHeadBefore && gitHeadAfter && gitHeadBefore !== gitHeadAfter) {
+              const cleanRepo = projectRepo.replace(/\.git$/, "").replace(/^https?:\/\/github\.com\//, "");
+              const commitUrl = `https://github.com/${cleanRepo}/commit/${gitHeadAfter}`;
+              if (!gitLinks.some((l: { url: string }) => l.url === commitUrl)) {
+                gitLinks.unshift({
+                  type: "commit",
+                  title: `Commit ${gitHeadAfter.slice(0, 7)}`,
+                  url: commitUrl,
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+
+      await dispatchTaskLifecycleNotification(
+        {
+          taskId,
+          event: slackEvent,
+          projectName,
+          repo: projectRepo,
+          slackChannel,
+          slackWebhookEnv,
+          agent: agentName,
+          model,
+          durationSeconds,
+          resultSummary: realSummary,
+          errorDetails: rawErrorOutput,
+          exitCode: exitCode ?? (slackEvent === "completed" ? 0 : 1),
+          logFilePath: taskOutFilePath,
+          gitLinks,
+          updateTs: slackStartTs,
+          desktop: false,
+        },
+        logWorker
+      );
+    }
+  }
+
+  // Dispatch completion callback on terminal states (completed/failed/timeout/cancelled/stuck)
+  if (callbackUrl) {
+    const callbackDuration = Math.max(0, Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+    let terminalStatus: "completed" | "failed" | "timeout" | "cancelled" | "stuck" = "completed";
+    if (isTimeout) terminalStatus = "timeout";
+    else if (state === "cancelled") terminalStatus = "cancelled";
+    else if (state === "failed") terminalStatus = "failed";
+
+    sendCompletionCallback({
+      url: callbackUrl,
+      headers: callbackHeaders,
+      allowedEnv: matchedTaskProj?.allowed_env,
+      taskId,
+      agent: agentName,
+      status: terminalStatus,
+      stage: finalStage,
+      outcome: finalReport.outcome,
+      question: finalReport.question,
+      prUrl: finalPrUrl,
+      exitCode: exitCode !== null ? exitCode : (terminalStatus === "completed" ? 0 : 1),
+      durationSeconds: callbackDuration,
+      resultPath: path.join(resultsDir, `${taskId}.md`),
+      logPath: taskOutFilePath,
+      outputLog: stdoutData + "\n" + stderrData,
+      project: projectName || projectId,
+      rootDir: currentRoot,
+      logger: logWorker,
+      planId,
+      stepId: planStepId,
+      planTitle,
+    }).catch(() => {});
+  }
+
+  // Trigger task chains on_success
+  if (state === "completed" && onSuccess) {
+    try {
+      const nextTasks = Array.isArray(onSuccess) ? onSuccess : [onSuccess];
+      for (const nextItem of nextTasks) {
+        let nextPrompt = "";
+        let nextTitle = "";
+        let nextAgent = agentName;
+        let nextModel = model;
+
+        if (typeof nextItem === "string") {
+          nextPrompt = nextItem;
+          nextTitle = `Follow-up to ${taskId}`;
+        } else if (nextItem && typeof nextItem === "object") {
+          nextPrompt = nextItem.prompt;
+          nextTitle = nextItem.title || `Follow-up to ${taskId}`;
+          if (nextItem.agent) nextAgent = nextItem.agent;
+          if (nextItem.model) nextModel = nextItem.model;
+        }
+
+        if (nextPrompt && nextPrompt.trim()) {
+          const nextTaskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+          const nextTaskPath = path.join(tasksDir, `${nextTaskId}.md`);
+          let nextContent = `# ${nextTitle}\n\n`;
+          nextContent += `- **Task ID**: ${nextTaskId}\n`;
+          if (nextAgent) nextContent += `- **Agent**: ${nextAgent}\n`;
+          if (projectId) nextContent += `- **Project ID**: ${projectId}\n`;
+          if (projectName) nextContent += `- **Project Name**: ${projectName}\n`;
+          if (projectRepo) nextContent += `- **Project Repo**: ${projectRepo}\n`;
+          if (projectDir) nextContent += `- **Project Dir**: ${projectDir}\n`;
+          if (slackChannel) nextContent += `- **Slack Channel**: ${slackChannel}\n`;
+          if (slackStartTs) nextContent += `- **Slack Thread**: ${slackStartTs}\n`;
+          if (nextModel) nextContent += `- **Model**: ${nextModel}\n`;
+          nextContent += `- **Created At**: ${new Date().toISOString()}\n\n---\n\n## Prompt\n\n${nextPrompt}\n`;
+
+          fs.writeFileSync(nextTaskPath, nextContent, "utf8");
+          logWorker("INFO", `Task chain triggered: created follow-up task ${nextTaskId} for parent ${taskId}`);
+        }
+      }
+    } catch (chainErr: any) {
+      logWorker("WARN", `Failed to trigger on_success chain for task ${taskId}: ${chainErr?.message || String(chainErr)}`);
+    }
+  }
 
   // Hook auto-queue dispatcher on task completion/failure
   try {
@@ -705,7 +2030,8 @@ async function executeTaskFile(
   // Trigger opt-in per-task completion webhook (NEVER blocks queue advance)
   try {
     const elapsedMs = startedAt && finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : undefined;
-    triggerTaskWebhook(currentRoot, taskId, state, finalSessionId || sessionId, elapsedMs).catch(() => {});
+    const webhookTerminal = isTimeout ? "timeout" : state;
+    triggerTaskWebhook(currentRoot, taskId, webhookTerminal, finalSessionId || sessionId, elapsedMs).catch(() => {});
   } catch (webhookErr: any) {
     logWorker("WARN", `Webhook trigger error on task ${taskId}: ${webhookErr?.message || String(webhookErr)}`);
   }
@@ -720,6 +2046,7 @@ export class WorkerService {
   private processedMap: Record<string, string>;
   private sleepResolve: (() => void) | null = null;
   private sleepTimer: NodeJS.Timeout | null = null;
+  private inFlight = new Set<Promise<boolean>>();
 
   constructor(
     private root: string = rootDir,
@@ -757,26 +2084,35 @@ export class WorkerService {
       return 0;
     }
 
-    let processedCount = 0;
+    try {
+      reconcileAllTasks(this.root);
+    } catch {}
+
+    const starters: Promise<boolean>[] = [];
     for (const file of files) {
       if (this.isShuttingDown) break;
-      try {
-        const handled = await processTaskFile(
-          file,
-          tasksDir,
-          resultsDir,
-          this.processedMap,
-          registry,
-          this.timeout,
-          this.root
-        );
-        if (handled) processedCount++;
-      } catch (err: any) {
-        logWorker("ERROR", `Unexpected error handling task file "${file}": ${err?.message || String(err)}`);
-      }
+      let job!: Promise<boolean>;
+      job = processTaskFile(
+        file,
+        tasksDir,
+        resultsDir,
+        this.processedMap,
+        registry,
+        this.timeout,
+        this.root
+      )
+        .catch((err: any) => {
+          logWorker("ERROR", `Unexpected error handling task file "${file}": ${err?.message || String(err)}`);
+          return false;
+        })
+        .finally(() => {
+          this.inFlight.delete(job);
+        });
+      this.inFlight.add(job);
+      starters.push(job);
     }
 
-    return processedCount;
+    return starters.length;
   }
 
   public async start(): Promise<void> {
@@ -791,6 +2127,12 @@ export class WorkerService {
       fs.writeFileSync(pidPath, String(process.pid), "utf8");
     } catch {}
 
+    // Mark ghost tasks (running status but owning worker/agent process gone) as failed
+    try {
+      const fixed = reconcileAllTasks(this.root, { graceMs: 0 });
+      if (fixed.length) logWorker("WARN", `Reconciled ${fixed.length} ghost task(s) on startup: ${fixed.join(", ")}`);
+    } catch {}
+
     // Reconcile queues on worker startup (dispatch items whose triggers already finished)
     try {
       reconcileQueues(this.root);
@@ -802,6 +2144,11 @@ export class WorkerService {
       await this.scanOnce();
       if (!this.isRunning || this.isShuttingDown) break;
       await this.interruptibleSleep(this.pollInterval);
+    }
+
+    if (this.inFlight.size > 0) {
+      logWorker("INFO", `Waiting for ${this.inFlight.size} in-flight task(s) to finish...`);
+      await Promise.allSettled([...this.inFlight]);
     }
 
     logWorker("INFO", "Worker loop exited cleanly.");

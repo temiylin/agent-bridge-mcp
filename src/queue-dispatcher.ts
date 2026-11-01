@@ -13,6 +13,14 @@ import {
 } from "./queue.js";
 import { writeRequirement, getRequirement } from "./requirements.js";
 import { setTaskWebhook, TaskWebhookConfig } from "./webhook.js";
+import {
+  resolveProject,
+  getProjectRepoPath,
+  validateGitRepoPath,
+  buildProjectGitRulesPromptNote,
+} from "./project-router.js";
+import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
+import { getPlan, formatPlanPromptPrefix, setPlanStepStatus, Plan, PlanStep } from "./plans.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -22,7 +30,13 @@ export interface TaskDispatchParams {
   reasoning_effort?: string;
   continue_session?: boolean;
   session_id?: string;
+  account?: string;
+  project_id?: string;
+  project_dir?: string;
+  timeout_seconds?: number;
   on_complete?: TaskWebhookConfig;
+  plan_id?: string;
+  step_id?: string;
 }
 
 export interface TaskDispatchResult {
@@ -45,6 +59,20 @@ export function dispatchTaskDirect(
     fs.mkdirSync(tasksDir, { recursive: true });
   }
 
+  const projectResolution = resolveProject(rootDir, {
+    projectId: params.project_id,
+    projectDir: params.project_dir,
+  });
+  const matchedProject = projectResolution.project;
+  const configuredRepoPath = getProjectRepoPath(matchedProject);
+
+  if (matchedProject && !params.project_dir && configuredRepoPath) {
+    const pathCheck = validateGitRepoPath(configuredRepoPath);
+    if (!pathCheck.valid) {
+      throw new Error(`Project "${matchedProject.id}" repository path is invalid or has moved: ${pathCheck.error}`);
+    }
+  }
+
   const prompt = params.prompt;
   let registry: ReturnType<typeof loadAgents> = {};
   try {
@@ -52,11 +80,48 @@ export function dispatchTaskDirect(
   } catch {}
 
   let agentName = "";
-  if (params.agent && params.agent.trim().length > 0 && params.agent.trim().toLowerCase() !== "auto") {
-    agentName = params.agent.trim();
+  const effectiveAgentArg =
+    params.agent && params.agent.trim().length > 0 && params.agent.trim().toLowerCase() !== "auto"
+      ? params.agent.trim()
+      : matchedProject?.default_agent && matchedProject.default_agent.toLowerCase() !== "auto"
+        ? matchedProject.default_agent.trim()
+        : "";
+
+  if (effectiveAgentArg) {
+    agentName = effectiveAgentArg;
   } else {
     const resolved = resolveTaskAgent(rootDir, prompt);
     agentName = resolved.agent;
+  }
+
+  const effectiveModel = params.model?.trim() || matchedProject?.default_model;
+  const effectiveAccount = params.account?.trim() || matchedProject?.default_account;
+  const effectiveTimeout =
+    params.timeout_seconds && params.timeout_seconds > 0
+      ? params.timeout_seconds
+      : matchedProject?.default_timeout_seconds && matchedProject.default_timeout_seconds > 0
+        ? matchedProject.default_timeout_seconds
+        : undefined;
+  const effectiveProjectDir = params.project_dir || configuredRepoPath;
+
+  let effectivePlan: Plan | null = null;
+  let effectiveStep: PlanStep | null = null;
+  let planPromptPrefix = "";
+  if (params.plan_id && params.plan_id.trim()) {
+    const cleanPlanId = params.plan_id.trim();
+    if (!params.step_id || !params.step_id.trim()) {
+      throw new Error("step_id is required when plan_id is provided.");
+    }
+    const cleanStepId = params.step_id.trim();
+    effectivePlan = getPlan(rootDir, cleanPlanId);
+    if (!effectivePlan) {
+      throw new Error(`Plan "${cleanPlanId}" not found.`);
+    }
+    effectiveStep = effectivePlan.steps.find((s) => s.id === cleanStepId) || null;
+    if (!effectiveStep) {
+      throw new Error(`Step "${cleanStepId}" not found in plan "${cleanPlanId}".`);
+    }
+    planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
   }
 
   const taskId = generateTaskId();
@@ -65,13 +130,35 @@ export function dispatchTaskDirect(
   const taskTitle = params.title && params.title.trim().length > 0 ? params.title.trim() : `Task ${taskId}`;
 
   let headerMeta = `- **Task ID**: ${taskId}\n- **Agent**: ${agentName}\n`;
-  if (params.model) headerMeta += `- **Model**: ${params.model.trim()}\n`;
+  if (matchedProject?.id) headerMeta += `- **Project ID**: ${matchedProject.id}\n`;
+  if (matchedProject?.name) headerMeta += `- **Project Name**: ${matchedProject.name}\n`;
+  if (matchedProject?.repo) headerMeta += `- **Project Repo**: ${matchedProject.repo}\n`;
+  if (matchedProject?.slack_webhook_env) headerMeta += `- **Slack Webhook Env**: ${matchedProject.slack_webhook_env}\n`;
+  if (effectiveProjectDir) headerMeta += `- **Project Dir**: ${effectiveProjectDir}\n`;
+  if (projectResolution.channelId) headerMeta += `- **Slack Channel**: ${projectResolution.channelId}\n`;
+  if (matchedProject?.callback_url) headerMeta += `- **Callback URL**: ${matchedProject.callback_url}\n`;
+  if (matchedProject?.callback_headers) headerMeta += `- **Callback Headers**: ${JSON.stringify(matchedProject.callback_headers)}\n`;
+  if (effectiveModel) headerMeta += `- **Model**: ${effectiveModel}\n`;
   if (params.reasoning_effort) headerMeta += `- **Reasoning Effort**: ${params.reasoning_effort.trim().toLowerCase()}\n`;
   if (params.continue_session) headerMeta += `- **Continue Session**: true\n`;
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
+  if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
+  if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
+  if (effectivePlan) {
+    headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
+    headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
+    headerMeta += `- **Plan Version**: ${effectivePlan.version}\n`;
+    headerMeta += `- **Plan Title**: ${effectivePlan.title}\n`;
+  }
   headerMeta += `- **Created At**: ${createdAt}\n`;
 
-  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}\n`;
+  const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
+  const taskReportDir = getTaskReportDir(rootDir, taskId);
+  const reportPromptNote = prompt.includes("[Structured Report Requirement]")
+    ? ""
+    : buildReportJsonPromptInstruction(taskReportDir);
+  const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${prompt}` : prompt;
+  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${promptWithPlan}${gitPromptNote}${reportPromptNote}\n`;
 
   fs.writeFileSync(taskFilePath, content, "utf8");
 
@@ -82,13 +169,28 @@ export function dispatchTaskDirect(
     state: "dispatched",
   });
 
+  if (effectivePlan && effectiveStep) {
+    try {
+      setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep.id, "in_progress", { taskId });
+    } catch {}
+  }
+
   try {
     writeStatus(rootDir, taskId, {
       state: "queued",
+      projectId: matchedProject?.id,
+      projectName: matchedProject?.name,
       agent: agentName,
-      model: params.model || undefined,
+      model: effectiveModel || undefined,
       reasoningEffort: params.reasoning_effort || undefined,
+      account: effectiveAccount || undefined,
       startedAt: createdAt,
+      ...(effectivePlan ? {
+        plan_id: effectivePlan.id,
+        step_id: effectiveStep!.id,
+        plan_version: effectivePlan.version,
+        plan_title: effectivePlan.title,
+      } : {}),
     });
   } catch {}
 
@@ -109,10 +211,57 @@ export function dispatchTaskDirect(
 }
 
 /**
- * Checks whether a given session has an active in-flight task (queued or running).
+ * Conversation lane key: tasks with the same session (or continue_session) in the same project_dir
+ * must not run concurrently (avoids corrupting local agy/codex conversation state).
  */
-export function isSessionBusy(rootDir: string, sessionId: string): boolean {
-  if (!sessionId) return false;
+export function conversationLaneKey(
+  sessionId?: string,
+  projectDir?: string,
+  continueSession?: boolean
+): string | undefined {
+  const sid = sessionId?.trim();
+  if (!sid && !continueSession) return undefined;
+  let dir = "";
+  if (projectDir && projectDir.trim()) {
+    try {
+      dir = path.resolve(projectDir.trim());
+    } catch {
+      dir = projectDir.trim();
+    }
+  }
+  const sessionPart = sid || "__continue__";
+  return `${dir}\0${sessionPart}`;
+}
+
+function taskFileConversationLane(rootDir: string, taskId: string): string | undefined {
+  const taskPath = path.join(rootDir, "tasks", `${taskId}.md`);
+  if (!fs.existsSync(taskPath)) return undefined;
+  try {
+    const content = fs.readFileSync(taskPath, "utf8");
+    const sessionMatch = content.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
+    const sessionId = sessionMatch ? sessionMatch[1].trim() : undefined;
+    const contMatch = content.match(/- \*\*Continue Session\*\*:\s*([^\r\n]+)/i);
+    const continueSession = contMatch ? /^true$/i.test(contMatch[1].trim()) : false;
+    const dirMatch = content.match(/- \*\*Project Dir\*\*:\s*([^\r\n]+)/i);
+    const projectDir = dirMatch ? dirMatch[1].trim() : undefined;
+    return conversationLaneKey(sessionId, projectDir, continueSession);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when another in-flight task occupies the same conversation lane.
+ */
+export function isConversationLaneBusy(
+  rootDir: string,
+  sessionId?: string,
+  projectDir?: string,
+  continueSession?: boolean,
+  excludeTaskId?: string
+): boolean {
+  const lane = conversationLaneKey(sessionId, projectDir, continueSession);
+  if (!lane) return false;
   const statusDir = path.join(rootDir, "status");
   if (!fs.existsSync(statusDir)) return false;
 
@@ -123,29 +272,27 @@ export function isSessionBusy(rootDir: string, sessionId: string): boolean {
     return false;
   }
 
-  const cleanSession = sessionId.trim();
-
   for (const file of files) {
     if (!file.endsWith(".json") || file.endsWith(".tmp")) continue;
+    const taskId = file.replace(/\.json$/, "");
+    if (excludeTaskId && taskId === excludeTaskId) continue;
     try {
       const raw = fs.readFileSync(path.join(statusDir, file), "utf8");
       const info = JSON.parse(raw);
-      if (info && (info.state === "queued" || info.state === "running")) {
-        // Also check task file to verify session_id if status does not explicitly have it
-        const taskId = info.taskId || file.replace(/\.json$/, "");
-        const taskPath = path.join(rootDir, "tasks", `${taskId}.md`);
-        if (fs.existsSync(taskPath)) {
-          const taskContent = fs.readFileSync(taskPath, "utf8");
-          const sessionMatch = taskContent.match(/- \*\*Session ID\*\*:\s*([^\r\n]+)/i);
-          if (sessionMatch && sessionMatch[1].trim() === cleanSession) {
-            return true;
-          }
-        }
-      }
+      if (!info || (info.state !== "queued" && info.state !== "running")) continue;
+      const otherLane = taskFileConversationLane(rootDir, taskId);
+      if (otherLane === lane) return true;
     } catch {}
   }
-
   return false;
+}
+
+/**
+ * Checks whether a given session has an active in-flight task (queued or running).
+ */
+export function isSessionBusy(rootDir: string, sessionId: string): boolean {
+  if (!sessionId) return false;
+  return isConversationLaneBusy(rootDir, sessionId, undefined, false);
 }
 
 /**
@@ -183,7 +330,13 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     reasoning_effort: item.options?.reasoning_effort,
     continue_session: true, // Auto queue continues same session
     session_id: sessionId,
+    account: item.options?.account,
+    project_id: item.options?.project_id || item.options?.project,
+    project_dir: item.options?.project_dir,
+    timeout_seconds: item.options?.timeout_seconds,
     on_complete: item.options?.on_complete,
+    plan_id: item.options?.plan_id || item.options?.planId,
+    step_id: item.options?.step_id || item.options?.stepId,
   });
 
   // Remove or mark dispatched. The spec says:

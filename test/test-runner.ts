@@ -102,6 +102,15 @@ async function runTests() {
     "pr_create",
     "pr_review",
     "pr_merge",
+    "notify_device",
+    "self_check",
+    "restart_service",
+    "verify_pr",
+    "merge_and_deploy",
+    "list_project_tasks",
+    "slack_post",
+    "list_agent_accounts",
+    "switch_agent_account",
     "save_requirement",
     "list_requirements",
     "get_requirement",
@@ -123,6 +132,25 @@ async function runTests() {
     "clear_task_webhook",
     "resume_after_account_switch",
     "auto_resume_on_account_ready",
+    "pool_status",
+    "pool_sync_auth",
+    "pool_init_profile",
+    "pool_pause",
+    "pool_resume",
+    "pool_bind_email",
+    "pool_remove_profile",
+    "pool_set_custom_enabled",
+    "add_project",
+    "list_projects",
+    "update_project",
+    "remove_project",
+    "create_plan",
+    "get_plan",
+    "update_plan",
+    "list_plans",
+    "set_plan_step_status",
+    "archive_plan",
+    "help",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
@@ -330,6 +358,39 @@ async function runTests() {
   console.log("✓ Assertion passed: send_task with model and reasoning_effort verified on disk.");
 
   // Clean up
+  console.log("-------------------------------------------------");
+  console.log("[Test 8] send_task rejects a model not in list_models");
+  console.log("-------------------------------------------------");
+  const badModel: any = await client.callTool({ name: "send_task", arguments: { prompt: "x", agent: "codex", model: "definitely-not-a-model-xyz" } });
+  assert.equal(badModel.isError, true, "invalid model must be rejected");
+  assert.match(badModel.content[0].text, /Valid models: \[/);
+  console.log("✓ Assertion passed: invalid model rejected with valid list.\n");
+
+  console.log("-------------------------------------------------");
+  console.log("[Test 9] list_models compact + agent filter");
+  console.log("-------------------------------------------------");
+  const compactRes: any = await client.callTool({ name: "list_models", arguments: { agent: "codex", compact: true, include_quota: false } });
+  const compactJson = JSON.parse(compactRes.content[0].text);
+  assert.deepEqual(Object.keys(compactJson), ["codex"]);
+  assert.ok(Array.isArray(compactJson.codex.models) && typeof compactJson.codex.models[0] === "string");
+  console.log("✓ Assertion passed: compact list_models.\n");
+
+  console.log("-------------------------------------------------");
+  console.log("[Test 10] Calling help tool & verifying instructions");
+  console.log("-------------------------------------------------");
+  const instructions = client.getInstructions();
+  assert.ok(instructions && instructions.includes("Project-Aware Tasks"), "Server must advertise instructions");
+  assert.ok(instructions.includes("Multi-Step Execution Plans"), "Server instructions must describe plans");
+
+  const helpOverview: any = await client.callTool({ name: "help", arguments: {} });
+  assert.ok(!helpOverview.isError, "help tool should succeed");
+  assert.ok(helpOverview.content[0].text.includes("Agent Bridge MCP"), "help output should describe Agent Bridge");
+
+  const helpPlans: any = await client.callTool({ name: "help", arguments: { topic: "plans" } });
+  assert.ok(!helpPlans.isError, "help plans should succeed");
+  assert.ok(helpPlans.content[0].text.includes("create_plan"), "help plans output must mention create_plan");
+  console.log("✓ Assertion passed: help tool and server instructions verified.\n");
+
   console.log("\n-------------------------------------------------");
   console.log("[Cleanup] Closing client connection");
   console.log("-------------------------------------------------");
