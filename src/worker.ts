@@ -15,13 +15,13 @@ import {
   getProcessTreeCpuTime,
 } from "./task-reconcile.js";
 import { TaskSessionTracker } from "./session-tracker.js";
-import { AgySdkStreamParser } from "./agy-sdk-stream.js";
+import { AgySdkStreamParser, capTailString, MAX_SDK_BUFFER_BYTES } from "./agy-sdk-stream.js";
 import { writeStatus, readStatus } from "./status.js";
 import { audit } from "./audit.js";
 import { resolveSessionId, recordSession, extractSessionIdFromOutput } from "./sessions.js";
 import { onTaskFinished, reconcileQueues, isConversationLaneBusy, conversationLaneKey } from "./queue-dispatcher.js";
 import { triggerTaskWebhook } from "./webhook.js";
-import { classifyAgentFailure, parseQuotaResetTime, stashQuotaTask } from "./session-quota.js";
+import { classifyAgentFailure, isLoginInvalidError, parseQuotaResetTime, stashQuotaTask } from "./session-quota.js";
 import {
   recordTaskStartUnderProfile,
   handlePoolQuotaPaused,
@@ -452,9 +452,13 @@ export async function processTaskFile(
 }
 
 function agentConfigCommandIsAgy(registry: AgentRegistry | null, agentName: string): boolean {
-  if (agentName === "agy" || agentName === "agy-sdk") return true;
   const cmd = registry?.[agentName]?.command || "";
-  return cmd.includes("agy");
+  if (cmd) {
+    const base = path.basename(cmd);
+    if (base === "agy" || base.startsWith("agy.")) return true;
+    return false;
+  }
+  return agentName === "agy" || agentName === "agy-sdk";
 }
 
 function isAgySdkStreamAgent(agentName: string, _command: string, args: string[]): boolean {
@@ -488,6 +492,18 @@ async function executeTaskFile(
   }
 
   const startedAt = new Date().toISOString();
+
+  // Clear any stale non-cancelled status file if the same taskId is being re-dispatched
+  const existingStatusPath = path.join(currentRoot, "status", `${taskId}.json`);
+  const cancelFilePathEarly = path.join(controlDir, `${taskId}.cancel`);
+  if (fs.existsSync(existingStatusPath) && !fs.existsSync(cancelFilePathEarly)) {
+    try {
+      const prevSt = readStatus(currentRoot, taskId);
+      if (prevSt && prevSt.state !== "cancelled" && prevSt.state !== "queued") {
+        fs.unlinkSync(existingStatusPath);
+      }
+    } catch {}
+  }
   const {
     agentName,
     prompt,
@@ -845,7 +861,23 @@ async function executeTaskFile(
       }
     } else if (isAgyFamily) {
       if (targetSessionToResume) {
-        args.push("--conversation", targetSessionToResume);
+        const agyCliBase = process.env.GEMINI_CLI_HOME || path.join(effectiveHome, ".gemini", "antigravity-cli");
+        const convDbPath = path.join(agyCliBase, "conversations", `${targetSessionToResume}.db`);
+        const convBrainPath = path.join(agyCliBase, "brain", targetSessionToResume);
+        const defaultCliBase = path.join(os.homedir(), ".gemini", "antigravity-cli");
+        const existsInTargetHome = fs.existsSync(convDbPath) || fs.existsSync(convBrainPath);
+        const existsInDefaultHome =
+          fs.existsSync(path.join(defaultCliBase, "conversations", `${targetSessionToResume}.db`)) ||
+          fs.existsSync(path.join(defaultCliBase, "brain", targetSessionToResume));
+
+        if (!existsInTargetHome && existsInDefaultHome && effectiveHome !== os.homedir()) {
+          logWorker(
+            "WARN",
+            `Task ${taskId}: conversation "${targetSessionToResume}" does not exist in switched profile HOME (${effectiveHome}); falling back to fresh conversation run.`
+          );
+        } else {
+          args.push("--conversation", targetSessionToResume);
+        }
       } else if (continueSession) {
         args.push("--continue");
       }
@@ -1149,28 +1181,54 @@ async function executeTaskFile(
         command,
         workDir: effectiveWorkingDir,
         prompt,
-        sessionId: targetSessionToResume || sessionId,
+        sessionId: useSdkStreamParser ? undefined : (targetSessionToResume || sessionId),
         profileHome: poolProfile?.home,
         startedAtMs: new Date(startedAt).getTime(),
       });
       sessionTrackerRef = sessionTracker;
 
+      const statusThrottleMs = parseInt(process.env.AGENT_BRIDGE_SDK_STATUS_THROTTLE_MS || "5000", 10);
+      let lastSdkStatusWriteMs = 0;
+      let lastSdkWrittenState = "";
+      let lastSdkWrittenConvId = "";
+      let lastSdkEventTime = Date.now();
+
       if (useSdkStreamParser) {
         sdkParser = new AgySdkStreamParser({
-          onEvent: (_ev, rawLine) => {
+          onEvent: (_ev, compactLine) => {
             try {
-              fs.appendFileSync(taskEventsFilePath, `${rawLine}\n`, "utf8");
+              fs.appendFileSync(taskEventsFilePath, `${compactLine}\n`, "utf8");
             } catch {}
           },
           onActivity: (update) => {
             if (isCancelled || seenCancelRequested) return;
+            const now = Date.now();
+            lastSdkEventTime = now;
+            lastOutputTime = now;
+            stuckWarned = false;
+            clearStall();
             const act = sessionTracker.recordSdkEvent({
               conversationId: update.conversationId,
               source: update.source,
+              timestampMs: now,
             });
+            const curState = stallFlagged ? "suspected_stalled" : "running";
+            const convChanged = Boolean(update.conversationId && update.conversationId !== lastSdkWrittenConvId);
+            const stateChanged = curState !== lastSdkWrittenState;
+            const shouldWriteNow =
+              Boolean(update.immediate) ||
+              convChanged ||
+              stateChanged ||
+              now - lastSdkStatusWriteMs >= statusThrottleMs;
+
+            if (!shouldWriteNow) return;
+            lastSdkStatusWriteMs = now;
+            lastSdkWrittenState = curState;
+            if (update.conversationId) lastSdkWrittenConvId = update.conversationId;
+
             try {
               writeStatus(currentRoot, taskId, {
-                state: stallFlagged ? "suspected_stalled" : "running",
+                state: curState,
                 agent: agentName,
                 model,
                 reasoningEffort,
@@ -1231,9 +1289,17 @@ async function executeTaskFile(
         }, effectiveHardTimeoutMs);
       }
 
-      // Stuck detection: warn if process produces no new output AND genuine idle evidence indicates wedged state
-      // (no session log growth, no stdout/stderr growth, no process CPU delta, no workDir change).
-      const stuckThresholdMs = parseInt(process.env.AGENT_BRIDGE_STUCK_MS || "180000", 10);
+      // Stuck detection:
+      // - For `useSdkStreamParser` (`agy-sdk`): default threshold is 600s (10 min), and activity is judged
+      //   STRICTLY by structured event arrival time (`checkSdkEventOnlyActivity`), never by CPU or file scans.
+      // - For standard CLI runners: default threshold is 180s, checking the 4 per-task signals.
+      const defaultStuckMs = useSdkStreamParser ? "600000" : "180000";
+      const stuckThresholdMs = parseInt(
+        (useSdkStreamParser ? process.env.AGENT_BRIDGE_SDK_STUCK_MS : undefined) ||
+          process.env.AGENT_BRIDGE_STUCK_MS ||
+          defaultStuckMs,
+        10
+      );
       let lastOutputTime = Date.now();
       let stuckWarned = false;
       let stuckCheckInterval: NodeJS.Timeout | null = null;
@@ -1247,13 +1313,14 @@ async function executeTaskFile(
             }
           } catch {}
 
-          // Check the 4 activity signals for this specific task
-          const act = sessionTracker.checkActivity({
-            childPid: child?.pid,
-            stdoutLen: stdoutData.length,
-            stderrLen: stderrData.length,
-            stuckThresholdMs,
-          });
+          const act = useSdkStreamParser
+            ? sessionTracker.checkSdkEventOnlyActivity(stuckThresholdMs)
+            : sessionTracker.checkActivity({
+                childPid: child?.pid,
+                stdoutLen: stdoutData.length,
+                stderrLen: stderrData.length,
+                stuckThresholdMs,
+              });
 
           // Update task status with compact activity fields
           try {
@@ -1265,6 +1332,7 @@ async function executeTaskFile(
               account: effectiveAccountAlias,
               startedAt,
               ...(slackStartTs ? { slackMessageTs: slackStartTs } : {}),
+              ...(sdkParser?.getConversationId() ? { sessionId: sdkParser.getConversationId()! } : {}),
               pid: child?.pid,
               workerPid: process.pid,
               logPath: taskOutFilePath,
@@ -1277,9 +1345,14 @@ async function executeTaskFile(
             });
           } catch {}
 
-          // Only alert when BOTH output has been quiet AND genuine progress has ceased for >= stuckThresholdMs
+          // For SDK stream tasks: only check event idle time (`now - lastSdkEventTime >= stuckThresholdMs`).
+          // For CLI tasks: check both output quiet time and 4-signal idle time.
           const now = Date.now();
-          if (now - lastOutputTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs) {
+          const isStuckNow = useSdkStreamParser
+            ? now - lastSdkEventTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs
+            : now - lastOutputTime >= stuckThresholdMs && act.idle_seconds * 1000 >= stuckThresholdMs;
+
+          if (isStuckNow) {
             stuckWarned = true;
             logWorker("WARN", `Task ${taskId} has produced no output or progress for ${Math.round(stuckThresholdMs / 1000)}s, possibly stuck.`);
             notify("agent-bridge", `Task ${taskId} 超过 ${Math.round(stuckThresholdMs / 1000)}s 无新输出或活动，可能已卡住 [${agentName}]`, {
@@ -1402,26 +1475,20 @@ async function executeTaskFile(
 
       child.stdout?.on("data", (chunk) => {
         lastOutputTime = Date.now();
-        stuckWarned = false;
         clearStall();
         const rawText = chunk.toString("utf8");
         if (sdkParser) {
           const readable = sdkParser.feedChunk(rawText);
           if (readable) {
-            stdoutData += readable;
+            stdoutData = capTailString(stdoutData + readable, MAX_SDK_BUFFER_BYTES);
             try {
               fs.appendFileSync(taskOutFilePath, readable, "utf8");
             } catch {}
           }
-          const sdkConvId = sdkParser.getConversationId() ?? undefined;
-          sessionTracker.checkActivity({
-            extractedSessionId: sdkConvId,
-            stdoutLen: stdoutData.length,
-            stderrLen: stderrData.length,
-            stuckThresholdMs,
-          });
+          // In stream-json mode, activity & conversationId are driven ONLY by parsed SDK events (via sdkParser onActivity)
         } else {
-          stdoutData += rawText;
+          stuckWarned = false;
+          stdoutData = capTailString(stdoutData + rawText, MAX_SDK_BUFFER_BYTES);
           try {
             fs.appendFileSync(taskOutFilePath, rawText, "utf8");
           } catch {}
@@ -1437,18 +1504,20 @@ async function executeTaskFile(
 
       child.stderr?.on("data", (chunk) => {
         lastOutputTime = Date.now();
-        stuckWarned = false;
         clearStall();
         const errText = chunk.toString("utf8");
-        stderrData += errText;
+        stderrData = capTailString(stderrData + errText, MAX_SDK_BUFFER_BYTES);
         try {
           fs.appendFileSync(taskOutFilePath.replace(/\.out$/, ".err"), errText, "utf8");
         } catch {}
-        sessionTracker.checkActivity({
-          stdoutLen: stdoutData.length,
-          stderrLen: stderrData.length,
-          stuckThresholdMs,
-        });
+        if (!sdkParser) {
+          stuckWarned = false;
+          sessionTracker.checkActivity({
+            stdoutLen: stdoutData.length,
+            stderrLen: stderrData.length,
+            stuckThresholdMs,
+          });
+        }
       });
 
       child.on("error", (err) => {
@@ -1471,7 +1540,7 @@ async function executeTaskFile(
         if (sdkParser) {
           const trailing = sdkParser.flush();
           if (trailing) {
-            stdoutData += trailing;
+            stdoutData = capTailString(stdoutData + trailing, MAX_SDK_BUFFER_BYTES);
             try {
               fs.appendFileSync(taskOutFilePath, trailing, "utf8");
             } catch {}
@@ -1515,19 +1584,23 @@ async function executeTaskFile(
   if (sdkParser) {
     const sdkClean = sdkParser.getCleanOutput();
     if (sdkClean && sdkClean.trim().length > 0) {
-      stdoutData = sdkClean;
+      stdoutData = capTailString(sdkClean, MAX_SDK_BUFFER_BYTES);
     }
     const sdkErrors = sdkParser.getErrorMessages();
     if (sdkErrors.length > 0 && !stderrData.includes(sdkErrors[0])) {
-      stderrData = (stderrData ? `${stderrData}\n` : "") + sdkErrors.join("\n");
+      stderrData = capTailString((stderrData ? `${stderrData}\n` : "") + sdkErrors.join("\n"), MAX_SDK_BUFFER_BYTES);
     }
     const sdkResult = sdkParser.getResultPayload();
     if ((sdkResult?.status === "ERROR" || sdkResult?.finished_reason === "error") && (exitCode === 0 || exitCode === null)) {
       exitCode = 1;
     }
   }
-  const failureKind = exitCode !== 0 && !wasCancelled && !isTimeout
-    ? (sdkParser?.isQuotaError() ? "quota" : classifyAgentFailure(exitCode, stdoutData, stderrData))
+  const failureKind: "login" | "quota" | "other" = exitCode !== 0 && !wasCancelled && !isTimeout
+    ? (isLoginInvalidError(stdoutData, stderrData)
+        ? "login"
+        : sdkParser
+          ? (sdkParser.isQuotaError(exitCode, `${stderrData}\n${stdoutData}`) ? "quota" : "other")
+          : classifyAgentFailure(exitCode, stdoutData, stderrData))
     : "other";
   const runDurationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
   if (wasCancelled) {
@@ -1554,7 +1627,9 @@ async function executeTaskFile(
     state = "paused_quota";
     reason = "quota or rate limit exhausted";
     try {
-      const extractedEarly = extractSessionIdFromOutput(stdoutData);
+      const extractedEarly = useSdkStreamParser
+        ? (sdkParser?.getConversationId() ?? undefined)
+        : extractSessionIdFromOutput(stdoutData);
       const earlySessionId = extractedEarly || targetSessionToResume;
       stashQuotaTask(currentRoot, {
         taskId,
@@ -1592,10 +1667,9 @@ async function executeTaskFile(
     reason = `exited with code ${exitCode}${errText ? `: ${errText.split(/\r?\n/).filter(l => l.trim()).slice(-5).join("\n").slice(-500)}` : ""}`;
   }
 
-  const extractedSessionId =
-    sdkParser?.getConversationId() ||
-    sessionTrackerRef?.getBoundConversationId() ||
-    extractSessionIdFromOutput(stdoutData);
+  const extractedSessionId = useSdkStreamParser
+    ? (sdkParser?.getConversationId() ?? undefined)
+    : (sessionTrackerRef?.getBoundConversationId() || extractSessionIdFromOutput(stdoutData));
   const finalSessionId = extractedSessionId || targetSessionToResume;
   if (finalSessionId) {
     recordSession(currentRoot, taskId, finalSessionId, effectiveAccountAlias);

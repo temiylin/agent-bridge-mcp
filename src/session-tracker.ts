@@ -223,8 +223,19 @@ export class TaskSessionTracker {
                 matched = true;
               }
             } catch {}
+          } else if (this.prompt) {
+            try {
+              const fd = fs.openSync(transcriptFile, "r");
+              const buf = Buffer.alloc(16384);
+              const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
+              fs.closeSync(fd);
+              const header = buf.toString("utf8", 0, bytesRead);
+              if (header.includes(this.prompt.slice(0, 50))) {
+                matched = true;
+              }
+            } catch {}
           }
-          if (matched || candidates.length === 1) {
+          if (matched || (!this.workDir && !this.prompt && candidates.length === 1)) {
             this.bindAgyConversation(cand);
             break;
           }
@@ -305,10 +316,10 @@ export class TaskSessionTracker {
       } catch {}
     }
 
-    // Check Signal 3: Process tree CPU time increase
+    // Check Signal 3: Process tree CPU time increase (require >= 1.0s sustained CPU delta to avoid idle polling jitter)
     if (params.childPid) {
       const currentCpu = getProcessTreeCpuTime(params.childPid);
-      if (currentCpu > this.lastCpuSec + 0.05) {
+      if (currentCpu > this.lastCpuSec + 1.0) {
         hasDelta = true;
         deltaSource = deltaSource || "cpu";
         this.lastCpuSec = currentCpu;
@@ -376,6 +387,25 @@ export class TaskSessionTracker {
       lastActivityTime: this.lastActivityTime,
       last_activity_at: new Date(this.lastActivityTime).toISOString(),
       idle_seconds: 0,
+      activity_source: this.lastActivitySource,
+    };
+  }
+
+  /**
+   * For `agy-sdk` / `stream-json` tasks: evaluates activity purely from the timestamp of
+   * the last received structured event (`recordSdkEvent`), ignoring CPU, workDir, and file mtimes.
+   */
+  public checkSdkEventOnlyActivity(stuckThresholdMs: number = 600000, now: number = Date.now()): ActivityCheckResult {
+    const idleSeconds = Math.max(0, Math.floor((now - this.lastActivityTime) / 1000));
+    const idleCutoffSec = Math.min(30, Math.max(1, Math.floor(stuckThresholdMs / 2000)));
+    const activity: "active" | "idle" = idleSeconds >= idleCutoffSec ? "idle" : "active";
+
+    return {
+      hasActivity: false,
+      activity,
+      lastActivityTime: this.lastActivityTime,
+      last_activity_at: new Date(this.lastActivityTime).toISOString(),
+      idle_seconds: idleSeconds,
       activity_source: this.lastActivitySource,
     };
   }

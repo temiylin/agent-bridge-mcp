@@ -1,3 +1,5 @@
+export const MAX_SDK_BUFFER_BYTES = 1024 * 1024; // 1MB cap
+
 export interface AgySdkInitEvent {
   event: "init";
   conversation_id?: string;
@@ -87,23 +89,70 @@ export interface AgySdkActivityUpdate {
   stepType?: string;
   state?: string;
   errorMessage?: string;
+  immediate?: boolean;
 }
 
 export interface AgySdkStreamCallbacks {
   onActivity?: (update: AgySdkActivityUpdate) => void;
-  onEvent?: (event: AgySdkStreamEvent, rawLine: string) => void;
+  /**
+   * Called with a sanitized/compact JSON line suitable for `events.jsonl`
+   * (omits high-frequency `text_delta` / `thinking_delta` chunks).
+   */
+  onEvent?: (event: AgySdkStreamEvent, compactLine: string) => void;
+}
+
+/**
+ * Keeps only the last `maxBytes` characters/bytes of a string.
+ */
+export function capTailString(str: string, maxBytes: number = MAX_SDK_BUFFER_BYTES): string {
+  if (str.length <= maxBytes) return str;
+  return str.slice(str.length - maxBytes);
+}
+
+/**
+ * Strict quota exhaustion matcher for structured SDK / stream-json output:
+ * - Recognizes explicit `RESOURCE_EXHAUSTED`
+ * - Recognizes explicit quota exhaustion phrases (`quota exhausted`, `quota exceeded`,
+ *   `individual quota reached`, `exhausted your capacity`, `out of quota`, `insufficient_quota`)
+ * - Recognizes `exitCode === 3` ONLY when paired with non-empty quota-related wording
+ * - Deliberately excludes bare `"429"` numbers and generic `"rate limit"` / `"too many requests"`
+ *   so transient rate limits or unrelated numbers never pause an account.
+ */
+export function isStrictAgyQuotaError(exitCode: number | null | undefined, text: string): boolean {
+  const clean = (text || "").trim();
+  if (!clean) return false;
+
+  const explicitQuotaPatterns = [
+    /\bRESOURCE_EXHAUSTED\b/i,
+    /\bquota\s+(?:exhausted|exceeded|reached)\b/i,
+    /\bindividual\s+quota\s+reached\b/i,
+    /\bexhausted\s+your\s+(?:capacity|quota|daily\s+quota)\b/i,
+    /\bout\s+of\s+quota\b/i,
+    /\bexceeded\s+your\s+current\s+quota\b/i,
+    /\binsufficient_quota\b/i,
+  ];
+
+  if (explicitQuotaPatterns.some((pat) => pat.test(clean))) {
+    return true;
+  }
+
+  if (exitCode === 3 && /\bquota\b/i.test(clean)) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
  * Fault-tolerant, stateful NDJSON parser for `agy --output-format stream-json`.
- * Only depends on empirically observed fields (`init.conversation_id`, `step_update`,
- * `result.status`/`finished_reason`/`response`/`error`) and gracefully tolerates
- * unknown events, schema changes, or plain-text fallback lines across agy upgrades.
+ * - Binds `conversationId` strictly from the `init` event.
+ * - Caps `remainder` and accumulated text at 1MB (`MAX_SDK_BUFFER_BYTES`).
+ * - Strips `text_delta` and `thinking_delta` from `events.jsonl` logging.
  */
 export class AgySdkStreamParser {
   private remainder = "";
   private conversationId: string | null = null;
-  private textChunks: string[] = [];
+  private textBuffer = "";
   private finalResponse: string | null = null;
   private resultPayload: AgySdkResultPayload | null = null;
   private errorMessages: string[] = [];
@@ -114,6 +163,11 @@ export class AgySdkStreamParser {
 
   constructor(callbacks: AgySdkStreamCallbacks = {}) {
     this.callbacks = callbacks;
+  }
+
+  private appendTextBuffer(chunk: string): void {
+    if (!chunk) return;
+    this.textBuffer = capTailString(this.textBuffer + chunk, MAX_SDK_BUFFER_BYTES);
   }
 
   /**
@@ -137,6 +191,11 @@ export class AgySdkStreamParser {
       newlineIdx = this.remainder.indexOf("\n");
     }
 
+    // Drop remainder if a single unterminated line exceeds 1MB
+    if (this.remainder.length > MAX_SDK_BUFFER_BYTES) {
+      this.remainder = "";
+    }
+
     return readableOut.join("");
   }
 
@@ -144,15 +203,64 @@ export class AgySdkStreamParser {
    * Flush any trailing partial line when the process closes.
    */
   flush(): string {
+    if (this.remainder.length > MAX_SDK_BUFFER_BYTES) {
+      this.remainder = "";
+      return "";
+    }
     const line = this.remainder.trim();
     this.remainder = "";
     if (!line) return "";
     return this.processLine(line) || "";
   }
 
+  private emitSanitizedEvent(parsed: AgySdkStreamEvent): void {
+    if (!this.callbacks.onEvent) return;
+    try {
+      if (parsed.event === "step_update") {
+        const su = (parsed as AgySdkStepUpdateEvent).step_update;
+        if (!su || typeof su !== "object") return;
+        const hasTool = Boolean(su.tool_info?.name || su.tool_name);
+        const hasError = Boolean(su.error_message);
+        const isTerminalStepState = su.state === "DONE" || su.state === "ERROR";
+        // Skip pure token-streaming delta frames (`text_delta` / `thinking_delta`) to keep events.jsonl small
+        if (!hasTool && !hasError && !isTerminalStepState && (su.text_delta || su.thinking_delta)) {
+          return;
+        }
+        const cloneSu: Record<string, unknown> = { ...su };
+        delete cloneSu.text_delta;
+        delete cloneSu.thinking_delta;
+        if (cloneSu.tool_info && typeof cloneSu.tool_info === "object") {
+          const ti = { ...(cloneSu.tool_info as Record<string, unknown>) };
+          if (typeof ti.output === "string" && ti.output.length > 512) {
+            ti.output = `${ti.output.slice(0, 512)}...[truncated]`;
+          }
+          cloneSu.tool_info = ti;
+        }
+        const compact = JSON.stringify({ event: "step_update", step_update: cloneSu });
+        this.callbacks.onEvent(parsed, compact);
+        return;
+      }
+
+      if (parsed.event === "result") {
+        const res = (parsed as AgySdkResultEvent).result;
+        if (res && typeof res === "object") {
+          const cloneRes: Record<string, unknown> = { ...res };
+          if (typeof cloneRes.response === "string" && cloneRes.response.length > 1024) {
+            cloneRes.response = `${cloneRes.response.slice(0, 1024)}...[truncated]`;
+          }
+          this.callbacks.onEvent(parsed, JSON.stringify({ event: "result", result: cloneRes }));
+          return;
+        }
+      }
+
+      const raw = JSON.stringify(parsed);
+      this.callbacks.onEvent(parsed, raw.length > 4096 ? `${raw.slice(0, 4096)}...` : raw);
+    } catch {}
+  }
+
   private processLine(line: string): string {
     if (!line.startsWith("{")) {
-      this.textChunks.push(`${line}\n`);
+      this.appendTextBuffer(`${line}\n`);
       return `${line}\n`;
     }
 
@@ -160,25 +268,19 @@ export class AgySdkStreamParser {
     try {
       parsed = JSON.parse(line) as AgySdkStreamEvent;
     } catch {
-      this.textChunks.push(`${line}\n`);
+      this.appendTextBuffer(`${line}\n`);
       return `${line}\n`;
     }
 
     if (!parsed || typeof parsed !== "object") {
-      this.textChunks.push(`${line}\n`);
+      this.appendTextBuffer(`${line}\n`);
       return `${line}\n`;
     }
 
-    // Extract top-level conversation_id if present on any event shape
-    if (typeof parsed.conversation_id === "string" && parsed.conversation_id.trim()) {
-      this.conversationId = parsed.conversation_id.trim();
-    }
-
     if (typeof parsed.event !== "string") {
-      // Unknown JSON object without `event`: tolerate and extract response/text/error if present
       if (typeof (parsed as any).response === "string") {
         const resp = (parsed as any).response as string;
-        this.textChunks.push(resp);
+        this.appendTextBuffer(resp);
         return resp;
       }
       if (typeof (parsed as any).error === "string") {
@@ -190,18 +292,18 @@ export class AgySdkStreamParser {
     }
 
     this.totalEvents += 1;
-    try {
-      this.callbacks.onEvent?.(parsed, line);
-    } catch {}
+    this.emitSanitizedEvent(parsed);
 
     if (parsed.event === "init") {
       const initEv = parsed as AgySdkInitEvent;
+      // Only bind conversationId from the `init` event
       if (typeof initEv.conversation_id === "string" && initEv.conversation_id.trim()) {
         this.conversationId = initEv.conversation_id.trim();
       }
       this.emitActivity({
         conversationId: this.conversationId ?? undefined,
         source: "sdk_init",
+        immediate: true,
       });
       return "";
     }
@@ -214,10 +316,6 @@ export class AgySdkStreamParser {
           source: "sdk_step",
         });
         return "";
-      }
-
-      if (typeof su.conversation_id === "string" && su.conversation_id.trim()) {
-        this.conversationId = su.conversation_id.trim();
       }
 
       if (typeof su.error_message === "string" && su.error_message.trim()) {
@@ -243,6 +341,7 @@ export class AgySdkStreamParser {
         source = `sdk_${su.step_type}`;
       }
 
+      const isToolOrError = Boolean(toolName || su.error_message || su.state === "ERROR");
       this.emitActivity({
         conversationId: this.conversationId ?? undefined,
         source,
@@ -250,6 +349,7 @@ export class AgySdkStreamParser {
         stepType: typeof su.step_type === "string" ? su.step_type : undefined,
         state: typeof su.state === "string" ? su.state : undefined,
         errorMessage: typeof su.error_message === "string" ? su.error_message : undefined,
+        immediate: isToolOrError,
       });
 
       const outPieces: string[] = [];
@@ -263,7 +363,7 @@ export class AgySdkStreamParser {
       }
 
       if (typeof su.text_delta === "string" && su.text_delta.length > 0) {
-        this.textChunks.push(su.text_delta);
+        this.appendTextBuffer(su.text_delta);
         outPieces.push(su.text_delta);
       }
 
@@ -278,11 +378,8 @@ export class AgySdkStreamParser {
       const res = (parsed as AgySdkResultEvent).result;
       if (res && typeof res === "object") {
         this.resultPayload = res;
-        if (typeof res.conversation_id === "string" && res.conversation_id.trim()) {
-          this.conversationId = res.conversation_id.trim();
-        }
         if (typeof res.response === "string" && res.response.length > 0) {
-          this.finalResponse = res.response;
+          this.finalResponse = capTailString(res.response, MAX_SDK_BUFFER_BYTES);
         }
         if (typeof res.error === "string" && res.error.trim()) {
           this.errorMessages.push(res.error.trim());
@@ -293,10 +390,12 @@ export class AgySdkStreamParser {
           source: isErr ? "sdk_error" : "sdk_result",
           state: typeof res.status === "string" ? res.status : undefined,
           errorMessage: typeof res.error === "string" ? res.error : undefined,
+          immediate: true,
         });
-        if (this.textChunks.length === 0 && typeof res.response === "string" && res.response.length > 0) {
-          this.textChunks.push(res.response);
-          return res.response;
+        if (!this.textBuffer && typeof res.response === "string" && res.response.length > 0) {
+          const capped = capTailString(res.response, MAX_SDK_BUFFER_BYTES);
+          this.appendTextBuffer(capped);
+          return capped;
         }
       }
       return "";
@@ -325,7 +424,7 @@ export class AgySdkStreamParser {
     if (typeof this.finalResponse === "string" && this.finalResponse.trim().length > 0) {
       return this.finalResponse;
     }
-    return this.textChunks.join("");
+    return this.textBuffer;
   }
 
   getResultPayload(): AgySdkResultPayload | null {
@@ -344,20 +443,12 @@ export class AgySdkStreamParser {
     return this.totalEvents > 0;
   }
 
-  isQuotaError(): boolean {
+  isQuotaError(exitCode?: number | null, extraStderr?: string): boolean {
     const combined = [
       ...this.errorMessages,
       this.resultPayload?.error || "",
-      this.resultPayload?.finished_reason || "",
-    ]
-      .join("\n")
-      .toLowerCase();
-    return (
-      combined.includes("quota") ||
-      combined.includes("resource_exhausted") ||
-      combined.includes("rate limit") ||
-      combined.includes("429") ||
-      combined.includes("exhausted your capacity")
-    );
+      extraStderr || "",
+    ].join("\n");
+    return isStrictAgyQuotaError(exitCode, combined);
   }
 }
