@@ -83,7 +83,7 @@ async function runDashboardTests() {
   try {
     const baseUrl = `http://127.0.0.1:${TEST_PORT}`;
 
-    // Test GET / with text/html -> Returns HTML Dashboard
+    // Test GET / with text/html -> Returns HTML Dashboard (React SPA or fallback)
     console.log("[Test 3] Fetching GET / with Accept: text/html...");
     const htmlResp = await fetch(`${baseUrl}/`, {
       headers: { Accept: "text/html,application/xhtml+xml" },
@@ -91,8 +91,10 @@ async function runDashboardTests() {
     assert.equal(htmlResp.status, 200);
     assert.ok(htmlResp.headers.get("content-type")?.includes("text/html"));
     const htmlText = await htmlResp.text();
-    assert.ok(htmlText.includes("Agent Bridge 本机智能调度控制台"), "HTML must contain console title");
-    assert.ok(htmlText.includes("全局分发指导说明"), "HTML must contain instructions section");
+    assert.ok(
+      htmlText.includes("Agent Bridge") || htmlText.includes("agent-bridge"),
+      "HTML must contain Agent Bridge title"
+    );
     console.log("✓ Assertion passed: HTML dashboard served successfully on /.");
 
     // Test GET /dashboard -> Returns HTML Dashboard
