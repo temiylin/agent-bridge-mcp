@@ -8,7 +8,7 @@ import {
   VerifyPrConfig,
   MergeDeployConfig,
   loadProjectsConfig,
-  saveProjectsConfig,
+  withProjectsConfigLock,
   validateGitRepoPath,
   validateCallbackHeadersEnvRefs,
   sanitizeProjectForClient,
@@ -18,7 +18,8 @@ import {
 } from "./project-router.js";
 
 export interface ProjectUpsertInput {
-  id: string;
+  id?: string;
+  project_id?: string;
   name?: string;
   repo_path?: string;
   paths?: string[];
@@ -37,6 +38,7 @@ export interface ProjectUpsertInput {
   slack_user_id?: string;
   callback_url?: string;
   callback_headers?: Record<string, string>;
+  allowed_env?: string[];
   description?: string;
   services?: Record<string, ServiceConfig>;
   verify_pr?: VerifyPrConfig;
@@ -54,20 +56,11 @@ export function addProject(
   rootDir: string,
   input: ProjectUpsertInput
 ): { success: boolean; project?: ProjectDefinition; error?: string } {
-  const id = (input.id || "").trim();
+  const id = (input.project_id || input.id || "").trim();
   if (!isValidProjectId(id)) {
     return {
       success: false,
-      error: `Invalid project id "${input.id}". Must be 1-64 characters containing only letters, numbers, hyphens (-), or underscores (_).`,
-    };
-  }
-
-  const config = loadProjectsConfig(rootDir);
-  const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
-  if (existingKey) {
-    return {
-      success: false,
-      error: `Project "${existingKey}" already exists. Use update_project to modify it.`,
+      error: `Invalid project id "${input.project_id || input.id || ""}". Must be 1-64 characters containing only letters, numbers, hyphens (-), or underscores (_).`,
     };
   }
 
@@ -90,32 +83,55 @@ export function addProject(
     };
   }
 
+  let sanitizedHeaders = input.callback_headers;
   if (input.callback_headers !== undefined) {
-    const hdrCheck = validateCallbackHeadersEnvRefs(input.callback_headers);
+    const hdrCheck = validateCallbackHeadersEnvRefs(input.callback_headers, input.allowed_env);
     if (!hdrCheck.valid) {
       return { success: false, error: hdrCheck.error };
     }
-    input.callback_headers = hdrCheck.sanitized;
+    sanitizedHeaders = hdrCheck.sanitized;
   }
 
-  const normalized = normalizeProjectDefinition(id, {
-    ...input,
-    id,
-    name: input.name?.trim() || id,
-    repo_path: pathValidation.resolvedPath,
-    paths: [
-      pathValidation.resolvedPath,
-      ...(Array.isArray(input.paths) ? input.paths.slice(1) : []),
-    ],
-  });
+  try {
+    return withProjectsConfigLock<{ success: boolean; project?: ProjectDefinition; error?: string }>(rootDir, (config) => {
+      const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
+      if (existingKey) {
+        return {
+          save: false,
+          result: {
+            success: false,
+            error: `Project "${existingKey}" already exists. Use update_project to modify it.`,
+          },
+        };
+      }
 
-  config.projects[id] = normalized;
-  saveProjectsConfig(rootDir, config);
+      const normalized = normalizeProjectDefinition(id, {
+        ...input,
+        id,
+        name: input.name?.trim() || id,
+        repo_path: pathValidation.resolvedPath,
+        paths: [
+          pathValidation.resolvedPath,
+          ...(Array.isArray(input.paths) ? input.paths.slice(1) : []),
+        ],
+        callback_headers: sanitizedHeaders,
+      });
 
-  return {
-    success: true,
-    project: sanitizeProjectForClient(normalized),
-  };
+      config.projects[id] = normalized;
+      return {
+        save: true,
+        result: {
+          success: true,
+          project: sanitizeProjectForClient(normalized),
+        },
+      };
+    });
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || String(err),
+    };
+  }
 }
 
 /**
@@ -123,80 +139,98 @@ export function addProject(
  */
 export function updateProject(
   rootDir: string,
-  input: Partial<ProjectUpsertInput> & { id: string }
+  input: Partial<ProjectUpsertInput> & { id?: string; project_id?: string }
 ): { success: boolean; project?: ProjectDefinition; error?: string } {
-  const id = (input.id || "").trim();
+  const id = (input.project_id || input.id || "").trim();
   if (!id) {
     return { success: false, error: "Project id is required." };
   }
 
-  const config = loadProjectsConfig(rootDir);
-  const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
-  if (!existingKey) {
+  try {
+    return withProjectsConfigLock<{ success: boolean; project?: ProjectDefinition; error?: string }>(rootDir, (config) => {
+      const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
+      if (!existingKey) {
+        return {
+          save: false,
+          result: {
+            success: false,
+            error: `Project "${id}" does not exist in projects.json.`,
+          },
+        };
+      }
+
+      const current = config.projects[existingKey];
+      let resolvedRepoPath = getProjectRepoPath(current);
+
+      const nextRepoCandidate =
+        input.repo_path !== undefined
+          ? input.repo_path.trim()
+          : Array.isArray(input.paths) && input.paths.length > 0
+            ? input.paths[0].trim()
+            : undefined;
+
+      if (nextRepoCandidate !== undefined) {
+        if (!nextRepoCandidate) {
+          return { save: false, result: { success: false, error: "repo_path cannot be empty." } };
+        }
+        const pathValidation = validateGitRepoPath(nextRepoCandidate);
+        if (!pathValidation.valid || !pathValidation.resolvedPath) {
+          return {
+            save: false,
+            result: {
+              success: false,
+              error: pathValidation.error || `Invalid git repository path: "${nextRepoCandidate}"`,
+            },
+          };
+        }
+        resolvedRepoPath = pathValidation.resolvedPath;
+      }
+
+      const effectiveAllowedEnv = input.allowed_env !== undefined ? input.allowed_env : current.allowed_env;
+      let nextHeaders = current.callback_headers;
+      if (input.callback_headers !== undefined) {
+        const hdrCheck = validateCallbackHeadersEnvRefs(input.callback_headers, effectiveAllowedEnv);
+        if (!hdrCheck.valid) {
+          return { save: false, result: { success: false, error: hdrCheck.error } };
+        }
+        nextHeaders = hdrCheck.sanitized;
+      }
+
+      const mergedRaw = {
+        ...current,
+        ...input,
+        id: current.id,
+        name: input.name !== undefined ? (input.name.trim() || current.name) : current.name,
+        repo_path: resolvedRepoPath,
+        paths: resolvedRepoPath
+          ? [
+              resolvedRepoPath,
+              ...(Array.isArray(input.paths)
+                ? input.paths.slice(1)
+                : (current.paths || []).filter((p) => p !== resolvedRepoPath)),
+            ]
+          : current.paths,
+        callback_headers: nextHeaders,
+        allowed_env: effectiveAllowedEnv,
+      };
+
+      const normalized = normalizeProjectDefinition(current.id, mergedRaw);
+      config.projects[current.id] = normalized;
+
+      return {
+        save: true,
+        result: {
+          success: true,
+          project: sanitizeProjectForClient(normalized),
+        },
+      };
+    });
+  } catch (err: any) {
     return {
       success: false,
-      error: `Project "${id}" does not exist in projects.json.`,
+      error: err?.message || String(err),
     };
   }
-
-  const current = config.projects[existingKey];
-  let resolvedRepoPath = getProjectRepoPath(current);
-
-  const nextRepoCandidate =
-    input.repo_path !== undefined
-      ? input.repo_path.trim()
-      : Array.isArray(input.paths) && input.paths.length > 0
-        ? input.paths[0].trim()
-        : undefined;
-
-  if (nextRepoCandidate !== undefined) {
-    if (!nextRepoCandidate) {
-      return { success: false, error: "repo_path cannot be empty." };
-    }
-    const pathValidation = validateGitRepoPath(nextRepoCandidate);
-    if (!pathValidation.valid || !pathValidation.resolvedPath) {
-      return {
-        success: false,
-        error: pathValidation.error || `Invalid git repository path: "${nextRepoCandidate}"`,
-      };
-    }
-    resolvedRepoPath = pathValidation.resolvedPath;
-  }
-
-  let nextHeaders = current.callback_headers;
-  if (input.callback_headers !== undefined) {
-    const hdrCheck = validateCallbackHeadersEnvRefs(input.callback_headers);
-    if (!hdrCheck.valid) {
-      return { success: false, error: hdrCheck.error };
-    }
-    nextHeaders = hdrCheck.sanitized;
-  }
-
-  const mergedRaw = {
-    ...current,
-    ...input,
-    id: current.id,
-    name: input.name !== undefined ? (input.name.trim() || current.name) : current.name,
-    repo_path: resolvedRepoPath,
-    paths: resolvedRepoPath
-      ? [
-          resolvedRepoPath,
-          ...(Array.isArray(input.paths)
-            ? input.paths.slice(1)
-            : (current.paths || []).filter((p) => p !== resolvedRepoPath)),
-        ]
-      : current.paths,
-    callback_headers: nextHeaders,
-  };
-
-  const normalized = normalizeProjectDefinition(current.id, mergedRaw);
-  config.projects[current.id] = normalized;
-  saveProjectsConfig(rootDir, config);
-
-  return {
-    success: true,
-    project: sanitizeProjectForClient(normalized),
-  };
 }
 
 /**
@@ -211,34 +245,50 @@ export function removeProject(
     return { success: false, error: "Project id is required." };
   }
 
-  const config = loadProjectsConfig(rootDir);
-  const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
-  if (!existingKey) {
+  try {
+    return withProjectsConfigLock<{ success: boolean; removed?: ProjectDefinition; error?: string }>(rootDir, (config) => {
+      const existingKey = Object.keys(config.projects).find((k) => k.toLowerCase() === id.toLowerCase());
+      if (!existingKey) {
+        return {
+          save: false,
+          result: {
+            success: false,
+            error: `Project "${id}" not found in projects.json.`,
+          },
+        };
+      }
+
+      const { activeTaskIds, queuedItemIds } = findActiveTasksForProject(rootDir, existingKey);
+      if (activeTaskIds.length > 0 || queuedItemIds.length > 0) {
+        const parts: string[] = [];
+        if (activeTaskIds.length > 0) parts.push(`active/queued tasks: [${activeTaskIds.join(", ")}]`);
+        if (queuedItemIds.length > 0) parts.push(`session queue items: [${queuedItemIds.join(", ")}]`);
+        return {
+          save: false,
+          result: {
+            success: false,
+            error: `Cannot remove project "${existingKey}" while it has running or queued tasks (${parts.join("; ")}). Cancel or finish them first.`,
+          },
+        };
+      }
+
+      const removed = sanitizeProjectForClient(config.projects[existingKey]);
+      delete config.projects[existingKey];
+
+      return {
+        save: true,
+        result: {
+          success: true,
+          removed,
+        },
+      };
+    });
+  } catch (err: any) {
     return {
       success: false,
-      error: `Project "${id}" not found in projects.json.`,
+      error: err?.message || String(err),
     };
   }
-
-  const { activeTaskIds, queuedItemIds } = findActiveTasksForProject(rootDir, existingKey);
-  if (activeTaskIds.length > 0 || queuedItemIds.length > 0) {
-    const parts: string[] = [];
-    if (activeTaskIds.length > 0) parts.push(`active/queued tasks: [${activeTaskIds.join(", ")}]`);
-    if (queuedItemIds.length > 0) parts.push(`session queue items: [${queuedItemIds.join(", ")}]`);
-    return {
-      success: false,
-      error: `Cannot remove project "${existingKey}" while it has running or queued tasks (${parts.join("; ")}). Cancel or finish them first.`,
-    };
-  }
-
-  const removed = sanitizeProjectForClient(config.projects[existingKey]);
-  delete config.projects[existingKey];
-  saveProjectsConfig(rootDir, config);
-
-  return {
-    success: true,
-    removed,
-  };
 }
 
 const serviceSchema = z.object({
@@ -296,7 +346,11 @@ export function registerProjectTools(
       callback_headers: z
         .record(z.string(), z.string())
         .optional()
-        .describe("Callback HTTP headers referencing environment variable names only (e.g. {'Authorization': '$MY_TOKEN_ENV'})"),
+        .describe("Callback HTTP headers referencing whitelisted environment variables (e.g. {'Authorization': 'Bearer $AGENT_BRIDGE_CB_TOKEN'})"),
+      allowed_env: z
+        .array(z.string())
+        .optional()
+        .describe("Optional explicit whitelist of environment variable names allowed in callback_headers for this project"),
       description: z.string().optional().describe("Optional project description"),
       verify_pr: verifyPrSchema.optional().describe("PR verification test commands and timeout"),
       merge_deploy: mergeDeploySchema.optional().describe("Merge & deploy target branch, remote, and services to restart"),
@@ -395,7 +449,11 @@ export function registerProjectTools(
       callback_headers: z
         .record(z.string(), z.string())
         .optional()
-        .describe("Updated callback headers referencing environment variable names only"),
+        .describe("Updated callback headers referencing whitelisted environment variable names only"),
+      allowed_env: z
+        .array(z.string())
+        .optional()
+        .describe("Updated explicit whitelist of environment variable names allowed in callback_headers"),
       description: z.string().optional().describe("Updated description"),
       verify_pr: verifyPrSchema.optional().describe("Updated PR verification config"),
       merge_deploy: mergeDeploySchema.optional().describe("Updated merge & deploy config"),
@@ -428,19 +486,21 @@ export function registerProjectTools(
     "remove_project",
     "Remove a project from projects.json. Refuses removal if any tasks for this project are currently running or queued.",
     {
-      id: z.string().describe("Project ID to remove"),
+      project_id: z.string().optional().describe("Project ID to remove (primary parameter)"),
+      id: z.string().optional().describe("Legacy alias for project_id"),
     },
-    async ({ id }) => {
+    async ({ project_id, id }) => {
       audit(rootDir, { tool: "remove_project" });
-      const res = removeProject(rootDir, id);
+      const targetId = (project_id || id || "").trim();
+      const res = removeProject(rootDir, targetId);
       if (!res.success) {
-        logger.warn(`remove_project refused for id="${id}": ${res.error}`);
+        logger.warn(`remove_project refused for project_id="${targetId}": ${res.error}`);
         return {
           isError: true,
           content: [{ type: "text", text: `Error removing project: ${res.error}` }],
         };
       }
-      logger.info(`remove_project: removed project "${id}"`);
+      logger.info(`remove_project: removed project "${targetId}"`);
       return {
         content: [
           {

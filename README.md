@@ -521,6 +521,15 @@ When `cancel_task` is called:
 ### Opt-In Per-Task Completion Webhooks
 > **Warning**: Completion webhooks are **opt-in per task** only. Do NOT add a global default webhook URL in config that fires for every task, and do NOT auto-enable webhooks for all callers. Only callers that explicitly have a webhook endpoint (e.g. Grok Bot) should pass `on_complete` (with `url`, optional `headers`, `events` such as `["completed","failed","timeout","overdue"]`, and optional HMAC `secret`). Webhook delivery failures never block queue progression.
 
+### Project Configuration (`projects.json`) & Security Boundaries
+
+Projects can be registered and managed via `add_project`, `list_projects`, `update_project`, `remove_project`, or the Web Console Settings (`📁 Projects` tab). Passing `project_id` to `send_task`, `enqueue_task`, `git_push`, `pr_create`, or `merge_and_deploy` automatically applies project defaults (`repo_path`, `default_base_branch`, `push_remote`, `forbidden_remotes`, `default_agent`, `default_model`, `default_account`, `default_timeout_seconds`, `callback_url`, `callback_headers`) while allowing per-task overrides.
+
+Important security & execution notes:
+1. **`forbidden_remotes` Enforcement Scope**: `forbidden_remotes` is matched against the resolved push URL (`git remote get-url --push <remote>`, supporting exact/subdomain host match or `host/path` prefix match, including `ssh://host:port/path`). Bridge does **not** install `pre-push` hooks or modify `.git/config` in your repository. Therefore, `git_push` and `merge_and_deploy` MCP tools strictly block pushes to forbidden remotes, and `[Project Git Constraints]` are injected into the task prompt, **but an autonomous agent invoking `git push` directly inside its own shell/command-line subprocess is not technically intercepted by git hooks**.
+2. **`services.command` Shell Execution**: In `projects.json`, each service's `services.<name>.command` (invoked by `restart_service` and `merge_and_deploy`) is executed via the system shell (`sh -c` on macOS/Linux, `cmd.exe /d /s /c` on Windows). Only register trusted commands in `projects.json`.
+3. **Callback Header Environment Variable Whitelist**: Project `callback_headers` only accept references to whitelisted environment variables matching `^AGENT_BRIDGE_CB_[A-Z0-9_]+$` (or explicitly listed in the project's `allowed_env`), with optional scheme prefixes such as `"Bearer $AGENT_BRIDGE_CB_TOKEN"`. System and credential variables (such as `HOME`, `PATH`, `GITHUB_TOKEN`) and raw secret literals are rejected. If a referenced variable is undefined at callback time, the callback is aborted with an error rather than sent with an empty or literal header.
+
 ### Read-only queries in Gemini
 
 Read-only filesystem, status, and diagnostic tools declare MCP `readOnlyHint: true`

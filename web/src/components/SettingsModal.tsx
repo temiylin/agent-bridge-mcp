@@ -130,12 +130,14 @@ export const SettingsModal: React.FC = () => {
       }
       const hKey = trimmed.slice(0, eqIdx).trim();
       const hVal = trimmed.slice(eqIdx + 1).trim();
-      const envName = hVal.startsWith('$') ? hVal.slice(1).trim() : hVal;
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
-        setProjError(`回调密钥只允许填写环境变量名（如 $VISION_HUB_TOKEN），禁止直接填入密钥明文: "${hVal}"`);
+      const m = hVal.match(/^(?:([A-Za-z0-9._-]+)\s+)?\$?(?:\{([A-Za-z0-9_]+)\}|([A-Za-z0-9_]+))$/);
+      if (!m) {
+        setProjError(`回调密钥只允许填写环境变量名（如 $AGENT_BRIDGE_CB_TOKEN 或 Bearer $AGENT_BRIDGE_CB_TOKEN），禁止直接填入密钥明文: "${hVal}"`);
         return;
       }
-      callbackHeaders[hKey] = `$${envName}`;
+      const prefix = m[1];
+      const envName = m[2] || m[3];
+      callbackHeaders[hKey] = prefix ? `${prefix} $${envName}` : `$${envName}`;
     }
 
     const testCmds = projForm.test_commands_text

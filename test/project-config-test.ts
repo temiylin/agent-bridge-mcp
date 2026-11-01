@@ -8,6 +8,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createBridgeMcpServer } from "../src/server.js";
 import { startHttpServer } from "../src/http-server.js";
 import { writeStatus } from "../src/status.js";
+import { resolveCallbackHeaders } from "../src/callback.js";
+import { checkForbiddenRemotePush, parseGitRemoteUrlParts } from "../src/project-router.js";
 
 function initTestGitRepo(dir: string) {
   fs.mkdirSync(dir, { recursive: true });
@@ -37,8 +39,11 @@ async function runTests() {
   // Configure remotes in vision_hub:
   // origin -> Gitee (should be forbidden by URL!)
   // github -> GitHub (allowed push remote)
+  // gitee_sync -> GitHub repo named "gitee-sync" (must NOT be false-positive blocked when rule is "gitee" or "gitee.com")
   spawnSync("git", ["remote", "add", "origin", "https://gitee.com/org/vision_hub.git"], { cwd: repoDir });
   spawnSync("git", ["remote", "add", "github", "https://github.com/org/vision_hub.git"], { cwd: repoDir });
+  spawnSync("git", ["remote", "add", "gitee_sync", "https://github.com/org/gitee-sync.git"], { cwd: repoDir });
+  spawnSync("git", ["remote", "add", "ssh_port_gitee", "ssh://git@gitee.com:2222/org/vision_hub.git"], { cwd: repoDir });
 
   // Configure agents.json with a fast mock agent so send_task can run quickly
   fs.writeFileSync(
@@ -62,8 +67,8 @@ async function runTests() {
     "utf8"
   );
 
-  // Set secret in process.env to verify it is NEVER exposed in list_projects or GET /api/projects
-  process.env.VISION_HUB_SECRET_TOKEN = "super_secret_token_value_999";
+  // Set whitelisted secret in process.env to verify it is NEVER exposed in list_projects or GET /api/projects
+  process.env.AGENT_BRIDGE_CB_VISION_HUB_TOKEN = "super_secret_token_value_999";
 
   const bridgeInstance = createBridgeMcpServer(tmpRoot);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -96,9 +101,9 @@ async function runTests() {
     assert.strictEqual(nonGitRes.isError, true, "Non-git directory must fail");
 
     // ------------------------------------------------------------------
-    // 2. Callback Headers Secret Protection
+    // 2. Callback Headers Whitelist & Secret Protection ($HOME, $PATH, $GITHUB_TOKEN rejected; Bearer $AGENT_BRIDGE_CB_* allowed)
     // ------------------------------------------------------------------
-    console.log("[Test 2] Enforcing env-var-only callback_headers...");
+    console.log("[Test 2] Enforcing whitelisted env-var-only callback_headers...");
     const rawSecretRes = await client.callTool({
       name: "add_project",
       arguments: {
@@ -111,7 +116,46 @@ async function runTests() {
     });
     assert.strictEqual(rawSecretRes.isError, true, "Raw secret with spaces/Bearer must be rejected");
 
-    // Valid add_project
+    for (const forbiddenEnv of ["$HOME", "$PATH", "$GITHUB_TOKEN", "Bearer $HOME", "$UNWHITELISTED_RANDOM_VAR"]) {
+      const forbiddenEnvRes = await client.callTool({
+        name: "add_project",
+        arguments: {
+          id: "bad_env_proj",
+          repo_path: repoDir,
+          callback_headers: {
+            Authorization: forbiddenEnv,
+          },
+        },
+      });
+      assert.strictEqual(
+        forbiddenEnvRes.isError,
+        true,
+        `Forbidden or non-whitelisted env var "${forbiddenEnv}" must be rejected`
+      );
+    }
+
+    // Also verify resolveCallbackHeaders behavior on project headers:
+    // - Rejects bare literal strings when strictEnvOnly is true
+    // - Throws when referenced env var is undefined
+    // - Supports "Bearer $AGENT_BRIDGE_CB_..."
+    assert.throws(
+      () => resolveCallbackHeaders({ Authorization: "plain-secret-literal" }, { strictEnvOnly: true }),
+      /must reference an environment variable/,
+      "strictEnvOnly must reject bare literal strings"
+    );
+    delete process.env.AGENT_BRIDGE_CB_MISSING_VAR;
+    assert.throws(
+      () => resolveCallbackHeaders({ Authorization: "Bearer $AGENT_BRIDGE_CB_MISSING_VAR" }, { strictEnvOnly: true }),
+      /not set in process\.env/,
+      "Undefined env var must throw and abort callback"
+    );
+    const resolvedBearer = resolveCallbackHeaders(
+      { Authorization: "Bearer $AGENT_BRIDGE_CB_VISION_HUB_TOKEN" },
+      { strictEnvOnly: true }
+    );
+    assert.strictEqual(resolvedBearer["Authorization"], "Bearer super_secret_token_value_999");
+
+    // Valid add_project using "Bearer $AGENT_BRIDGE_CB_VISION_HUB_TOKEN"
     const addRes = await client.callTool({
       name: "add_project",
       arguments: {
@@ -128,7 +172,7 @@ async function runTests() {
         default_timeout_seconds: 1200,
         callback_url: "http://127.0.0.1:9999/webhook",
         callback_headers: {
-          Authorization: "$VISION_HUB_SECRET_TOKEN",
+          Authorization: "Bearer $AGENT_BRIDGE_CB_VISION_HUB_TOKEN",
         },
         verify_pr: {
           test_commands: ["pnpm build", "pytest"],
@@ -148,18 +192,47 @@ async function runTests() {
     const listData = JSON.parse(listText);
     const vhProj = listData.projects.find((p: any) => p.id === "vision_hub");
     assert.ok(vhProj, "vision_hub must be listed");
-    assert.strictEqual(vhProj.callback_headers.Authorization, "$VISION_HUB_SECRET_TOKEN");
+    assert.strictEqual(vhProj.callback_headers.Authorization, "Bearer $AGENT_BRIDGE_CB_VISION_HUB_TOKEN");
     assert.strictEqual(vhProj.path_valid, true);
-    console.log("✓ Test 1 & 2 passed: Path validation & callback env-var sanitization verified.");
+    console.log("✓ Test 1 & 2 passed: Path validation, env-var whitelist ($HOME rejected, Bearer $VAR supported), and sanitization verified.");
 
     // ------------------------------------------------------------------
-    // 3. URL-based forbidden_remotes in git_push (without touching .git/config)
+    // 3. URL-based forbidden_remotes (strict host / host+path prefix, ssh://host:port/path, no substring false positives) & git_push refspec "-" guard
     // ------------------------------------------------------------------
-    console.log("[Test 3] Testing URL-based forbidden_remotes in git_push...");
+    console.log("[Test 3] Testing URL-based forbidden_remotes & refspec flag guard in git_push and merge_and_deploy...");
     const gitConfigBefore = fs.readFileSync(path.join(repoDir, ".git", "config"), "utf8");
     const hooksExistBefore = fs.existsSync(path.join(repoDir, ".git", "hooks", "pre-push"));
 
-    // Attempt to push to "origin" (whose URL is https://gitee.com/org/vision_hub.git)
+    // 3a. Verify ssh://host:port/path parsing
+    const sshParts = parseGitRemoteUrlParts("ssh://git@gitee.com:2222/org/vision_hub.git");
+    assert.strictEqual(sshParts.host, "gitee.com");
+    assert.strictEqual(sshParts.path, "org/vision_hub");
+    assert.strictEqual(sshParts.normalized, "gitee.com/org/vision_hub");
+
+    // 3b. Verify NO false positives on "github.com/org/gitee-sync" or "github.com.evil"
+    const falsePosCheck1 = checkForbiddenRemotePush(repoDir, "https://github.com/org/gitee-sync.git", {
+      id: "vision_hub",
+      name: "Vision Hub",
+      forbidden_remotes: ["gitee.com", "gitee"],
+    });
+    assert.strictEqual(falsePosCheck1.forbidden, false, "github.com/org/gitee-sync must NOT be blocked by gitee/gitee.com rule");
+
+    const falsePosCheck2 = checkForbiddenRemotePush(repoDir, "https://github.com.evil/org/repo.git", {
+      id: "vision_hub",
+      name: "Vision Hub",
+      forbidden_remotes: ["github.com"],
+    });
+    assert.strictEqual(falsePosCheck2.forbidden, false, "github.com.evil must NOT match github.com host rule");
+
+    // Verify subdomain and ssh://host:port/path DO match
+    const sshPortCheck = checkForbiddenRemotePush(repoDir, "ssh_port_gitee", {
+      id: "vision_hub",
+      name: "Vision Hub",
+      forbidden_remotes: ["gitee.com"],
+    });
+    assert.strictEqual(sshPortCheck.forbidden, true, "ssh://git@gitee.com:2222/org/vision_hub.git must be blocked by gitee.com");
+
+    // 3c. Attempt to push to "origin" (whose URL is https://gitee.com/org/vision_hub.git)
     const pushOriginRes = await client.callTool({
       name: "git_push",
       arguments: {
@@ -176,19 +249,116 @@ async function runTests() {
       `Expected URL-based forbidden_remotes error, got: ${pushErrText}`
     );
 
+    // 3d. Attempt git_push with refspec starting with "-" (e.g. "--force" or "--mirror")
+    const pushDashRefspecRes = await client.callTool({
+      name: "git_push",
+      arguments: {
+        repo_path: repoDir,
+        project_id: "vision_hub",
+        remote: "github",
+        refspec: "--force",
+      },
+    });
+    assert.strictEqual(pushDashRefspecRes.isError, true, 'refspec "--force" starting with "-" must be rejected');
+    assert.ok(
+      (pushDashRefspecRes.content as any)[0].text.includes('cannot be empty or start with "-"'),
+      "Expected refspec flag rejection error"
+    );
+
+    // 3e. Verify merge_and_deploy also enforces forbidden_remotes (when remote resolves to origin/gitee.com)
+    await client.callTool({
+      name: "update_project",
+      arguments: {
+        id: "vision_hub",
+        merge_deploy: {
+          checkout_path: repoDir,
+          target_branch: "develop",
+          remote: "origin",
+        },
+      },
+    });
+    const mergeDeployForbiddenRes = await client.callTool({
+      name: "merge_and_deploy",
+      arguments: {
+        project: "vision_hub",
+        pr_number: 1,
+      },
+    });
+    assert.strictEqual(mergeDeployForbiddenRes.isError, true, "merge_and_deploy must block forbidden remote");
+    assert.ok(
+      (mergeDeployForbiddenRes.content as any)[0].text.includes("forbidden by project"),
+      "merge_and_deploy should report forbidden_remotes reason"
+    );
+
     // Ensure main repo's .git/config and hooks were NOT modified
     const gitConfigAfter = fs.readFileSync(path.join(repoDir, ".git", "config"), "utf8");
     const hooksExistAfter = fs.existsSync(path.join(repoDir, ".git", "hooks", "pre-push"));
     assert.strictEqual(gitConfigAfter, gitConfigBefore, ".git/config in main repo must NEVER be modified");
     assert.strictEqual(hooksExistAfter, hooksExistBefore, "pre-push hook must NEVER be installed in main repo");
-    console.log("✓ Test 3 passed: URL-based forbidden_remotes blocked push to Gitee without touching .git/config.");
+    console.log("✓ Test 3 passed: Strict URL matching, ssh://host:port, refspec '--force' rejection, and merge_and_deploy guard verified.");
+
+    // ------------------------------------------------------------------
+    // 3.5. Corrupt projects.json Protection & .bak Backup
+    // ------------------------------------------------------------------
+    console.log("[Test 3.5] Testing corrupt projects.json write rejection & .bak backup...");
+    const projectsJsonPath = path.join(tmpRoot, "projects.json");
+    const validProjectsJsonSnapshot = fs.readFileSync(projectsJsonPath, "utf8");
+    // Verify .bak was created during update_project above
+    assert.ok(fs.existsSync(`${projectsJsonPath}.bak`), "projects.json.bak must be created before writes");
+
+    const corruptContent = "{ THIS IS CORRUPT JSON !!! ";
+    fs.writeFileSync(projectsJsonPath, corruptContent, "utf8");
+
+    const addOnCorruptRes = await client.callTool({
+      name: "add_project",
+      arguments: {
+        id: "new_proj_on_corrupt",
+        repo_path: legacyRepoDir,
+      },
+    });
+    assert.strictEqual(addOnCorruptRes.isError, true, "add_project must fail when projects.json is corrupt");
+    assert.strictEqual(
+      fs.readFileSync(projectsJsonPath, "utf8"),
+      corruptContent,
+      "Corrupt projects.json must NOT be overwritten on add_project"
+    );
+
+    const updateOnCorruptRes = await client.callTool({
+      name: "update_project",
+      arguments: {
+        id: "vision_hub",
+        name: "Should Fail",
+      },
+    });
+    assert.strictEqual(updateOnCorruptRes.isError, true, "update_project must fail when projects.json is corrupt");
+    assert.strictEqual(
+      fs.readFileSync(projectsJsonPath, "utf8"),
+      corruptContent,
+      "Corrupt projects.json must NOT be overwritten on update_project"
+    );
+
+    const removeOnCorruptRes = await client.callTool({
+      name: "remove_project",
+      arguments: {
+        project_id: "vision_hub",
+      },
+    });
+    assert.strictEqual(removeOnCorruptRes.isError, true, "remove_project must fail when projects.json is corrupt");
+    assert.strictEqual(
+      fs.readFileSync(projectsJsonPath, "utf8"),
+      corruptContent,
+      "Corrupt projects.json must NOT be overwritten on remove_project"
+    );
+
+    // Restore valid projects.json
+    fs.writeFileSync(projectsJsonPath, validProjectsJsonSnapshot, "utf8");
+    console.log("✓ Test 3.5 passed: Corrupt projects.json strictly refused writes and preserved original file.");
 
     // ------------------------------------------------------------------
     // 4. Dispatching with project_id & Single-Task Override & Legacy paths[0]
     // ------------------------------------------------------------------
     console.log("[Test 4] Testing send_task with project_id defaults, overrides, and legacy paths[0]...");
     // Add a legacy project directly to projects.json using only paths: [legacyRepoDir]
-    const projectsJsonPath = path.join(tmpRoot, "projects.json");
     const rawCfg = JSON.parse(fs.readFileSync(projectsJsonPath, "utf8"));
     rawCfg.projects["legacy_proj"] = {
       name: "Legacy Project",
@@ -222,7 +392,7 @@ async function runTests() {
     assert.ok(task1Md.includes(`- **Account**: pool_acc_1`));
     assert.ok(task1Md.includes(`- **Hard Timeout Seconds**: 1200`));
     assert.ok(task1Md.includes(`- **Callback URL**: http://127.0.0.1:9999/webhook`));
-    assert.ok(task1Md.includes(`"$VISION_HUB_SECRET_TOKEN"`));
+    assert.ok(task1Md.includes(`"Bearer $AGENT_BRIDGE_CB_VISION_HUB_TOKEN"`));
     assert.ok(task1Md.includes("[Project Git Constraints"), "Prompt should include Project Git Constraints note");
 
     // 4b. Single-task override
@@ -291,7 +461,7 @@ async function runTests() {
     console.log("✓ Test 5 passed: Task status and project filtering verified.");
 
     // ------------------------------------------------------------------
-    // 6. Pre-deletion Active Task Check on remove_project
+    // 6. Pre-deletion Active Task Check on remove_project (using project_id parameter)
     // ------------------------------------------------------------------
     console.log("[Test 6] Testing pre-deletion active task check on remove_project...");
     // Simulate an active running task for vision_hub (with live current process PID so reconcile keeps it running)
@@ -307,7 +477,7 @@ async function runTests() {
 
     const removeWhileRunningRes = await client.callTool({
       name: "remove_project",
-      arguments: { id: "vision_hub" },
+      arguments: { project_id: "vision_hub" },
     });
     assert.strictEqual(removeWhileRunningRes.isError, true, "remove_project must refuse when task is running");
     assert.ok((removeWhileRunningRes.content as any)[0].text.includes(activeTaskId));
@@ -338,13 +508,13 @@ async function runTests() {
     assert.strictEqual(sendMovedRes.isError, true, "send_task must re-validate repo_path and fail if moved");
     fs.renameSync(movedRepoDir, legacyRepoDir);
 
-    // Now remove legacy_proj (no active tasks)
+    // Now remove legacy_proj using unified `project_id` parameter (no active tasks)
     const removeOkRes = await client.callTool({
       name: "remove_project",
-      arguments: { id: "legacy_proj" },
+      arguments: { project_id: "legacy_proj" },
     });
     assert.ok(!removeOkRes.isError, `remove_project should succeed once no active tasks: ${JSON.stringify(removeOkRes.content)}`);
-    console.log("✓ Test 6 passed: Pre-deletion check and dispatch-time path re-validation verified.");
+    console.log("✓ Test 6 passed: Pre-deletion check (with project_id) and dispatch-time path re-validation verified.");
 
     // ------------------------------------------------------------------
     // 7. HTTP /api/projects Security & DNS Rebinding Protection
@@ -355,10 +525,6 @@ async function runTests() {
 
     try {
       // 7a. DNS Rebinding Host Header check -> 403
-      const dnsRebindRes = await fetch(`${baseUrl}/api/projects`, {
-        headers: { Host: "evil.attacker.com" },
-      });
-      // Note: Node's fetch (undici) may ignore forbidden Host header overrides, so test with http.request as well
       const rawHostStatus = await new Promise<number>((resolve, reject) => {
         import("node:http").then(({ default: http }) => {
           const req = http.request(

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveBridgeRoot } from "./config.js";
-import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
+import { loadProjectsConfig, getProjectRepoPath, checkForbiddenRemotePush } from "./project-router.js";
 import { restartService, RestartServiceResult } from "./service-manager.js";
 import { BridgeLogger } from "./logger.js";
 
@@ -72,6 +72,25 @@ export async function mergeAndDeploy(
     };
   }
 
+  const targetBranch = proj.merge_deploy?.target_branch || proj.default_base_branch || "develop";
+  const remoteName = proj.merge_deploy?.remote || proj.push_remote || "origin";
+
+  // Enforce URL-based forbidden_remotes check before merging/deploying
+  const forbiddenCheck = checkForbiddenRemotePush(checkoutDir, remoteName, proj);
+  if (forbiddenCheck.forbidden) {
+    logger?.warn(`merge_and_deploy blocked for project "${projectId}", remote="${remoteName}": ${forbiddenCheck.reason}`);
+    return {
+      success: false,
+      project: projectId,
+      prNumber,
+      merged: false,
+      fastForwarded: false,
+      changedFiles: [],
+      restartedServices: [],
+      error: forbiddenCheck.reason || `Remote "${remoteName}" is forbidden by project configuration.`,
+    };
+  }
+
   const ghBin = resolveGhCli();
 
   // 1. Get changed files of PR before merging
@@ -119,8 +138,6 @@ export async function mergeAndDeploy(
   }
 
   // 3. Fast-forward configured checkout
-  const targetBranch = proj.merge_deploy?.target_branch || proj.default_base_branch || "develop";
-  const remoteName = proj.merge_deploy?.remote || proj.push_remote || "origin";
   logger?.info(`merge_and_deploy: Fast-forwarding branch ${targetBranch} in ${checkoutDir}`);
   let fastForwarded = false;
 

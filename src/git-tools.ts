@@ -353,6 +353,30 @@ export function registerGitTools(
       // Resolve project by cwd if not already matched by project_id
       const activeProject = project || resolveProject(rootDir, { projectDir: cwd }).project;
       const effectiveRemote = (remote && remote.trim()) || activeProject?.push_remote || "origin";
+      const cleanRefspec = (refspec || "").trim();
+
+      if (!cleanRefspec || cleanRefspec.startsWith("-")) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Invalid refspec "${refspec}". Refspec cannot be empty or start with "-" (flags such as "--force" are not allowed in refspec).`,
+            },
+          ],
+        };
+      }
+      if (effectiveRemote.startsWith("-")) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Invalid remote "${effectiveRemote}". Remote name cannot start with "-".`,
+            },
+          ],
+        };
+      }
 
       // URL-based forbidden_remotes check (does NOT modify user git config)
       const forbiddenCheck = checkForbiddenRemotePush(cwd, effectiveRemote, activeProject);
@@ -369,7 +393,7 @@ export function registerGitTools(
         };
       }
 
-      const args = ["push", effectiveRemote, refspec.trim()];
+      const args = ["push", effectiveRemote, cleanRefspec];
       if (force) {
         args.push("--force-with-lease");
       }

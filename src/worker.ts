@@ -956,6 +956,15 @@ async function executeTaskFile(
   } catch {}
 
   let effectiveWorkingDir = projectDir && fs.existsSync(projectDir) ? projectDir : undefined;
+  let matchedTaskProj = undefined as ReturnType<typeof loadProjectsConfig>["projects"][string] | undefined;
+  try {
+    const projConfig = loadProjectsConfig(currentRoot);
+    matchedTaskProj = Object.values(projConfig.projects).find(
+      (p) =>
+        (projectId && p.id.toLowerCase() === projectId.toLowerCase()) ||
+        (projectDir && (getProjectRepoPath(p) === projectDir || (p.paths && p.paths.includes(projectDir))))
+    );
+  } catch {}
 
   // Worktree setup if requested
   if (worktreeName) {
@@ -983,6 +992,7 @@ async function executeTaskFile(
         sendCompletionCallback({
           url: callbackUrl,
           headers: callbackHeaders,
+          allowedEnv: matchedTaskProj?.allowed_env,
           taskId,
           agent: agentName,
           status: "failed",
@@ -1040,6 +1050,7 @@ async function executeTaskFile(
         sendCompletionCallback({
           url: callbackUrl,
           headers: callbackHeaders,
+          allowedEnv: matchedTaskProj?.allowed_env,
           taskId,
           agent: agentName,
           status: "failed",
@@ -1100,6 +1111,7 @@ async function executeTaskFile(
           sendCompletionCallback({
             url: callbackUrl,
             headers: callbackHeaders,
+            allowedEnv: matchedTaskProj?.allowed_env,
             taskId,
             agent: agentName,
             status: "overdue",
@@ -1845,6 +1857,7 @@ async function executeTaskFile(
     sendCompletionCallback({
       url: callbackUrl,
       headers: callbackHeaders,
+      allowedEnv: matchedTaskProj?.allowed_env,
       taskId,
       agent: agentName,
       status: terminalStatus,

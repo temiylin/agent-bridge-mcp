@@ -65,10 +65,17 @@ export interface ProjectDefinition {
   slack_user_id?: string;
   callback_url?: string;
   /**
-   * Callback HTTP headers where values reference environment variable names (e.g. "$VISION_HUB_TOKEN" or "VISION_HUB_TOKEN").
-   * Never stores raw secret values when edited from the dashboard.
+   * Callback HTTP headers where values reference whitelisted environment variable names
+   * (must match `^AGENT_BRIDGE_CB_[A-Z0-9_]+$` or be listed in `allowed_env`),
+   * optionally with a scheme prefix such as `"Bearer $AGENT_BRIDGE_CB_TOKEN"`.
+   * Never stores raw secret values.
    */
   callback_headers?: Record<string, string>;
+  /**
+   * Optional explicit whitelist of environment variable names allowed in `callback_headers` for this project.
+   * Built-in sensitive system/credential env vars (e.g. HOME, PATH, GITHUB_TOKEN) are always forbidden.
+   */
+  allowed_env?: string[];
   description?: string;
   services?: Record<string, ServiceConfig>;
   verify_pr?: VerifyPrConfig;
@@ -192,22 +199,82 @@ export function validateGitRepoPath(repoPath: string): {
 }
 
 /**
+ * Parses a Git remote URL or rule into `{ host, path }` (lowercased, port stripped, trailing `.git` stripped).
+ * Correctly handles:
+ * - `https://github.com/org/repo.git` -> `{ host: "github.com", path: "org/repo" }`
+ * - `ssh://git@gitlab.example.com:2222/org/repo.git` -> `{ host: "gitlab.example.com", path: "org/repo" }`
+ * - `git@gitee.com:org/repo.git` -> `{ host: "gitee.com", path: "org/repo" }`
+ * - `gitee.com` -> `{ host: "gitee.com", path: "" }`
+ * - `gitee.com/org` -> `{ host: "gitee.com", path: "org" }`
+ */
+export function parseGitRemoteUrlParts(rawUrl: string): { host: string; path: string; normalized: string } {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    return { host: "", path: "", normalized: "" };
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return { host: "", path: "", normalized: "" };
+  }
+
+  let host = "";
+  let urlPath = "";
+
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      host = (parsed.hostname || "").toLowerCase();
+      urlPath = decodeURIComponent(parsed.pathname || "");
+    } catch {
+      // Fallback if URL constructor fails
+      let rest = trimmed.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+      rest = rest.replace(/^[^@/]+@/, "");
+      const slashIdx = rest.indexOf("/");
+      const hostPort = slashIdx >= 0 ? rest.slice(0, slashIdx) : rest;
+      host = hostPort.replace(/:\d+$/, "").toLowerCase();
+      urlPath = slashIdx >= 0 ? rest.slice(slashIdx + 1) : "";
+    }
+  } else {
+    let rest = trimmed.replace(/^[^@/]+@/, "");
+    const colonIdx = rest.indexOf(":");
+    const slashIdx = rest.indexOf("/");
+    if (colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx)) {
+      const hostPart = rest.slice(0, colonIdx);
+      const afterColon = rest.slice(colonIdx + 1);
+      // Handle accidental host:port/path without scheme vs SCP host:path
+      if (/^\d+\//.test(afterColon)) {
+        host = hostPart.toLowerCase();
+        urlPath = afterColon.replace(/^\d+\//, "");
+      } else {
+        host = hostPart.toLowerCase();
+        urlPath = afterColon;
+      }
+    } else if (slashIdx > 0) {
+      host = rest.slice(0, slashIdx).replace(/:\d+$/, "").toLowerCase();
+      urlPath = rest.slice(slashIdx + 1);
+    } else {
+      host = rest.replace(/:\d+$/, "").toLowerCase();
+      urlPath = "";
+    }
+  }
+
+  urlPath = urlPath
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+
+  const normalized = urlPath ? `${host}/${urlPath}` : host;
+  return { host, path: urlPath, normalized };
+}
+
+/**
  * Normalizes a Git remote URL for comparison:
  * e.g. "git@gitee.com:org/repo.git" -> "gitee.com/org/repo"
+ *      "ssh://git@gitee.com:2222/org/repo.git" -> "gitee.com/org/repo"
  *      "https://github.com/org/repo.git/" -> "github.com/org/repo"
  */
 export function normalizeGitRemoteUrl(rawUrl: string): string {
-  if (!rawUrl || typeof rawUrl !== "string") return "";
-  let s = rawUrl.trim().toLowerCase();
-  // Strip protocol (https://, http://, ssh://, git://)
-  s = s.replace(/^[a-z0-9+.-]+:\/\//, "");
-  // Strip user@ prefix (e.g. git@)
-  s = s.replace(/^[^@/]+@/, "");
-  // Convert SCP-style host:path (git@gitee.com:org/repo) to host/path
-  s = s.replace(/^([^/:]+):/, "$1/");
-  // Strip trailing slashes and .git suffix
-  s = s.replace(/\/+$/, "").replace(/\.git$/, "");
-  return s;
+  return parseGitRemoteUrlParts(rawUrl).normalized;
 }
 
 /**
@@ -248,9 +315,35 @@ export function getGitRemotePushUrl(repoDir: string, remoteOrUrl: string): strin
 }
 
 /**
+ * Checks whether a parsed actual remote URL (`actual`) matches a parsed forbidden rule (`ruleParts`).
+ * Strictly allows ONLY:
+ * 1. Host exact match (`actual.host === ruleParts.host`) or subdomain match (`actual.host.endsWith("." + ruleParts.host)`)
+ * 2. When `ruleParts.path` is non-empty, `actual.path` must also match `ruleParts.path` exactly or as a `/`-delimited prefix (`actual.path.startsWith(ruleParts.path + "/")`).
+ * Never uses loose substring `.includes()` matching (so `github.com/org/gitee-sync` or `github.com.evil` will NOT false-match).
+ */
+function matchesParsedRemoteRule(
+  actual: { host: string; path: string },
+  ruleParts: { host: string; path: string }
+): boolean {
+  if (!actual.host || !ruleParts.host) return false;
+  const hostMatches =
+    actual.host === ruleParts.host || actual.host.endsWith(`.${ruleParts.host}`);
+  if (!hostMatches) return false;
+
+  if (!ruleParts.path) {
+    return true;
+  }
+  if (!actual.path) {
+    return false;
+  }
+  return (
+    actual.path === ruleParts.path || actual.path.startsWith(`${ruleParts.path}/`)
+  );
+}
+
+/**
  * Checks whether pushing to `remoteNameOrUrl` in `repoDir` is forbidden by the project's `forbidden_remotes`.
- * Matching is strictly URL-based (comparing resolved remote URL against forbidden URL/domain/path patterns),
- * with a fallback if the user configured a domain/URL substring like "gitee.com" or full URL.
+ * Matching is strictly URL-based (host exact/subdomain match, or host + path-prefix match; no loose substring match).
  * Does NOT modify any git config or hooks in the user's repository.
  */
 export function checkForbiddenRemotePush(
@@ -271,61 +364,104 @@ export function checkForbiddenRemotePush(
     return { forbidden: false, remoteName, resolvedUrl };
   }
 
-  const normActualUrl = normalizeGitRemoteUrl(resolvedUrl);
+  const actualParts = parseGitRemoteUrlParts(resolvedUrl);
 
   for (const rawRule of forbiddenList) {
     const rule = (rawRule || "").trim();
     if (!rule) continue;
-    const normRule = normalizeGitRemoteUrl(rule);
-    if (!normRule) continue;
 
-    // Match against the resolved remote URL (host, host/org/repo, or substring)
-    if (normActualUrl) {
-      const actualHost = normActualUrl.split("/")[0];
-      if (
-        normActualUrl === normRule ||
-        actualHost === normRule ||
-        actualHost.endsWith(`.${normRule}`) ||
-        normActualUrl.startsWith(`${normRule}/`) ||
-        normActualUrl.includes(normRule)
-      ) {
-        return {
-          forbidden: true,
-          remoteName,
-          resolvedUrl,
-          matchedRule: rule,
-          reason: `Push to remote "${remoteName}" (URL: ${resolvedUrl}) is forbidden by project "${project?.id}" rule "${rule}".${
-            project?.push_remote ? ` Allowed push_remote is "${project.push_remote}".` : ""
-          }`,
-        };
+    // If rule is a configured remote name in this repo (without '.' or '/'), resolve that remote's URL first
+    let ruleParts = parseGitRemoteUrlParts(rule);
+    if (!rule.includes(".") && !rule.includes("/") && !rule.includes(":")) {
+      const namedRemoteUrl = getGitRemotePushUrl(repoDir, rule);
+      if (namedRemoteUrl) {
+        ruleParts = parseGitRemoteUrlParts(namedRemoteUrl);
+      } else {
+        continue;
       }
     }
 
-    // If rule itself is a remote name in this repo, resolve THAT remote's URL and compare URLs!
-    const ruleResolvedUrl = getGitRemotePushUrl(repoDir, rule);
-    if (ruleResolvedUrl && normActualUrl) {
-      const normRuleResolved = normalizeGitRemoteUrl(ruleResolvedUrl);
-      if (normRuleResolved && normActualUrl === normRuleResolved) {
-        return {
-          forbidden: true,
-          remoteName,
-          resolvedUrl,
-          matchedRule: rule,
-          reason: `Push to remote "${remoteName}" (URL: ${resolvedUrl}) matches forbidden remote URL "${ruleResolvedUrl}" (rule "${rule}") in project "${project?.id}".`,
-        };
-      }
+    if (actualParts.host && matchesParsedRemoteRule(actualParts, ruleParts)) {
+      return {
+        forbidden: true,
+        remoteName,
+        resolvedUrl,
+        matchedRule: rule,
+        reason: `Push to remote "${remoteName}" (URL: ${resolvedUrl}) is forbidden by project "${project?.id}" rule "${rule}".${
+          project?.push_remote ? ` Allowed push_remote is "${project.push_remote}".` : ""
+        }`,
+      };
     }
   }
 
   return { forbidden: false, remoteName, resolvedUrl };
 }
 
+export const CALLBACK_ENV_PREFIX_REGEX = /^AGENT_BRIDGE_CB_[A-Z0-9_]+$/;
+
+export const FORBIDDEN_CALLBACK_ENV_NAMES = new Set<string>([
+  "HOME",
+  "USERPROFILE",
+  "PATH",
+  "PWD",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "SSH_AUTH_SOCK",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GITLAB_TOKEN",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "DEVICE_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_WEBHOOK_URL",
+  "NPM_TOKEN",
+  "NODE_OPTIONS",
+]);
+
+export function isAllowedCallbackEnvVarName(
+  envName: string,
+  allowedEnv?: string[]
+): { allowed: boolean; reason?: string } {
+  const trimmed = (envName || "").trim();
+  if (!/^[A-Z_][A-Z0-9_]{1,127}$/.test(trimmed)) {
+    return {
+      allowed: false,
+      reason: `Environment variable name "${envName}" must be uppercase letters, digits, and underscores.`,
+    };
+  }
+  if (FORBIDDEN_CALLBACK_ENV_NAMES.has(trimmed)) {
+    return {
+      allowed: false,
+      reason: `Environment variable "${trimmed}" is a protected system/credential variable and cannot be referenced in callback_headers.`,
+    };
+  }
+  if (CALLBACK_ENV_PREFIX_REGEX.test(trimmed)) {
+    return { allowed: true };
+  }
+  if (Array.isArray(allowedEnv) && allowedEnv.map((x) => String(x).trim()).includes(trimmed)) {
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    reason: `Environment variable "${trimmed}" is not whitelisted. Variable names must match ^AGENT_BRIDGE_CB_[A-Z0-9_]+$ or be explicitly listed in project allowed_env.`,
+  };
+}
+
 /**
- * Validates that callback_headers only reference environment variable names (e.g. "$TOKEN_ENV" or "TOKEN_ENV"),
- * not raw secret literals.
+ * Validates that callback_headers only reference whitelisted environment variable names:
+ * - Supports `"$VAR"`, `"${VAR}"`, bare `"VAR"`, or scheme-prefixed `"Bearer $VAR"` / `"Token ${VAR}"`.
+ * - Every referenced variable must match `^AGENT_BRIDGE_CB_[A-Z0-9_]+$` or be in `allowedEnv` (and never in `FORBIDDEN_CALLBACK_ENV_NAMES`).
+ * - Raw secret literals without `$VAR` reference are strictly rejected.
  */
 export function validateCallbackHeadersEnvRefs(
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  allowedEnv?: string[]
 ): { valid: boolean; sanitized?: Record<string, string>; error?: string } {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     return { valid: true, sanitized: undefined };
@@ -337,21 +473,40 @@ export function validateCallbackHeadersEnvRefs(
     const val = String(rawVal ?? "").trim();
     if (!val) continue;
 
-    // Allow "$ENV_VAR_NAME", "${ENV_VAR_NAME}", or bare "ENV_VAR_NAME" (uppercase/digits/underscores)
-    const unwrapped = val.startsWith("${") && val.endsWith("}")
-      ? val.slice(2, -1).trim()
-      : val.startsWith("$")
-        ? val.slice(1).trim()
-        : val;
+    // Case 1: Bare variable name without '$' (e.g. "AGENT_BRIDGE_CB_TOKEN")
+    if (!val.includes("$")) {
+      if (!/^[A-Z_][A-Z0-9_]{1,127}$/.test(val)) {
+        return {
+          valid: false,
+          error: `Callback header "${key}" must reference a whitelisted environment variable (e.g. "$AGENT_BRIDGE_CB_TOKEN" or "Bearer $AGENT_BRIDGE_CB_TOKEN"), not a raw literal.`,
+        };
+      }
+      const check = isAllowedCallbackEnvVarName(val, allowedEnv);
+      if (!check.allowed) {
+        return { valid: false, error: `Callback header "${key}": ${check.reason}` };
+      }
+      sanitized[key] = `$${val}`;
+      continue;
+    }
 
-    if (!/^[A-Za-z_][A-Za-z0-9_]{1,127}$/.test(unwrapped)) {
+    // Case 2: Contains "$VAR" or "${VAR}" (e.g. "$AGENT_BRIDGE_CB_TOKEN" or "Bearer $AGENT_BRIDGE_CB_TOKEN")
+    // Allow only optional scheme prefix like "Bearer " or "Token " or "Basic " followed by a single $VAR / ${VAR}, or exact "$VAR" / "${VAR}"
+    const templateMatch = val.match(/^(?:([A-Za-z0-9._-]+)\s+)?\$(?:\{([A-Za-z0-9_]+)\}|([A-Za-z0-9_]+))$/);
+    if (!templateMatch) {
       return {
         valid: false,
-        error: `Callback header "${key}" must reference an environment variable name (e.g. "$MY_SECRET_ENV" or "MY_SECRET_ENV"), not a raw secret value.`,
+        error: `Callback header "${key}" has invalid format "${val}". Expected "$AGENT_BRIDGE_CB_XXX" or "Bearer $AGENT_BRIDGE_CB_XXX".`,
       };
     }
-    // Store normalized as "$ENV_VAR_NAME" so resolveCallbackHeaders always reads from process.env
-    sanitized[key] = val.startsWith("$") ? val : `$${unwrapped}`;
+
+    const prefix = templateMatch[1];
+    const envName = templateMatch[2] || templateMatch[3];
+    const check = isAllowedCallbackEnvVarName(envName, allowedEnv);
+    if (!check.allowed) {
+      return { valid: false, error: `Callback header "${key}": ${check.reason}` };
+    }
+
+    sanitized[key] = prefix ? `${prefix} $${envName}` : `$${envName}`;
   }
   return { valid: true, sanitized: Object.keys(sanitized).length > 0 ? sanitized : undefined };
 }
@@ -416,6 +571,9 @@ export function normalizeProjectDefinition(idKey: string, p: any): ProjectDefini
       p?.callback_headers && typeof p.callback_headers === "object" && !Array.isArray(p.callback_headers)
         ? p.callback_headers
         : undefined,
+    allowed_env: Array.isArray(p?.allowed_env)
+      ? p.allowed_env.map((x: any) => String(x).trim()).filter(Boolean)
+      : undefined,
     description:
       typeof p?.description === "string" && p.description.trim() ? p.description.trim() : undefined,
     services:
@@ -430,6 +588,55 @@ export function normalizeProjectDefinition(idKey: string, p: any): ProjectDefini
 }
 
 /**
+ * Strictly reads and parses projects.json without swallowing syntax/schema errors.
+ * Throws if projects.json exists and cannot be parsed as a valid ProjectsConfig object.
+ */
+export function loadProjectsConfigStrict(rootDir: string = resolveBridgeRoot()): ProjectsConfig {
+  const filePath = getProjectsFilePath(rootDir);
+  if (!fs.existsSync(filePath)) {
+    const defaults = getDefaultProjectsConfig();
+    if (!fs.existsSync(rootDir)) {
+      fs.mkdirSync(rootDir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(defaults, null, 2), "utf8");
+    return defaults;
+  }
+
+  const raw = fs.readFileSync(filePath, "utf8");
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err: any) {
+    throw new Error(`Failed to parse projects.json at "${filePath}": ${err?.message || String(err)}`);
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid projects.json at "${filePath}": root must be a JSON object.`);
+  }
+  if (parsed.projects !== undefined && (!parsed.projects || typeof parsed.projects !== "object" || Array.isArray(parsed.projects))) {
+    throw new Error(`Invalid projects.json at "${filePath}": "projects" field must be a JSON object.`);
+  }
+
+  const config: ProjectsConfig = {
+    version: typeof parsed.version === "string" ? parsed.version : "1.0.0",
+    default_channel: typeof parsed.default_channel === "string" ? parsed.default_channel.trim() : "",
+    projects: {},
+  };
+
+  if (parsed.projects) {
+    for (const [key, val] of Object.entries(parsed.projects)) {
+      if (!val || typeof val !== "object" || Array.isArray(val)) {
+        throw new Error(`Invalid project entry "${key}" in projects.json: must be an object.`);
+      }
+      const def = normalizeProjectDefinition(key, val);
+      config.projects[def.id] = def;
+    }
+  }
+
+  return config;
+}
+
+/**
  * Loads projects.json from rootDir with hot-reloading cache.
  */
 export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): ProjectsConfig {
@@ -437,12 +644,7 @@ export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): Proje
 
   try {
     if (!fs.existsSync(filePath)) {
-      const defaults = getDefaultProjectsConfig();
-      if (!fs.existsSync(rootDir)) {
-        fs.mkdirSync(rootDir, { recursive: true });
-      }
-      fs.writeFileSync(filePath, JSON.stringify(defaults, null, 2), "utf8");
-      return defaults;
+      return loadProjectsConfigStrict(rootDir);
     }
 
     const stat = fs.statSync(filePath);
@@ -450,23 +652,7 @@ export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): Proje
       return cachedConfig.config;
     }
 
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-
-    const config: ProjectsConfig = {
-      version: typeof parsed.version === "string" ? parsed.version : "1.0.0",
-      default_channel: typeof parsed.default_channel === "string" ? parsed.default_channel.trim() : "",
-      projects: {},
-    };
-
-    if (parsed.projects && typeof parsed.projects === "object" && !Array.isArray(parsed.projects)) {
-      for (const [key, val] of Object.entries(parsed.projects)) {
-        if (!val || typeof val !== "object") continue;
-        const def = normalizeProjectDefinition(key, val);
-        config.projects[def.id] = def;
-      }
-    }
-
+    const config = loadProjectsConfigStrict(rootDir);
     cachedConfig = { mtimeMs: stat.mtimeMs, config, filePath };
     return config;
   } catch {
@@ -474,15 +660,17 @@ export function loadProjectsConfig(rootDir: string = resolveBridgeRoot()): Proje
   }
 }
 
-/**
- * Saves projects.json atomically.
- */
-export function saveProjectsConfig(rootDir: string, config: ProjectsConfig): void {
+function writeProjectsConfigUnchecked(rootDir: string, config: ProjectsConfig): void {
   const filePath = getProjectsFilePath(rootDir);
+  const bakPath = `${filePath}.bak`;
   const tempPath = path.join(rootDir, `.projects.json.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`);
 
   if (!fs.existsSync(rootDir)) {
     fs.mkdirSync(rootDir, { recursive: true });
+  }
+
+  if (fs.existsSync(filePath)) {
+    fs.copyFileSync(filePath, bakPath);
   }
 
   const normalizedProjects: Record<string, ProjectDefinition> = {};
@@ -504,8 +692,82 @@ export function saveProjectsConfig(rootDir: string, config: ProjectsConfig): voi
 }
 
 /**
+ * Acquires an exclusive file lock (`projects.json.lock` via `O_CREAT | O_EXCL`) with retries,
+ * re-reads and strictly validates `projects.json` inside the lock, runs `mutator(config)`,
+ * backs up `projects.json` to `projects.json.bak`, and atomically writes the updated config.
+ * If `projects.json` is corrupt/unparseable, refuses to overwrite and leaves the original file untouched.
+ */
+export function withProjectsConfigLock<T>(
+  rootDir: string,
+  mutator: (config: ProjectsConfig) => { save: boolean; result: T }
+): T {
+  if (!fs.existsSync(rootDir)) {
+    fs.mkdirSync(rootDir, { recursive: true });
+  }
+  const lockPath = path.join(rootDir, "projects.json.lock");
+  const maxAttempts = 50;
+  const retryDelayMs = 40;
+  const staleLockMs = 15000;
+  let lockFd: number | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      lockFd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+      fs.writeSync(lockFd, `${process.pid}:${Date.now()}\n`);
+      break;
+    } catch (err: any) {
+      if (err?.code === "EEXIST") {
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > staleLockMs) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {}
+        if (attempt === maxAttempts) {
+          throw new Error(`Timed out waiting for projects.json lock at "${lockPath}"`);
+        }
+        // Synchronous short sleep using Atomics.wait
+        const sab = new SharedArrayBuffer(4);
+        Atomics.wait(new Int32Array(sab), 0, 0, retryDelayMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  try {
+    const config = loadProjectsConfigStrict(rootDir);
+    const { save, result } = mutator(config);
+    if (save) {
+      writeProjectsConfigUnchecked(rootDir, config);
+    }
+    return result;
+  } finally {
+    if (lockFd !== null) {
+      try {
+        fs.closeSync(lockFd);
+      } catch {}
+    }
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+      }
+    } catch {}
+  }
+}
+
+/**
+ * Saves projects.json atomically (with lock, strict validation of existing file, and .bak backup).
+ */
+export function saveProjectsConfig(rootDir: string, config: ProjectsConfig): void {
+  withProjectsConfigLock(rootDir, () => ({ save: true, result: undefined }));
+  writeProjectsConfigUnchecked(rootDir, config);
+}
+
+/**
  * Returns a sanitized view of a ProjectDefinition for API / UI responses:
- * callback_headers values are strictly exposed only as environment variable reference names (e.g. "$ENV_NAME"),
+ * callback_headers values are strictly exposed only as environment variable reference names (e.g. "$ENV_NAME" or "Bearer $ENV_NAME"),
  * never resolving or leaking actual secret values from process.env.
  */
 export function sanitizeProjectForClient(proj: ProjectDefinition): ProjectDefinition {
@@ -515,13 +777,11 @@ export function sanitizeProjectForClient(proj: ProjectDefinition): ProjectDefini
     for (const [k, v] of Object.entries(clone.callback_headers)) {
       const raw = String(v ?? "").trim();
       if (!raw) continue;
-      const envName = raw.startsWith("${") && raw.endsWith("}")
-        ? raw.slice(2, -1).trim()
-        : raw.startsWith("$")
-          ? raw.slice(1).trim()
-          : raw;
-      if (/^[A-Za-z_][A-Za-z0-9_]{1,127}$/.test(envName)) {
-        safeHeaders[k] = `$${envName}`;
+      const templateMatch = raw.match(/^(?:([A-Za-z0-9._-]+)\s+)?\$?(?:\{([A-Za-z0-9_]+)\}|([A-Za-z0-9_]+))$/);
+      if (templateMatch) {
+        const prefix = templateMatch[1];
+        const envName = templateMatch[2] || templateMatch[3];
+        safeHeaders[k] = prefix ? `${prefix} $${envName}` : `$${envName}`;
       } else {
         safeHeaders[k] = "$REDACTED_SECRET";
       }

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { resolveBridgeRoot } from "./config.js";
 import { extractLastLines } from "./redaction.js";
+import { isAllowedCallbackEnvVarName } from "./project-router.js";
 
 export type TaskTerminalStatus = "completed" | "failed" | "timeout" | "cancelled" | "stuck" | "overdue";
 
@@ -17,9 +18,21 @@ export interface TaskCallbackPayload {
   last_log_lines?: string[];
 }
 
+export interface ResolveCallbackHeadersOptions {
+  /**
+   * When true (e.g. headers originating from `projects.json`), bare strings are NOT sent as plain literals;
+   * every header must reference a whitelisted environment variable (`^AGENT_BRIDGE_CB_[A-Z0-9_]+$` or `allowedEnv`),
+   * and any undefined variable throws an error so the callback is aborted rather than sent with an empty/raw value.
+   */
+  strictEnvOnly?: boolean;
+  allowedEnv?: string[];
+}
+
 export interface TaskCallbackOptions {
   url?: string;
   headers?: Record<string, string>;
+  strictHeaders?: boolean;
+  allowedEnv?: string[];
   project?: string;
   taskId: string;
   agent: string;
@@ -34,13 +47,16 @@ export interface TaskCallbackOptions {
 }
 
 /**
- * Resolves header dictionary where values may be environment variable names.
- * For each key/value in configured headers:
- * If value starts with "$" or matches an existing process.env variable name, read from env.
- * Otherwise, if process.env[value] is defined, use that secret; fallback to the literal value if not an env var.
- * Secrets are strictly read from env var names rather than forced literals.
+ * Resolves header dictionary where values reference environment variable names:
+ * - Supports `"$VAR"`, `"${VAR}"`, `"Bearer $VAR"` / `"Bearer ${VAR}"`, or bare `"VAR"`.
+ * - Any `$VAR` / `${VAR}` reference that is undefined or empty in `process.env` throws an Error so the request is NOT sent.
+ * - When `options.strictEnvOnly` is true (or when `$VAR` is used), also enforces the callback env var whitelist
+ *   (`^AGENT_BRIDGE_CB_[A-Z0-9_]+$` or `options.allowedEnv`) and rejects bare non-env literal strings.
  */
-export function resolveCallbackHeaders(rawHeaders?: Record<string, string>): Record<string, string> {
+export function resolveCallbackHeaders(
+  rawHeaders?: Record<string, string>,
+  options?: ResolveCallbackHeadersOptions
+): Record<string, string> {
   const resolved: Record<string, string> = {
     "Content-Type": "application/json; charset=utf-8",
     "User-Agent": "agent-bridge-callback/1.0",
@@ -50,16 +66,70 @@ export function resolveCallbackHeaders(rawHeaders?: Record<string, string>): Rec
     return resolved;
   }
 
+  const strict = Boolean(options?.strictEnvOnly);
+  const allowedEnv = options?.allowedEnv;
+
   for (const [key, rawVal] of Object.entries(rawHeaders)) {
     if (typeof rawVal !== "string") continue;
     const val = rawVal.trim();
     if (!val) continue;
 
-    if (val.startsWith("$")) {
-      const envName = val.slice(1);
-      resolved[key] = process.env[envName] || "";
-    } else if (process.env[val] !== undefined) {
-      resolved[key] = process.env[val] || "";
+    // 1. Value contains $VAR or ${VAR} (e.g. "$AGENT_BRIDGE_CB_TOKEN" or "Bearer $AGENT_BRIDGE_CB_TOKEN")
+    if (val.includes("$")) {
+      const m = val.match(/^(?:([A-Za-z0-9._-]+)\s+)?\$(?:\{([A-Za-z0-9_]+)\}|([A-Za-z0-9_]+))$/);
+      if (!m) {
+        throw new Error(
+          `Invalid callback header "${key}" format: "${val}". Expected "$AGENT_BRIDGE_CB_XXX" or "Bearer $AGENT_BRIDGE_CB_XXX".`
+        );
+      }
+      const prefix = m[1];
+      const envName = m[2] || m[3];
+      if (strict) {
+        const wl = isAllowedCallbackEnvVarName(envName, allowedEnv);
+        if (!wl.allowed) {
+          throw new Error(`Callback header "${key}" rejected: ${wl.reason}`);
+        }
+      }
+      const secretVal = process.env[envName];
+      if (secretVal === undefined || secretVal === "") {
+        throw new Error(
+          `Callback header "${key}" references environment variable "${envName}" which is not set in process.env.`
+        );
+      }
+      resolved[key] = prefix ? `${prefix} ${secretVal}` : secretVal;
+      continue;
+    }
+
+    // 2. Bare string without '$'
+    if (strict) {
+      if (!/^[A-Z_][A-Z0-9_]{1,127}$/.test(val)) {
+        throw new Error(
+          `Project callback header "${key}" must reference an environment variable (e.g. "$AGENT_BRIDGE_CB_TOKEN"), not a raw literal.`
+        );
+      }
+      const wl = isAllowedCallbackEnvVarName(val, allowedEnv);
+      if (!wl.allowed) {
+        throw new Error(`Callback header "${key}" rejected: ${wl.reason}`);
+      }
+      const secretVal = process.env[val];
+      if (secretVal === undefined || secretVal === "") {
+        throw new Error(
+          `Callback header "${key}" references environment variable "${val}" which is not set in process.env.`
+        );
+      }
+      resolved[key] = secretVal;
+      continue;
+    }
+
+    // Non-strict legacy task-level header: if it looks like an uppercase env var name, require it from process.env
+    if (/^[A-Z_][A-Z0-9_]{1,127}$/.test(val)) {
+      const secretVal = process.env[val];
+      if (secretVal === undefined || secretVal === "") {
+        throw new Error(
+          `Callback header "${key}" references environment variable "${val}" which is not set in process.env.`
+        );
+      }
+      resolved[key] = secretVal;
     } else {
       resolved[key] = val;
     }
@@ -104,14 +174,42 @@ export function extractLast20LogLines(logPathOrText: string): string[] {
  * Non-blocking: returns a promise that resolves immediately or runs asynchronously.
  */
 export async function sendCompletionCallback(options: TaskCallbackOptions): Promise<{ success: boolean; attempts: number; error?: string }> {
-  const { url, headers, taskId, agent, status, exitCode, durationSeconds, resultPath, logPath, prUrl, outputLog, project, logger } = options;
+  const {
+    url,
+    headers,
+    strictHeaders,
+    allowedEnv,
+    taskId,
+    agent,
+    status,
+    exitCode,
+    durationSeconds,
+    resultPath,
+    logPath,
+    prUrl,
+    outputLog,
+    project,
+    logger,
+  } = options;
 
   if (!url || !url.trim()) {
     return { success: true, attempts: 0 };
   }
 
   const targetUrl = url.trim();
-  const resolvedHeaders = resolveCallbackHeaders(headers);
+  let resolvedHeaders: Record<string, string>;
+  try {
+    resolvedHeaders = resolveCallbackHeaders(headers, {
+      strictEnvOnly: strictHeaders !== undefined ? strictHeaders : Boolean(project),
+      allowedEnv,
+    });
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    if (logger) {
+      logger("ERROR", `Completion callback for task ${taskId} aborted: ${errMsg}`);
+    }
+    return { success: false, attempts: 0, error: errMsg };
+  }
 
   let detectedPrUrl = prUrl;
   if (!detectedPrUrl && outputLog) {
