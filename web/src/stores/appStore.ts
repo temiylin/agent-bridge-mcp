@@ -10,6 +10,8 @@ import type {
   RequirementItem,
   QueueSession,
   ProjectConfigItem,
+  Plan,
+  PlanSummary,
 } from '../types';
 
 interface AppStore {
@@ -69,6 +71,21 @@ interface AppStore {
   pauseQueueSession: (sessionId: string) => Promise<void>;
   resumeQueueSession: (sessionId: string) => Promise<void>;
 
+  // Plans
+  plans: PlanSummary[];
+  activePlan: Plan | null;
+  filterPlan: string;
+  setFilterPlan: (planId: string) => void;
+  loadPlans: () => Promise<void>;
+  loadPlanDetails: (planId: string) => Promise<Plan | null>;
+  savePlan: (action: 'create' | 'update', payload: Record<string, any>) => Promise<{ success: boolean; plan?: Plan; error?: string }>;
+  archivePlan: (planId: string) => Promise<{ success: boolean; error?: string }>;
+  planDrawerOpen: boolean;
+  planDrawerPlanId: string | null;
+  planDrawerStepId: string | null;
+  openPlanDrawer: (planId: string, stepId?: string) => void;
+  closePlanDrawer: () => void;
+
   // UI state
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
@@ -93,6 +110,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   customPoolEnabled: true,
   requirements: [],
   queues: [],
+  plans: [],
+  activePlan: null,
+  filterPlan: 'all',
+  planDrawerOpen: false,
+  planDrawerPlanId: null,
+  planDrawerStepId: null,
   settingsOpen: false,
   toast: null,
 
@@ -115,6 +138,93 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setFilterProject: (proj: string) => {
     set({ filterProject: proj });
     get().loadTasks();
+  },
+
+  setFilterPlan: (planId: string) => {
+    set({ filterPlan: planId });
+    get().loadTasks();
+  },
+
+  loadPlans: async () => {
+    try {
+      const res = await fetch('/api/plans');
+      if (res.ok) {
+        const data = await res.json();
+        set({ plans: data.plans || [] });
+      }
+    } catch (e) {
+      console.error('Failed to load plans:', e);
+    }
+  },
+
+  loadPlanDetails: async (planId: string) => {
+    try {
+      const res = await fetch(`/api/plans?id=${encodeURIComponent(planId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        set({ activePlan: data.plan || null });
+        return data.plan || null;
+      }
+    } catch (e) {
+      console.error('Failed to load plan details:', e);
+    }
+    return null;
+  },
+
+  savePlan: async (action: 'create' | 'update', payload: Record<string, any>) => {
+    try {
+      const res = await fetch('/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        get().loadPlans();
+        get().showToast(action === 'create' ? '计划创建成功' : '计划已更新');
+        return { success: true, plan: data.plan };
+      }
+      return { success: false, error: data.error || '保存计划失败' };
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) };
+    }
+  },
+
+  archivePlan: async (planId: string) => {
+    try {
+      const res = await fetch('/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'archive', plan_id: planId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        get().loadPlans();
+        get().showToast('计划已归档');
+        return { success: true };
+      }
+      return { success: false, error: data.error || '归档计划失败' };
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) };
+    }
+  },
+
+  openPlanDrawer: (planId: string, stepId?: string) => {
+    set({
+      planDrawerOpen: true,
+      planDrawerPlanId: planId,
+      planDrawerStepId: stepId || null,
+    });
+    get().loadPlanDetails(planId);
+  },
+
+  closePlanDrawer: () => {
+    set({
+      planDrawerOpen: false,
+      planDrawerPlanId: null,
+      planDrawerStepId: null,
+      activePlan: null,
+    });
   },
 
   loadProjects: async () => {
@@ -254,10 +364,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     try {
       const projectFilter = get().filterProject;
-      const url =
-        projectFilter && projectFilter !== 'all'
-          ? `/api/tasks?project=${encodeURIComponent(projectFilter)}`
-          : '/api/tasks';
+      const planFilter = get().filterPlan;
+      const params = new URLSearchParams();
+      if (projectFilter && projectFilter !== 'all') {
+        params.set('project', projectFilter);
+      }
+      if (planFilter && planFilter !== 'all') {
+        params.set('plan_id', planFilter);
+      }
+      const url = params.toString() ? `/api/tasks?${params.toString()}` : '/api/tasks';
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();

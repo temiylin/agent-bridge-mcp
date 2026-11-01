@@ -37,6 +37,7 @@ import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback, extractPrUrl } from "./callback.js";
 import { setupGitWorktree } from "./worktree.js";
 import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
+import { recordTaskResultInPlan } from "./plans.js";
 import {
   deriveStage,
   getTaskReportDir,
@@ -193,6 +194,10 @@ export function parseTaskFile(content: string): {
   worktreeName?: string;
   worktreeBaseBranch?: string;
   onSuccess?: any;
+  planId?: string;
+  planStepId?: string;
+  planVersion?: number;
+  planTitle?: string;
 } {
   const agentMatch = content.match(/^-[ \t]*\*\*Agent\*\*:[ \t]*([^\r\n]*)$/m);
   const agentName = agentMatch ? agentMatch[1].trim() : "";
@@ -241,6 +246,19 @@ export function parseTaskFile(content: string): {
       onSuccess = onSuccessMatch[1].trim();
     }
   }
+
+  const planIdMatch = content.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const planId = planIdMatch ? planIdMatch[1].trim() : undefined;
+
+  const planStepIdMatch = content.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/m);
+  const planStepId = planStepIdMatch ? planStepIdMatch[1].trim() : undefined;
+
+  const planVersionMatch = content.match(/^-[ \t]*\*\*Plan Version\*\*:[ \t]*([^\r\n]*)$/m);
+  const planVersion =
+    planVersionMatch && parseInt(planVersionMatch[1], 10) > 0 ? parseInt(planVersionMatch[1], 10) : undefined;
+
+  const planTitleMatch = content.match(/^-[ \t]*\*\*Plan Title\*\*:[ \t]*([^\r\n]*)$/m);
+  const planTitle = planTitleMatch ? planTitleMatch[1].trim() : undefined;
 
   const modelMatch = content.match(/^-[ \t]*\*\*Model\*\*:[ \t]*([^\r\n]*)$/m);
   const model = modelMatch ? modelMatch[1].trim() : "";
@@ -330,6 +348,10 @@ export function parseTaskFile(content: string): {
     ...(worktreeName ? { worktreeName } : {}),
     ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}),
     onSuccess,
+    ...(planId ? { planId } : {}),
+    ...(planStepId ? { planStepId } : {}),
+    ...(planVersion !== undefined ? { planVersion } : {}),
+    ...(planTitle ? { planTitle } : {}),
   };
 }
 
@@ -535,6 +557,10 @@ async function executeTaskFile(
     worktreeBaseBranch,
     onSuccess,
     account,
+    planId,
+    planStepId,
+    planVersion,
+    planTitle,
   } = parseTaskFile(fileContent);
 
   const effectiveHardTimeoutMs = resolveHardKillTimeoutMs(hardTimeoutSeconds, timeoutMs);
@@ -1757,6 +1783,21 @@ async function executeTaskFile(
     question: finalReport.question,
   });
 
+  if (planId && planStepId) {
+    try {
+      recordTaskResultInPlan(currentRoot, {
+        planId,
+        stepId: planStepId,
+        taskId,
+        state: isTimeout ? "timeout" : state,
+        outcome: finalReport.outcome,
+        prUrl: finalPrUrl,
+      });
+    } catch (planErr: any) {
+      logWorker("WARN", `Task ${taskId}: failed to record result to plan ${planId}: ${planErr?.message || String(planErr)}`);
+    }
+  }
+
   writeStatus(currentRoot, taskId, {
     state,
     stage: finalStage,
@@ -1783,6 +1824,10 @@ async function executeTaskFile(
     outcome: finalReport.outcome,
     pr_url: finalPrUrl,
     question: finalReport.question,
+    ...(planId ? { plan_id: planId } : {}),
+    ...(planStepId ? { step_id: planStepId } : {}),
+    ...(planVersion !== undefined ? { plan_version: planVersion } : {}),
+    ...(planTitle ? { plan_title: planTitle } : {}),
   });
 
   releaseAccount();
@@ -1925,6 +1970,9 @@ async function executeTaskFile(
       project: projectName || projectId,
       rootDir: currentRoot,
       logger: logWorker,
+      planId,
+      stepId: planStepId,
+      planTitle,
     }).catch(() => {});
   }
 

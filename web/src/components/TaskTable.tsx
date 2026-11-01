@@ -38,10 +38,14 @@ export const TaskTable: React.FC<TaskTableProps> = ({
   const {
     tasks,
     projects,
+    plans,
     filterStatus,
     setFilterStatus,
     filterProject,
     setFilterProject,
+    filterPlan,
+    setFilterPlan,
+    openPlanDrawer,
     selectedTaskIds,
     toggleSelectTask,
     toggleSelectFilteredTasks,
@@ -93,13 +97,16 @@ export const TaskTable: React.FC<TaskTableProps> = ({
   };
 
   const filteredTasks = tasks.filter((t) => {
+    if (filterPlan && filterPlan !== 'all' && t.plan_id !== filterPlan) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return (
       t.taskId.toLowerCase().includes(q) ||
       (t.session_id && t.session_id.toLowerCase().includes(q)) ||
       (t.project && t.project.toLowerCase().includes(q)) ||
-      (t.account && t.account.toLowerCase().includes(q))
+      (t.account && t.account.toLowerCase().includes(q)) ||
+      (t.plan_id && t.plan_id.toLowerCase().includes(q)) ||
+      (t.plan_title && t.plan_title.toLowerCase().includes(q))
     );
   });
 
@@ -159,6 +166,18 @@ export const TaskTable: React.FC<TaskTableProps> = ({
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   📁 {p.name || p.id}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select select-sm select-bordered font-medium text-xs sm:text-sm"
+              value={filterPlan}
+              onChange={(e) => setFilterPlan(e.target.value)}
+            >
+              <option value="all">按计划筛选 (全部)</option>
+              {plans.map((p) => (
+                <option key={p.id} value={p.id}>
+                  📋 {p.title || p.id}
                 </option>
               ))}
             </select>
@@ -245,6 +264,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                 <th className="w-28">{t('thCreatedAt')}</th>
                 <th className="w-28">{t('thFinishedAt')}</th>
                 <th className="w-24">{t('thPr')}</th>
+                <th className="w-36">引用计划</th>
                 <th>{t('thLogTail')}</th>
                 <th className="text-right w-48">{t('actions')}</th>
               </tr>
@@ -252,7 +272,7 @@ export const TaskTable: React.FC<TaskTableProps> = ({
             <tbody>
               {filteredTasks.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-12 text-base-content/40 text-sm">
+                  <td colSpan={11} className="text-center py-12 text-base-content/40 text-sm">
                     {t('noData')}
                   </td>
                 </tr>
@@ -357,6 +377,23 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                           </a>
                         ) : (
                           <span className="text-base-content/30">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {task.plan_id ? (
+                          <button
+                            type="button"
+                            onClick={() => openPlanDrawer(task.plan_id!, task.step_id)}
+                            className="btn btn-ghost btn-xs text-primary font-medium hover:underline flex items-center gap-1 p-0 h-auto text-left"
+                            title={`查看计划: ${task.plan_title || task.plan_id}`}
+                          >
+                            <span className="truncate max-w-[130px] font-mono text-xs">
+                              {task.plan_title || task.plan_id}
+                              {task.step_id ? ` · ${task.step_id}` : ''}
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="text-base-content/30">–</span>
                         )}
                       </td>
                       <td className="max-w-[260px]">
@@ -650,6 +687,15 @@ export const TaskTable: React.FC<TaskTableProps> = ({
                         >
                           PR
                         </a>
+                      )}
+                      {task.plan_id && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs text-xs px-2 text-primary"
+                          onClick={() => openPlanDrawer(task.plan_id!, task.step_id)}
+                        >
+                          计划: {task.plan_title || task.plan_id}
+                        </button>
                       )}
                     </div>
 

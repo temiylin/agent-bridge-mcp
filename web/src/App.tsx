@@ -5,6 +5,7 @@ import { MetricOverviewCards } from './components/MetricOverviewCards';
 import { TaskTable } from './components/TaskTable';
 import { QuotaOverviewStrip } from './components/QuotaOverviewStrip';
 import { SettingsModal } from './components/SettingsModal';
+import { PlanDrawer } from './components/PlanDrawer';
 import { ActionModals } from './components/ActionModals';
 import { useAppStore } from './stores/appStore';
 import type { TaskItem } from './types';
@@ -13,6 +14,7 @@ export const App: React.FC = () => {
   const {
     loadConfig,
     loadProjects,
+    loadPlans,
     loadSystemStats,
     loadTasks,
     loadPool,
@@ -35,6 +37,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadConfig();
     loadProjects();
+    loadPlans();
     loadSystemStats();
     loadTasks();
     loadPool();
@@ -132,6 +135,9 @@ export const App: React.FC = () => {
 
       {/* Settings Modal (Dedicated Layer including Project Management) */}
       <SettingsModal />
+
+      {/* Plan Details & Steps Drawer */}
+      <PlanDrawer />
 
       {/* Modals for Task Details, Logs, Retry */}
       <ActionModals

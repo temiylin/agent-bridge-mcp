@@ -40,6 +40,8 @@ import {
   buildProjectGitRulesPromptNote,
 } from "./project-router.js";
 import { registerProjectTools } from "./project-tools.js";
+import { registerPlanTools } from "./plan-tools.js";
+import { getPlan, formatPlanPromptPrefix, setPlanStepStatus, Plan, PlanStep } from "./plans.js";
 import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
 
 export interface BridgeMcpServerInstance {
@@ -159,8 +161,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         })
         .optional()
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
+      plan_id: z.string().optional().describe("Optional plan identifier to associate this task with"),
+      step_id: z.string().optional().describe("Optional step identifier within the plan"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete, plan_id, step_id }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -171,6 +175,54 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
                 text: "Error: prompt must be a non-empty string.",
               },
             ],
+          };
+        }
+
+        // Plan & Step validation if plan_id is provided
+        let effectivePlan: Plan | null = null;
+        let effectiveStep: PlanStep | null = null;
+        let planPromptPrefix = "";
+        let planVersion: number | undefined;
+        let planTitle: string | undefined;
+
+        if (plan_id && plan_id.trim()) {
+          const cleanPlanId = plan_id.trim();
+          if (!step_id || !step_id.trim()) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: "Error: step_id is required when plan_id is provided." }],
+            };
+          }
+          const cleanStepId = step_id.trim();
+          try {
+            effectivePlan = getPlan(rootDir, cleanPlanId);
+          } catch (err: any) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error loading plan "${cleanPlanId}": ${err?.message || String(err)}` }],
+            };
+          }
+          if (!effectivePlan) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error: Plan "${cleanPlanId}" not found.` }],
+            };
+          }
+          effectiveStep = effectivePlan.steps.find((s) => s.id === cleanStepId) || null;
+          if (!effectiveStep) {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `Error: Step "${cleanStepId}" not found in plan "${cleanPlanId}".` }],
+            };
+          }
+
+          planPromptPrefix = formatPlanPromptPrefix(rootDir, effectivePlan, effectiveStep);
+          planVersion = effectivePlan.version;
+          planTitle = effectivePlan.title;
+        } else if (step_id && step_id.trim()) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: "Error: step_id cannot be specified without plan_id." }],
           };
         }
 
@@ -372,6 +424,12 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
         if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
+        if (effectivePlan) {
+          headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
+          headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
+          headerMeta += `- **Plan Version**: ${planVersion}\n`;
+          headerMeta += `- **Plan Title**: ${planTitle}\n`;
+        }
 
         // Parse notification settings (boolean or nested object)
         let notifyEnabled: boolean | undefined;
@@ -413,7 +471,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const reportPromptNote = prompt.includes("[Structured Report Requirement]")
           ? ""
           : buildReportJsonPromptInstruction(taskReportDir);
-        const finalPrompt = `${prompt}${gitPromptNote}${reportPromptNote}`;
+        const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${prompt}` : prompt;
+        const finalPrompt = `${promptWithPlan}${gitPromptNote}${reportPromptNote}`;
 
         const content = `# ${taskTitle}
 
@@ -435,6 +494,14 @@ ${finalPrompt}
           state: "dispatched",
         });
 
+        if (effectivePlan && effectiveStep) {
+          try {
+            setPlanStepStatus(rootDir, effectivePlan.id, effectiveStep.id, "in_progress", { taskId });
+          } catch (err: any) {
+            logger.warn(`Failed to update step status for plan ${effectivePlan.id} on send_task: ${err?.message || String(err)}`);
+          }
+        }
+
         try {
           writeStatus(rootDir, taskId, {
             state: "queued",
@@ -445,6 +512,12 @@ ${finalPrompt}
             reasoningEffort: effortParam || undefined,
             account: effectiveAccount,
             startedAt: createdAt,
+            ...(effectivePlan ? {
+              plan_id: effectivePlan.id,
+              step_id: effectiveStep!.id,
+              plan_version: planVersion,
+              plan_title: planTitle,
+            } : {}),
           });
         } catch {}
 
@@ -680,6 +753,7 @@ ${finalPrompt}
   registerAccountResumeTools(server, rootDir, logger);
   registerAccountPoolTools(server, rootDir, logger);
   registerProjectTools(server, rootDir, logger);
+  registerPlanTools(server, rootDir, logger);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

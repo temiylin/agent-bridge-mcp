@@ -51,6 +51,43 @@ export interface TaskItem {
   last_log_line?: string;
   state?: string;
   reason?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
+}
+
+export type PlanStepStatus = 'todo' | 'in_progress' | 'done' | 'failed' | 'skipped';
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  detail: string;
+  status: PlanStepStatus;
+  task_ids: string[];
+  pr_urls: string[];
+}
+
+export interface Plan {
+  id: string;
+  project_id?: string;
+  title: string;
+  context: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  steps: PlanStep[];
+}
+
+export interface PlanSummary {
+  id: string;
+  project_id?: string;
+  title: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  total_steps: number;
+  completed_steps: number;
+  status_summary: Record<PlanStepStatus, number>;
 }
 
 export interface ProjectConfigItem {

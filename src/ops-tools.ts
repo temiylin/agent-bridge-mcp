@@ -51,17 +51,29 @@ export function registerOpsTools(
         };
       }
 
-      // Helper to read project metadata from tasks/<task_id>.md if not already on status
-      const readProjectMetaFromTaskFile = (): { projectId?: string; projectName?: string } => {
+      // Helper to read project and plan metadata from tasks/<task_id>.md if not already on status
+      const readProjectMetaFromTaskFile = (): {
+        projectId?: string;
+        projectName?: string;
+        plan_id?: string;
+        step_id?: string;
+        plan_title?: string;
+      } => {
         try {
           const tf = resolveSafePath(tasksDir, rootDir, `${task_id}.md`);
           if (fs.existsSync(tf)) {
             const c = fs.readFileSync(tf, "utf8");
             const idM = c.match(/^-[ \t]*\*\*Project ID\*\*:[ \t]*([^\r\n]*)$/im);
             const nameM = c.match(/^-[ \t]*\*\*Project Name\*\*:[ \t]*([^\r\n]*)$/im);
+            const planIdM = c.match(/^-[ \t]*\*\*Plan ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const planStepIdM = c.match(/^-[ \t]*\*\*Plan Step ID\*\*:[ \t]*([^\r\n]*)$/im);
+            const planTitleM = c.match(/^-[ \t]*\*\*Plan Title\*\*:[ \t]*([^\r\n]*)$/im);
             return {
               projectId: idM ? idM[1].trim() : undefined,
               projectName: nameM ? nameM[1].trim() : undefined,
+              plan_id: planIdM ? planIdM[1].trim() : undefined,
+              step_id: planStepIdM ? planStepIdM[1].trim() : undefined,
+              plan_title: planTitleM ? planTitleM[1].trim() : undefined,
             };
           }
         } catch {}
@@ -73,11 +85,12 @@ export function registerOpsTools(
       if (status) {
         audit(rootDir, { tool: "get_task_status", taskId: task_id, state: status.state });
         const { logTail, ...sanitizedStatus } = status;
-        if (!sanitizedStatus.projectId || !sanitizedStatus.projectName) {
-          const pm = readProjectMetaFromTaskFile();
-          if (!sanitizedStatus.projectId && pm.projectId) sanitizedStatus.projectId = pm.projectId;
-          if (!sanitizedStatus.projectName && pm.projectName) sanitizedStatus.projectName = pm.projectName;
-        }
+        const pm = readProjectMetaFromTaskFile();
+        if (!sanitizedStatus.projectId && pm.projectId) sanitizedStatus.projectId = pm.projectId;
+        if (!sanitizedStatus.projectName && pm.projectName) sanitizedStatus.projectName = pm.projectName;
+        if (!sanitizedStatus.plan_id && pm.plan_id) sanitizedStatus.plan_id = pm.plan_id;
+        if (!sanitizedStatus.step_id && pm.step_id) sanitizedStatus.step_id = pm.step_id;
+        if (!sanitizedStatus.plan_title && pm.plan_title) sanitizedStatus.plan_title = pm.plan_title;
         const now = Date.now();
         const lastAct = sanitizedStatus.last_activity_at || sanitizedStatus.lastActivityAt;
         const lastActMs = lastAct ? new Date(lastAct).getTime() : (sanitizedStatus.startedAt ? new Date(sanitizedStatus.startedAt).getTime() : now);
@@ -129,6 +142,9 @@ export function registerOpsTools(
                 stage: deriveStage({ state: "queued" }),
                 ...(pm.projectId ? { projectId: pm.projectId } : {}),
                 ...(pm.projectName ? { projectName: pm.projectName } : {}),
+                ...(pm.plan_id ? { plan_id: pm.plan_id } : {}),
+                ...(pm.step_id ? { step_id: pm.step_id } : {}),
+                ...(pm.plan_title ? { plan_title: pm.plan_title } : {}),
                 activity: "idle",
                 idle_seconds: 0,
                 activity_source: "none",

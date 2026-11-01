@@ -144,6 +144,12 @@ async function runTests() {
     "list_projects",
     "update_project",
     "remove_project",
+    "create_plan",
+    "get_plan",
+    "update_plan",
+    "list_plans",
+    "set_plan_step_status",
+    "archive_plan",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(

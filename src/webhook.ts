@@ -39,6 +39,9 @@ export interface WebhookPayload {
   pr_url?: string;
   elapsed_ms?: number;
   last_log_snippet?: string;
+  plan_id?: string;
+  step_id?: string;
+  plan_title?: string;
 }
 
 export function getWebhooksDir(rootDir: string = resolveBridgeRoot()): string {
@@ -338,6 +341,9 @@ export async function triggerTaskWebhook(
       pr_url: prUrl,
       elapsed_ms: elapsedMs,
       last_log_snippet: snippet ? snippet.slice(0, 200) : undefined,
+      ...(statusInfo?.plan_id || statusInfo?.planId ? { plan_id: statusInfo.plan_id || statusInfo.planId } : {}),
+      ...(statusInfo?.step_id || statusInfo?.stepId ? { step_id: statusInfo.step_id || statusInfo.stepId } : {}),
+      ...(statusInfo?.plan_title || statusInfo?.planTitle ? { plan_title: statusInfo.plan_title || statusInfo.planTitle } : {}),
     };
 
     // Deliver with retry and only persist .delivered after successful delivery
