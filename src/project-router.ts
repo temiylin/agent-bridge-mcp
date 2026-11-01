@@ -20,6 +20,7 @@ export interface ServiceConfig {
 
 export interface VerifyPrConfig {
   test_commands?: string[];
+  command?: string;
   timeout_seconds?: number;
 }
 

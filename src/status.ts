@@ -67,6 +67,10 @@ export interface TaskStatusInfo {
   planTitle?: string;
   previousTaskId?: string;
   previous_task_id?: string;
+  worktreeName?: string;
+  worktreeMode?: "read_write" | "read_only";
+  recoveredByTaskId?: string;
+  recoveryReason?: string;
 }
 
 export function getStatusDir(root: string): string {
@@ -127,6 +131,12 @@ export function writeStatus(
         if (!info.previousTaskId && !info.previous_task_id && (exAny?.previousTaskId || exAny?.previous_task_id)) {
           info.previousTaskId = exAny.previousTaskId || exAny.previous_task_id;
         }
+        if (!info.worktreeName && exAny?.worktreeName) {
+          info.worktreeName = exAny.worktreeName;
+        }
+        if (!info.worktreeMode && exAny?.worktreeMode) {
+          info.worktreeMode = exAny.worktreeMode;
+        }
       } catch {}
     }
 
@@ -186,6 +196,8 @@ export function writeStatus(
     ...(info.previousTaskId || info.previous_task_id
       ? { previousTaskId: info.previousTaskId || info.previous_task_id }
       : {}),
+    ...(info.worktreeName ? { worktreeName: info.worktreeName } : {}),
+    ...(info.worktreeMode ? { worktreeMode: info.worktreeMode } : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");

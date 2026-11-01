@@ -9,7 +9,7 @@ import { isBlockedCredentialPath } from "./local-fs.js";
 import { resolveProject, getProjectRepoPath } from "./project-router.js";
 import { attachPrToTask } from "./status.js";
 
-function resolveGhPath(): string | null {
+export function resolveGhPath(): string | null {
   const isWin = process.platform === "win32";
   const lookup = isWin ? "where" : "which";
   const res = spawnSync(lookup, ["gh"], { encoding: "utf8", windowsHide: true });
@@ -26,7 +26,7 @@ function resolveGhPath(): string | null {
   return null;
 }
 
-function runGhCommand(
+export function runGhCommand(
   args: string[],
   cwd: string,
   timeoutMs: number = 45000

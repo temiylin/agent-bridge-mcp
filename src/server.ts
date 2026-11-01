@@ -28,6 +28,10 @@ import { registerBridgeRound2Tools } from "./round2-tools.js";
 import { registerRequirementsTools } from "./requirements-tools.js";
 import { registerQueueTools } from "./queue-tools.js";
 import { registerRecentTasksTool } from "./recent-tasks.js";
+import { registerWorktreeTools } from "./worktree-tools.js";
+import { registerSchedulerTools } from "./scheduler-tools.js";
+import { registerRecoveryTools } from "./recovery-tools.js";
+import { getWorktreeLockState, formatWorktreePromptContext } from "./worktree.js";
 import { registerWebhookTools } from "./webhook-tools.js";
 import { registerAccountResumeTools } from "./account-resume-tools.js";
 import { registerAccountPoolTools } from "./account-pool-tools.js";
@@ -131,6 +135,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         .object({
           base_branch: z.string().optional().describe("创建 worktree 的基准分支（默认当前或远程 HEAD）"),
           name: z.string().describe("worktree 目录及分支名称"),
+          mode: z.enum(["read_write", "read_only"]).optional().describe("工作区任务模式: 'read_write' (默认，独占写入锁) 或 'read_only' (并发只读审查任务)"),
         })
         .optional()
         .describe("可选 Git worktree 隔离环境配置"),
@@ -294,6 +299,45 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           }
         }
 
+        // Worktree lock checking & environment context extraction
+        let wtPromptPrefix = "";
+        let wtPrUrl: string | undefined;
+        let wtProjectId: string | undefined;
+
+        if (worktree && worktree.name) {
+          const cleanWtName = worktree.name.trim();
+          const wtMode = worktree.mode || "read_write";
+          const lockState = getWorktreeLockState(rootDir, cleanWtName, configuredRepoPath);
+
+          if (wtMode === "read_write" && lockState.locked && lockState.lockedByTaskId) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Worktree "${cleanWtName}" is currently busy with writing task "${lockState.lockedByTaskId}" [${lockState.agent || "running"}]. Only one active writing task is allowed per worktree at a time. Please wait for the task to finish, queue your task via enqueue_task, or dispatch to a separate worktree.`,
+                },
+              ],
+            };
+          }
+          if (wtMode === "read_write" && lockState.locked && lockState.lock?.locked && lockState.lock.locked_by !== "caller" && !lockState.lockedByTaskId) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Worktree "${cleanWtName}" is explicitly locked: ${lockState.lock.reason || "no reason"} (locked by ${lockState.lock.locked_by}). Unlock it first via lock_worktree({ name: "${cleanWtName}", action: "unlock" }) or use a separate worktree.`,
+                },
+              ],
+            };
+          }
+
+          const wtCtx = formatWorktreePromptContext(rootDir, cleanWtName, configuredRepoPath);
+          wtPromptPrefix = wtCtx.prefix;
+          wtPrUrl = wtCtx.prUrl;
+          wtProjectId = wtCtx.projectId;
+        }
+
         // Validate agents.json registry existence and format
         let registry: ReturnType<typeof loadAgents>;
         try {
@@ -448,6 +492,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const effectiveBaseBranch = worktree?.base_branch?.trim() || matchedProject?.default_base_branch;
         if (worktree && worktree.name) {
           headerMeta += `- **Worktree Name**: ${worktree.name.trim()}\n`;
+          headerMeta += `- **Worktree Mode**: ${worktree.mode || "read_write"}\n`;
           if (effectiveBaseBranch) headerMeta += `- **Worktree Base Branch**: ${effectiveBaseBranch}\n`;
         }
         if (modelParam) headerMeta += `- **Model**: ${modelParam}\n`;
@@ -456,7 +501,7 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
         if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
         const rawPrUrl = pr_url && typeof pr_url === "string" && pr_url.trim().length > 0 ? pr_url.trim() : undefined;
-        const cleanPrUrl = rawPrUrl || prevTaskPrUrl;
+        const cleanPrUrl = rawPrUrl || wtPrUrl || prevTaskPrUrl;
         if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
         if (cleanPrevTaskId) headerMeta += `- **Previous Task ID**: ${cleanPrevTaskId}\n`;
         if (effectivePlan) {
@@ -506,7 +551,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const reportPromptNote = prompt.includes("[Structured Report Requirement]")
           ? ""
           : buildReportJsonPromptInstruction(taskReportDir);
-        const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${prompt}` : prompt;
+        const promptWithWt = wtPromptPrefix ? `${wtPromptPrefix}${prompt}` : prompt;
+        const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${promptWithWt}` : promptWithWt;
         const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${promptWithPrev}` : promptWithPrev;
         const finalPrompt = `${promptWithPlan}${gitPromptNote}${reportPromptNote}`;
 
@@ -561,6 +607,10 @@ ${finalPrompt}
             } : {}),
             ...(cleanPrevTaskId ? {
               previousTaskId: cleanPrevTaskId,
+            } : {}),
+            ...(worktree?.name ? {
+              worktreeName: worktree.name.trim(),
+              worktreeMode: worktree.mode || "read_write",
             } : {}),
           });
           if (effectivePlan && cleanPrUrl) {
@@ -805,6 +855,9 @@ ${finalPrompt}
   registerAccountPoolTools(server, rootDir, logger);
   registerProjectTools(server, rootDir, logger);
   registerPlanTools(server, rootDir, logger);
+  registerWorktreeTools(server, rootDir, logger);
+  registerSchedulerTools(server, rootDir, logger);
+  registerRecoveryTools(server, rootDir, logger);
   registerHelpTool(server);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };

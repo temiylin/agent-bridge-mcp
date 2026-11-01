@@ -35,7 +35,7 @@ import {
 } from "./dual-pool.js";
 import { extractExecutionSummary, extractGitLinks } from "./redaction.js";
 import { sendCompletionCallback, extractPrUrl } from "./callback.js";
-import { setupGitWorktree } from "./worktree.js";
+import { setupGitWorktree, acquireWorktreeLock, releaseWorktreeLock } from "./worktree.js";
 import { loadProjectsConfig, getProjectRepoPath } from "./project-router.js";
 import { recordTaskResultInPlan } from "./plans.js";
 import {
@@ -192,6 +192,7 @@ export function parseTaskFile(content: string): {
   callbackUrl?: string;
   callbackHeaders?: Record<string, string>;
   worktreeName?: string;
+  worktreeMode?: "read_write" | "read_only";
   worktreeBaseBranch?: string;
   onSuccess?: any;
   planId?: string;
@@ -233,6 +234,9 @@ export function parseTaskFile(content: string): {
 
   const worktreeNameMatch = content.match(/^-[ \t]*\*\*Worktree Name\*\*:[ \t]*([^\r\n]*)$/m);
   const worktreeName = worktreeNameMatch ? worktreeNameMatch[1].trim() : undefined;
+
+  const worktreeModeMatch = content.match(/^-[ \t]*\*\*Worktree Mode\*\*:[ \t]*([^\r\n]*)$/m);
+  const worktreeMode = worktreeModeMatch && worktreeModeMatch[1].trim() === "read_only" ? "read_only" : "read_write";
 
   const worktreeBaseBranchMatch = content.match(/^-[ \t]*\*\*Worktree Base Branch\*\*:[ \t]*([^\r\n]*)$/m);
   const worktreeBaseBranch = worktreeBaseBranchMatch ? worktreeBaseBranchMatch[1].trim() : undefined;
@@ -346,6 +350,7 @@ export function parseTaskFile(content: string): {
     ...(callbackUrl ? { callbackUrl } : {}),
     ...(callbackHeaders ? { callbackHeaders } : {}),
     ...(worktreeName ? { worktreeName } : {}),
+    ...(worktreeMode ? { worktreeMode } : {}),
     ...(worktreeBaseBranch ? { worktreeBaseBranch } : {}),
     onSuccess,
     ...(planId ? { planId } : {}),
@@ -554,6 +559,7 @@ async function executeTaskFile(
     callbackUrl,
     callbackHeaders,
     worktreeName,
+    worktreeMode,
     worktreeBaseBranch,
     onSuccess,
     account,
@@ -833,6 +839,17 @@ async function executeTaskFile(
   const releaseAccount = () => releaseSelection(currentRoot, accountSel, taskId);
   process.once("exit", releaseAccount);
 
+  let worktreeLockHeld = false;
+  const releaseWorktree = () => {
+    if (worktreeLockHeld && worktreeName) {
+      try {
+        releaseWorktreeLock(currentRoot, worktreeName, false, taskId);
+        worktreeLockHeld = false;
+      } catch {}
+    }
+  };
+  process.once("exit", releaseWorktree);
+
   const effectiveHome = poolProfile?.home || process.env.HOME || os.homedir();
   const effectiveAccountAlias = poolProfile?.alias
     || (accountSel?.pool === "default" && accountEmail ? `default:${accountEmail}` : undefined)
@@ -1027,6 +1044,8 @@ async function executeTaskFile(
       });
       releaseAccount();
       process.removeListener("exit", releaseAccount);
+      releaseWorktree();
+      process.removeListener("exit", releaseWorktree);
       saveProcessedTask(processedMap, taskId, fin);
       audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
       logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
@@ -1068,6 +1087,14 @@ async function executeTaskFile(
         logger: logWorker,
       });
       effectiveWorkingDir = wtRes.worktreeDir;
+      acquireWorktreeLock(currentRoot, worktreeName, {
+        locked: true,
+        locked_by: taskId,
+        task_id: taskId,
+        reason: `Executing task ${taskId}`,
+        mode: worktreeMode || "read_write",
+      });
+      worktreeLockHeld = true;
       logWorker("INFO", `Task ${taskId} executing inside git worktree: ${effectiveWorkingDir}`);
     } catch (wtErr: any) {
       const errMsg = `Failed to setup git worktree "${worktreeName}": ${wtErr?.message || String(wtErr)}`;
@@ -1085,6 +1112,8 @@ async function executeTaskFile(
       });
       releaseAccount();
       process.removeListener("exit", releaseAccount);
+      releaseWorktree();
+      process.removeListener("exit", releaseWorktree);
       saveProcessedTask(processedMap, taskId, fin);
       audit(currentRoot, { tool: "worker", taskId, agent: agentName, state: "failed", exitCode: 1 });
       logWorker("ERROR", `Task ${taskId} failed: ${errMsg}`);
@@ -1832,6 +1861,8 @@ async function executeTaskFile(
 
   releaseAccount();
   process.removeListener("exit", releaseAccount);
+  releaseWorktree();
+  process.removeListener("exit", releaseWorktree);
   saveProcessedTask(processedMap, taskId, finishedAt);
   audit(currentRoot, { tool: "worker", taskId, agent: agentName, state, exitCode });
   logWorker("INFO", `Task ${taskId} finished with status "${status}" (exitCode=${exitCode})`);

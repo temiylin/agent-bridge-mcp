@@ -45,7 +45,21 @@ Core Capabilities & Calling Guidelines:
    - Query branch topology via git_branches and safely fork feature branches via git_create_branch.
    - Pass previous_task_id to send_task or enqueue_task to chain tasks across agents or steps without context loss.
 
-7. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
+7. Multi-AI Worktree Management & Concurrency Locks:
+   - Worktrees are first-class reusable environments associated with projects, plans, tasks, and PRs.
+   - Call list_worktrees and worktree_status to monitor working directory dirty stats, locks, commits ahead, and PR links.
+   - acquire_worktree_lock / release_worktree_lock enforces single-writer / multi-reader safety with automatic crash recovery (dead task locks auto-cleared).
+   - remove_worktree strictly prevents deleting worktrees with dirty files, open PRs, or running tasks unless force: true.
+   - verify_worktree runs isolated test suites inside worktrees prior to PR creation.
+
+8. Intelligent Scheduling & Crash Recovery:
+   - Call check_task_conflicts to detect worktree write collisions, overlapping target files, PR conflicts, and session collisions.
+   - Call schedule_tasks to automatically parallelize non-conflicting tasks across isolated worktrees and queue conflicting ones.
+   - diagnose_task performs 360° health checks (PID alive, worker alive, log freshness, uncommitted diffs).
+   - recover_task safely resumes interrupted/crashed tasks in the same worktree without losing modified files.
+   - get_handoff_context extracts full handoff dossiers for seamless AI takeovers.
+
+9. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
 
 export const HELP_TOPICS = [
   "overview",
@@ -55,6 +69,9 @@ export const HELP_TOPICS = [
   "tasks",
   "pool",
   "git",
+  "worktrees",
+  "scheduler",
+  "recovery",
   "all",
 ] as const;
 
@@ -245,6 +262,49 @@ Manages multiple isolated Antigravity (\`agy\`) CLI accounts concurrently on a s
 - \`verify_pr\`: Run automated test commands configured in project settings.
 - \`merge_and_deploy\`: Merge PR branch to target, push remote, and restart configured services.`;
 
+    case "worktrees":
+      return `### Git Worktree Lifecycle & Concurrency Locks
+
+Worktrees are first-class, reusable engineering environments tied to projects, plans, tasks, and PRs.
+
+#### Key MCP Tools:
+- \`list_worktrees\`: List all project worktrees with metadata: branch names, dirty state, active task, associated PRs, and removal safety.
+- \`worktree_status\`: Comprehensive inspection: uncommitted files, commits ahead of base branch, diff stats, locks, and cross-task file conflict warnings.
+- \`create_worktree\`: Create an isolated worktree branch and symlink directories without immediately dispatching an agent.
+- \`lock_worktree\`: Manage write/read locks on a worktree (\`action: "lock" | "unlock" | "status"\`).
+- \`acquire_worktree_lock\`: Acquire exclusive writer lock (or shared reader lock).
+- \`release_worktree_lock\`: Release an acquired lock.
+- \`remove_worktree\`: Safely removes idle worktrees after verifying safety preconditions (no uncommitted files, no open PRs, no running tasks). Override with \`force: true\`.
+- \`verify_worktree\`: Run tests or lint directly inside a worktree before creating a PR.
+
+#### Crash Recovery & Lock Safety:
+Locks are dynamically verified against actual process PIDs (\`isPidAlive\`) and status files. If a worker process crashes, stale locks are automatically recovered.`;
+
+    case "scheduler":
+      return `### Intelligent Task Scheduling & Conflict Detection
+
+The scheduler analyzes tasks for concurrency conflicts, allowing safe parallel execution across multiple agents while preventing file collisions.
+
+#### Key MCP Tools:
+- \`check_task_conflicts\`: Compares candidate tasks against each other and active running tasks for:
+  1. Worktree write collisions (two tasks modifying the same worktree)
+  2. Target file overlaps (overlapping modified file sets or globs)
+  3. Git branch and PR collisions
+  4. Session lane collisions (tasks sharing the same session without sequencing)
+  Returns \`can_parallelize\`, detected conflict details, and optimal \`parallel_groups\`.
+- \`schedule_tasks\`: Automatically schedules a batch of tasks: dispatches non-conflicting tasks in parallel across isolated worktrees, and queues conflicting or dependent tasks with proper sequencing.`;
+
+    case "recovery":
+      return `### Task Health Diagnosis & Crash Recovery
+
+Tools for diagnosing process health, analyzing logs, and recovering interrupted tasks without losing worktree progress.
+
+#### Key MCP Tools:
+- \`diagnose_task\`: Deep 360° health diagnosis: checks process PID liveness, worker heartbeat, log freshness, error patterns (quota, git, runtime), uncommitted files in worktree, and execution stages. Classifies health into \`healthy_running\`, \`healthy_completed\`, \`process_crashed\`, \`worker_restarted_orphan\`, \`quota_exhausted\`, \`stuck_idle\`, or \`failed\`.
+- \`recover_task\`: Resumes an interrupted or crashed task inside the same worktree: summarizes existing modified files, diff stats, and instructions into a continuity prompt, and dispatches a resumption task without discarding work.
+- \`get_handoff_context\`: Generates a structured handoff dossier summarizing modified files, git status, test results, and next actions for seamless AI takeovers.
+- \`check_pr_conflicts\`: Scans open Pull Requests across the repository to flag overlapping modified files and potential merge collisions.`;
+
     case "all":
       return [
         getHelpContent("overview"),
@@ -254,6 +314,9 @@ Manages multiple isolated Antigravity (\`agy\`) CLI accounts concurrently on a s
         getHelpContent("tasks"),
         getHelpContent("pool"),
         getHelpContent("git"),
+        getHelpContent("worktrees"),
+        getHelpContent("scheduler"),
+        getHelpContent("recovery"),
       ].join("\n\n---\n\n");
 
     case "overview":
@@ -270,18 +333,23 @@ Call \`help({ topic: "<topic>" })\` for in-depth documentation:
 - \`help({ topic: "tasks" })\`: Task dispatching, session continuity (\`session_id\`), timeouts, queue sequencing, and cancellation.
 - \`help({ topic: "pool" })\`: agy multi-account pool, isolated profiles, and Cockpit quota tracking.
 - \`help({ topic: "git" })\`: Git operations, GitHub PR lifecycle (\`pr_*\`), automated verification, and deploy.
+- \`help({ topic: "worktrees" })\`: Git worktree lifecycle, concurrency locks, dynamic crash recovery, and verification.
+- \`help({ topic: "scheduler" })\`: Multi-task conflict detection, worktree write collision mitigation, and intelligent batch scheduling.
+- \`help({ topic: "recovery" })\`: Task health diagnosis, crash recovery with worktree diff preservation, and AI handoff context.
 - \`help({ topic: "all" })\`: Full comprehensive manual.
 
-### Core Tool Categories (92 Dedicated Tools)
+### Core Tool Categories (102 Dedicated Tools)
 1. **Telemetry & System**: \`device_info\`, \`check_port\`, \`worker_alive_summary\`, \`self_check\`, \`notify_device\`.
 2. **Plans**: \`create_plan\`, \`get_plan\`, \`update_plan\`, \`list_plans\`, \`set_plan_step_status\`, \`archive_plan\`.
 3. **Projects**: \`add_project\`, \`list_projects\`, \`update_project\`, \`remove_project\`, \`list_project_tasks\`, \`project_summary\`.
 4. **Agent Dispatch & Lifecycle**: \`send_task\`, \`read_result\`, \`read_result_page\`, \`read_task_output\`, \`get_task_status\`, \`wait_task\`, \`cancel_task\`, \`list_tasks_summary\`, \`list_recent_tasks\`, \`dashboard\`, \`agent_registry_summary\`, \`list_models\`.
-5. **Task Queue & Backlog**: \`save_requirement\`, \`list_requirements\`, \`get_requirement\`, \`update_requirement\`, \`merge_requirements\`, \`archive_requirement\`, \`delete_requirement\`, \`dispatch_requirement\`, \`enqueue_task\`, \`list_queue\`, \`reorder_queue\`, \`update_queue_item\`, \`cancel_queue_item\`, \`pause_queue\`, \`resume_queue\`.
-6. **Git & GitHub PR**: \`repo_status\`, \`git_branches\`, \`git_create_branch\`, \`git_diff\`, \`git_check_fast_forward\`, \`git_log\`, \`git_fetch\`, \`git_push\`, \`verify_pr\`, \`merge_and_deploy\`, \`pr_list\`, \`pr_view\`, \`pr_diff\`, \`pr_checks\`, \`pr_create\`, \`pr_review\`, \`pr_merge\`, \`attach_pr_to_task\`.
-7. **Filesystem & Code Editing**: \`list_directory\`, \`read_file\`, \`read_multiple_files\`, \`write_file\`, \`edit_block\`, \`search_files\`, \`search_code\`, \`tail_file\`, \`move_file\`, \`create_directory\`, \`get_file_info\`, \`inspect_project_directories\`, \`execute_command\`.
-8. **Account Pool & Integrations**: \`pool_status\`, \`pool_init_profile\`, \`pool_pause\`, \`pool_resume\`, \`pool_bind_email\`, \`pool_sync_auth\`, \`pool_remove_profile\`, \`pool_set_custom_enabled\`, \`resume_after_account_switch\`, \`auto_resume_on_account_ready\`, \`list_agent_accounts\`, \`switch_agent_account\`, \`set_task_webhook\`, \`clear_task_webhook\`, \`restart_service\`, \`slack_post\`.
-9. **Documentation**: \`help\`.
+5. **Worktrees & Concurrency Locks**: \`list_worktrees\`, \`worktree_status\`, \`create_worktree\`, \`lock_worktree\`, \`acquire_worktree_lock\`, \`release_worktree_lock\`, \`remove_worktree\`, \`verify_worktree\`.
+6. **Task Scheduler & Recovery**: \`check_task_conflicts\`, \`schedule_tasks\`, \`diagnose_task\`, \`recover_task\`, \`get_handoff_context\`, \`check_pr_conflicts\`.
+7. **Task Queue & Backlog**: \`save_requirement\`, \`list_requirements\`, \`get_requirement\`, \`update_requirement\`, \`merge_requirements\`, \`archive_requirement\`, \`delete_requirement\`, \`dispatch_requirement\`, \`enqueue_task\`, \`list_queue\`, \`reorder_queue\`, \`update_queue_item\`, \`cancel_queue_item\`, \`pause_queue\`, \`resume_queue\`.
+8. **Git & GitHub PR**: \`repo_status\`, \`git_branches\`, \`git_create_branch\`, \`git_diff\`, \`git_check_fast_forward\`, \`git_log\`, \`git_fetch\`, \`git_push\`, \`verify_pr\`, \`merge_and_deploy\`, \`pr_list\`, \`pr_view\`, \`pr_diff\`, \`pr_checks\`, \`pr_create\`, \`pr_review\`, \`pr_merge\`, \`attach_pr_to_task\`.
+9. **Filesystem & Code Editing**: \`list_directory\`, \`read_file\`, \`read_multiple_files\`, \`write_file\`, \`edit_block\`, \`search_files\`, \`search_code\`, \`tail_file\`, \`move_file\`, \`create_directory\`, \`get_file_info\`, \`inspect_project_directories\`, \`execute_command\`.
+10. **Account Pool & Integrations**: \`pool_status\`, \`pool_init_profile\`, \`pool_pause\`, \`pool_resume\`, \`pool_bind_email\`, \`pool_sync_auth\`, \`pool_remove_profile\`, \`pool_set_custom_enabled\`, \`resume_after_account_switch\`, \`auto_resume_on_account_ready\`, \`list_agent_accounts\`, \`switch_agent_account\`, \`set_task_webhook\`, \`clear_task_webhook\`, \`restart_service\`, \`slack_post\`.
+11. **Documentation**: \`help\`.
 
 ### Local Web Dashboard
 Visit \`http://localhost:38080\` (or run \`npm run dashboard\`) for the action-oriented control console.`;

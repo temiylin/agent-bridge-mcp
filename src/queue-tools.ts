@@ -47,9 +47,33 @@ export function registerQueueTools(
           step_id: z.string().optional().describe("Optional step identifier within the plan"),
           pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task"),
           previous_task_id: z.string().optional().describe("Optional previous task ID to inherit context from"),
+          worktree: z
+            .union([
+              z.string(),
+              z.object({
+                name: z.string(),
+                mode: z.enum(["read_write", "read_only"]).optional(),
+                base_branch: z.string().optional(),
+              }),
+            ])
+            .optional()
+            .describe("Optional target Git worktree name or spec"),
+          worktree_mode: z.enum(["read_write", "read_only"]).optional().describe("Optional worktree mode"),
         })
         .optional()
         .describe("Optional agent/model/project options"),
+      worktree: z
+        .union([
+          z.string(),
+          z.object({
+            name: z.string(),
+            mode: z.enum(["read_write", "read_only"]).optional(),
+            base_branch: z.string().optional(),
+          }),
+        ])
+        .optional()
+        .describe("Optional target Git worktree name or spec"),
+      worktree_mode: z.enum(["read_write", "read_only"]).optional().describe("Optional worktree mode"),
       plan_id: z.string().optional().describe("Optional plan identifier to associate with"),
       step_id: z.string().optional().describe("Optional step identifier within the plan"),
       pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task"),
@@ -65,7 +89,7 @@ export function registerQueueTools(
         .describe("Opt-in per task completion webhook. Opt-in per task; do not enable globally; only callers that have a webhook (e.g. Grok Bot) should pass on_complete."),
       mode: z.enum(["auto", "notify"]).default("auto").describe("'auto' dispatches automatically when turn comes; 'notify' marks ready for manual triggering"),
     },
-    async ({ session_id, after_task_id, prompt, options, on_complete, mode, plan_id, step_id, pr_url, previous_task_id }) => {
+    async ({ session_id, after_task_id, prompt, options, on_complete, mode, plan_id, step_id, pr_url, previous_task_id, worktree, worktree_mode }) => {
       try {
         if (!prompt || prompt.trim().length === 0) {
           return {
@@ -135,12 +159,16 @@ export function registerQueueTools(
 
         const effectivePrUrl = pr_url?.trim() || options?.pr_url?.trim();
         const effectivePrevTaskId = previous_task_id?.trim() || options?.previous_task_id?.trim() || after_task_id?.trim();
+        const effectiveWorktree = worktree || options?.worktree;
+        const effectiveWorktreeMode = worktree_mode || options?.worktree_mode;
         let mergedOptions: Record<string, any> = {
           ...(options || {}),
           ...(on_complete ? { on_complete } : {}),
           ...(effectivePlanId ? { plan_id: effectivePlanId, step_id: effectiveStepId } : {}),
           ...(effectivePrUrl ? { pr_url: effectivePrUrl } : {}),
           ...(effectivePrevTaskId ? { previous_task_id: effectivePrevTaskId } : {}),
+          ...(effectiveWorktree ? { worktree: effectiveWorktree } : {}),
+          ...(effectiveWorktreeMode ? { worktree_mode: effectiveWorktreeMode } : {}),
         };
         // Auto-inherit project_id from plan if not explicitly supplied
         if (!mergedOptions.project_id && effectivePlan?.project_id) {

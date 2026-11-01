@@ -21,6 +21,7 @@ import {
 } from "./project-router.js";
 import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
 import { getPlan, formatPlanPromptPrefix, setPlanStepStatus, Plan, PlanStep } from "./plans.js";
+import { getWorktreeLockState, formatWorktreePromptContext } from "./worktree.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -39,6 +40,12 @@ export interface TaskDispatchParams {
   step_id?: string;
   pr_url?: string;
   previous_task_id?: string;
+  worktree?: {
+    name: string;
+    base_branch?: string;
+    mode?: "read_write" | "read_only";
+    symlink_dirs?: string[];
+  };
 }
 
 export interface TaskDispatchResult {
@@ -116,6 +123,26 @@ export function dispatchTaskDirect(
     }
   }
 
+  const worktreeParam = params.worktree;
+  let wtPromptPrefix = "";
+  let wtPrUrl: string | undefined;
+
+  if (worktreeParam && worktreeParam.name) {
+    const cleanWtName = worktreeParam.name.trim();
+    const wtMode = worktreeParam.mode || "read_write";
+    if (wtMode === "read_write") {
+      const lockCheck = getWorktreeLockState(rootDir, cleanWtName, configuredRepoPath || undefined);
+      if (lockCheck.locked) {
+        throw new Error(
+          `Cannot dispatch task: Git worktree "${cleanWtName}" is currently locked by task ${lockCheck.lock?.locked_by || "(unknown)"} (${lockCheck.lock?.reason || "busy"}).`
+        );
+      }
+    }
+    const wtCtx = formatWorktreePromptContext(rootDir, cleanWtName, configuredRepoPath || undefined);
+    wtPromptPrefix = wtCtx.prefix;
+    wtPrUrl = wtCtx.prUrl;
+  }
+
   const prompt = params.prompt;
   let registry: ReturnType<typeof loadAgents> = {};
   try {
@@ -167,8 +194,15 @@ export function dispatchTaskDirect(
   if (params.session_id && params.session_id.trim()) headerMeta += `- **Session ID**: ${params.session_id.trim()}\n`;
   if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
   if (effectiveTimeout) headerMeta += `- **Hard Timeout Seconds**: ${effectiveTimeout}\n`;
+  if (worktreeParam && worktreeParam.name) {
+    const effectiveBaseBranch = worktreeParam.base_branch?.trim() || matchedProject?.default_base_branch;
+    headerMeta += `- **Worktree Name**: ${worktreeParam.name.trim()}\n`;
+    headerMeta += `- **Worktree Mode**: ${worktreeParam.mode || "read_write"}\n`;
+    if (effectiveBaseBranch) headerMeta += `- **Worktree Base Branch**: ${effectiveBaseBranch}\n`;
+  }
   const cleanPrUrl =
     (params.pr_url && params.pr_url.trim().length > 0 ? params.pr_url.trim() : undefined) ||
+    wtPrUrl ||
     prevTaskPrUrl;
   if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
   if (cleanPrevTaskId) headerMeta += `- **Previous Task ID**: ${cleanPrevTaskId}\n`;
@@ -185,7 +219,8 @@ export function dispatchTaskDirect(
   const reportPromptNote = prompt.includes("[Structured Report Requirement]")
     ? ""
     : buildReportJsonPromptInstruction(taskReportDir);
-  const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${prompt}` : prompt;
+  const promptWithWt = wtPromptPrefix ? `${wtPromptPrefix}${prompt}` : prompt;
+  const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${promptWithWt}` : promptWithWt;
   const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${promptWithPrev}` : promptWithPrev;
   const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${promptWithPlan}${gitPromptNote}${reportPromptNote}\n`;
 
@@ -227,6 +262,10 @@ export function dispatchTaskDirect(
       } : {}),
       ...(cleanPrevTaskId ? {
         previousTaskId: cleanPrevTaskId,
+      } : {}),
+      ...(worktreeParam?.name ? {
+        worktreeName: worktreeParam.name.trim(),
+        worktreeMode: worktreeParam.mode || "read_write",
       } : {}),
     });
   } catch {}
@@ -376,6 +415,11 @@ export function dispatchNextInQueue(rootDir: string, sessionId: string): QueueIt
     step_id: item.options?.step_id || item.options?.stepId,
     pr_url: item.options?.pr_url,
     previous_task_id: item.options?.previous_task_id || item.after_task_id,
+    worktree: item.options?.worktree
+      ? typeof item.options.worktree === "string"
+        ? { name: item.options.worktree, mode: item.options?.worktree_mode || "read_write" }
+        : item.options.worktree
+      : undefined,
   });
 
   // Remove or mark dispatched. The spec says:

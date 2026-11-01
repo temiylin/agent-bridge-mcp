@@ -10,6 +10,8 @@ export interface TaskReport {
   pr_url: string | null;
   question: string | null;
   summary: string;
+  completed_goals?: string[];
+  unresolved_issues?: string[];
 }
 
 export type TaskStage =

@@ -8,6 +8,13 @@ import { BridgeLogger } from "./logger.js";
 import { listPlans } from "./plans.js";
 import { listRequirements } from "./requirements.js";
 import {
+  listGitWorktrees,
+  loadWorktreesRegistry,
+  evaluateWorktreeDynamicStatus,
+  detectWorktreeFileConflicts,
+} from "./worktree.js";
+import { listAllSessionQueues } from "./queue.js";
+import {
   ProjectDefinition,
   ServiceConfig,
   VerifyPrConfig,
@@ -639,6 +646,56 @@ export function registerProjectTools(
         }
       } catch {}
 
+      // 5. Worktrees & Locks
+      let worktreesSummary: any = null;
+      const conflictWarnings: any[] = [];
+      try {
+        if (cwd && fs.existsSync(path.join(cwd, ".git"))) {
+          const gitWorktrees = listGitWorktrees(cwd);
+          const registry = loadWorktreesRegistry(rootDir);
+          const wtList = gitWorktrees.map((wt) => {
+            const regRecord = registry.worktrees[wt.name] || Object.values(registry.worktrees).find((w) => path.resolve(w.path) === path.resolve(wt.path));
+            const dyn = regRecord
+              ? evaluateWorktreeDynamicStatus(rootDir, regRecord, cwd)
+              : { status: "idle", activeTaskId: undefined, dirty: false };
+            return {
+              name: wt.name,
+              branch: wt.branch,
+              status: dyn.status,
+              active_task_id: dyn.activeTaskId,
+              dirty: dyn.dirty,
+              is_main: wt.is_main,
+              pr_url: regRecord?.pr_url || (regRecord?.pr_urls && regRecord.pr_urls[0]),
+            };
+          });
+
+          // Check cross-worktree file conflicts for active worktrees
+          for (const wt of gitWorktrees.filter((w) => !w.is_main)) {
+            const conflicts = detectWorktreeFileConflicts(wt.path, cwd, proj.default_base_branch || "main");
+            if (conflicts.length > 0) {
+              conflictWarnings.push(...conflicts);
+            }
+          }
+
+          worktreesSummary = {
+            total_worktrees: wtList.length,
+            worktrees: wtList,
+          };
+        }
+      } catch {}
+
+      // 6. Queue summary
+      let queueSummary: any = null;
+      try {
+        const allQueues = listAllSessionQueues(rootDir);
+        const projectQueues = allQueues.filter((q) => q.session_id.includes(cleanProjectId) || q.session_id === cleanProjectId);
+        const queuedItemsCount = projectQueues.reduce((acc, q) => acc + q.items.filter((i) => i.status === "queued").length, 0);
+        queueSummary = {
+          total_queued_tasks: queuedItemsCount,
+          active_sessions: projectQueues.length,
+        };
+      } catch {}
+
       return {
         content: [
           {
@@ -658,6 +715,9 @@ export function registerProjectTools(
                 plans: plansSummary,
                 requirements: reqsSummary,
                 tasks: tasksSummary,
+                worktrees: worktreesSummary,
+                worktree_conflicts: conflictWarnings.length > 0 ? conflictWarnings : undefined,
+                queue: queueSummary,
               },
               null,
               2
