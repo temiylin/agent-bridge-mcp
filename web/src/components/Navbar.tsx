@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Activity,
@@ -7,12 +7,29 @@ import {
   Settings,
   Languages,
   Terminal,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 
 export const Navbar: React.FC = () => {
   const { t, i18n } = useTranslation();
   const { systemStats, setSettingsOpen } = useAppStore();
+
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    const savedTheme = (localStorage.getItem('agent_bridge_theme') as 'dark' | 'light') || 'dark';
+    setTheme(savedTheme);
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  }, []);
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    localStorage.setItem('agent_bridge_theme', nextTheme);
+  };
 
   const toggleLang = () => {
     i18n.changeLanguage(i18n.language.startsWith('zh') ? 'en' : 'zh');
@@ -58,6 +75,19 @@ export const Navbar: React.FC = () => {
       </div>
 
       <div className="flex-none gap-2">
+        {/* Theme toggle */}
+        <button
+          className="btn btn-ghost btn-sm btn-circle"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? '切换至亮色模式 / Switch to Light' : '切换至暗黑模式 / Switch to Dark'}
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-4 h-4 text-amber-400" />
+          ) : (
+            <Moon className="w-4 h-4 text-sky-500" />
+          )}
+        </button>
+
         {/* Language switch */}
         <button
           className="btn btn-ghost btn-sm btn-circle"
