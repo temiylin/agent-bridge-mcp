@@ -41,6 +41,7 @@ import {
 } from "./project-router.js";
 import { registerProjectTools } from "./project-tools.js";
 import { registerPlanTools } from "./plan-tools.js";
+import { SERVER_INSTRUCTIONS, registerHelpTool } from "./help.js";
 import { getPlan, formatPlanPromptPrefix, setPlanStepStatus, Plan, PlanStep } from "./plans.js";
 import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
 
@@ -63,10 +64,15 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
 
   logger.info(`Initializing agent-bridge-mcp. AGENT_BRIDGE_ROOT=${rootDir}`);
 
-  const server = new McpServer({
-    name: "agent-bridge-mcp",
-    version: "1.0.0",
-  });
+  const server = new McpServer(
+    {
+      name: "agent-bridge-mcp",
+      version: "1.0.0",
+    },
+    {
+      instructions: SERVER_INSTRUCTIONS,
+    }
+  );
 
   /**
    * Tool 1: send_task
@@ -754,6 +760,7 @@ ${finalPrompt}
   registerAccountPoolTools(server, rootDir, logger);
   registerProjectTools(server, rootDir, logger);
   registerPlanTools(server, rootDir, logger);
+  registerHelpTool(server);
 
   return { server, rootDir, tasksDir, resultsDir, logsDir, logger };
 }

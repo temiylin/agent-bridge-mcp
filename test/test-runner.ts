@@ -150,6 +150,7 @@ async function runTests() {
     "list_plans",
     "set_plan_step_status",
     "archive_plan",
+    "help",
   ]);
   const actualTools = new Set(toolsResult.tools.map((t) => t.name));
   assert.deepStrictEqual(
@@ -373,6 +374,22 @@ async function runTests() {
   assert.deepEqual(Object.keys(compactJson), ["codex"]);
   assert.ok(Array.isArray(compactJson.codex.models) && typeof compactJson.codex.models[0] === "string");
   console.log("✓ Assertion passed: compact list_models.\n");
+
+  console.log("-------------------------------------------------");
+  console.log("[Test 10] Calling help tool & verifying instructions");
+  console.log("-------------------------------------------------");
+  const instructions = client.getInstructions();
+  assert.ok(instructions && instructions.includes("Project-Aware Tasks"), "Server must advertise instructions");
+  assert.ok(instructions.includes("Multi-Step Execution Plans"), "Server instructions must describe plans");
+
+  const helpOverview: any = await client.callTool({ name: "help", arguments: {} });
+  assert.ok(!helpOverview.isError, "help tool should succeed");
+  assert.ok(helpOverview.content[0].text.includes("Agent Bridge MCP"), "help output should describe Agent Bridge");
+
+  const helpPlans: any = await client.callTool({ name: "help", arguments: { topic: "plans" } });
+  assert.ok(!helpPlans.isError, "help plans should succeed");
+  assert.ok(helpPlans.content[0].text.includes("create_plan"), "help plans output must mention create_plan");
+  console.log("✓ Assertion passed: help tool and server instructions verified.\n");
 
   console.log("\n-------------------------------------------------");
   console.log("[Cleanup] Closing client connection");
