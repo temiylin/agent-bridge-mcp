@@ -26,7 +26,7 @@ export const MetricOverviewCards: React.FC = () => {
       (t.created_at && t.created_at.startsWith(todayYMD));
     if (isToday) {
       if (t.status === 'completed') completedToday++;
-      else if (t.status === 'failed' || t.state === 'cancelled') failedToday++;
+      else if (t.status === 'failed') failedToday++;
     }
   });
 
@@ -37,8 +37,8 @@ export const MetricOverviewCards: React.FC = () => {
       title: t('metricRunning'),
       count: running,
       hint: t('metricRunningHint'),
-      textColor: 'text-sky-400',
-      activeBorder: 'border-sky-400/80 bg-sky-500/10',
+      textColor: 'text-primary',
+      activeBorder: 'border-primary/80 bg-primary/10',
     },
     {
       id: 'queued',

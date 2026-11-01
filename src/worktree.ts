@@ -152,3 +152,63 @@ export function setupGitWorktree(options: SetupWorktreeOptions): SetupWorktreeRe
     branch: targetBranch,
   };
 }
+
+/**
+ * Safely removes a git worktree that is confirmed to reside under the bridge worktrees root.
+ * Enforces that workDir:
+ * 1. Is an absolute path
+ * 2. Strictly resides within the bridge worktrees root directory (no path traversal, never outside)
+ * 3. Is not the worktree root itself or any parent directory
+ *
+ * Uses `git worktree remove --force <worktreeDir>` executed in the repo or fallback to safe rmSync within the root.
+ */
+export function removeGitWorktree(
+  bridgeRoot: string,
+  worktreeDir: string,
+  repoDir?: string,
+  logger?: (level: "INFO" | "WARN" | "ERROR", msg: string) => void
+): { success: boolean; error?: string } {
+  const effectiveRoot = path.resolve(resolveWorktreeRoot(bridgeRoot));
+  const targetDir = path.resolve(worktreeDir);
+
+  // Strict containment check: targetDir must be a subdirectory of effectiveRoot
+  const rel = path.relative(effectiveRoot, targetDir);
+  if (!rel || rel === "." || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return {
+      success: false,
+      error: `Worktree path "${targetDir}" is outside bridge worktree root "${effectiveRoot}". Removal refused for security.`,
+    };
+  }
+
+  if (!fs.existsSync(targetDir)) {
+    return { success: true };
+  }
+
+  // 1. Try git worktree remove if repoDir is provided and exists
+  if (repoDir && fs.existsSync(repoDir)) {
+    try {
+      const res = spawnSync("git", ["worktree", "remove", "--force", targetDir], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      if (res.status === 0) {
+        if (logger) logger("INFO", `Removed git worktree via git at ${targetDir}`);
+        return { success: true };
+      }
+      if (logger) {
+        logger("WARN", `git worktree remove failed: ${res.stderr || res.stdout || "unknown"}; falling back to clean removal within worktree root`);
+      }
+    } catch (e: any) {
+      if (logger) logger("WARN", `git worktree remove exception: ${e?.message}`);
+    }
+  }
+
+  // 2. Safe removal strictly inside effectiveRoot
+  try {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    if (logger) logger("INFO", `Safely removed worktree directory at ${targetDir}`);
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || String(err) };
+  }
+}

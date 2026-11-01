@@ -43,7 +43,7 @@ export const ActionModals: React.FC<ModalsProps> = ({
   const fetchLogs = () => {
     if (!logsTaskId) return;
     setLoadingLogs(true);
-    fetch(`/api/recent-tasks/logs?taskId=${encodeURIComponent(logsTaskId)}&lines=100`)
+    fetch(`/api/recent-tasks/logs?taskId=${encodeURIComponent(logsTaskId)}&lines=500`)
       .then((r) => r.json())
       .then((d) => {
         let combined = '';
@@ -206,7 +206,7 @@ export const ActionModals: React.FC<ModalsProps> = ({
               </div>
             </div>
 
-            <pre className="bg-[#080d16] text-sky-200 p-4 rounded-xl font-mono text-xs max-h-[500px] overflow-y-auto whitespace-pre-wrap break-all border border-base-300">
+            <pre className="bg-[#080d16] text-base-content/90 p-4 rounded-xl font-mono text-xs max-h-[500px] overflow-y-auto whitespace-pre-wrap break-all border border-base-300">
               {logsContent}
             </pre>
 

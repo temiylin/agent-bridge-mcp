@@ -17,11 +17,15 @@ export const Navbar: React.FC = () => {
   const { systemStats, setSettingsOpen } = useAppStore();
 
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [port, setPort] = useState<string>('38080');
 
   useEffect(() => {
     const savedTheme = (localStorage.getItem('agent_bridge_theme') as 'dark' | 'light') || 'dark';
     setTheme(savedTheme);
     document.documentElement.setAttribute('data-theme', savedTheme);
+    if (typeof window !== 'undefined' && window.location.port) {
+      setPort(window.location.port);
+    }
   }, []);
 
   const toggleTheme = () => {
@@ -39,20 +43,20 @@ export const Navbar: React.FC = () => {
   const isMemLow = freeMem < 2.0;
 
   return (
-    <header className="navbar bg-base-200 border-b border-base-300 px-4 md:px-8 sticky top-0 z-30">
-      <div className="flex-1 gap-3 items-center">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-400 to-purple-600 flex items-center justify-center shadow-lg shadow-sky-500/20 text-white font-bold text-xl">
+    <header className="navbar bg-base-200 border-b border-base-300 px-3 md:px-8 sticky top-0 z-30 max-w-full overflow-hidden">
+      <div className="flex-1 gap-2 md:gap-3 items-center min-w-0">
+        <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-primary flex items-center justify-center shadow-lg text-primary-content font-bold text-lg md:text-xl shrink-0">
           ⚡
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-base md:text-lg tracking-tight">Agent Bridge</span>
-            <div className="badge badge-success badge-sm gap-1 text-xs">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 md:gap-2 flex-wrap">
+            <span className="font-bold text-sm md:text-lg tracking-tight truncate">Agent Bridge</span>
+            <div className="badge badge-success badge-sm gap-1 text-[10px] md:text-xs">
               <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse"></span>
-              {t('onlineStatus')} (38080)
+              {t('onlineStatus')} ({port})
             </div>
           </div>
-          <p className="text-xs text-base-content/60 hidden sm:block">
+          <p className="text-xs text-base-content/60 hidden sm:block truncate">
             {t('appSubtitle')}
           </p>
         </div>
@@ -61,20 +65,20 @@ export const Navbar: React.FC = () => {
       {/* Center compact hardware indicators */}
       <div className="hidden lg:flex items-center gap-4 text-xs font-mono bg-base-100 px-3 py-1.5 rounded-lg border border-base-300 mr-4">
         <div className="flex items-center gap-1.5">
-          <Cpu className="w-3.5 h-3.5 text-sky-400" />
+          <Cpu className="w-3.5 h-3.5 text-info" />
           <span>{systemStats?.cpuModel || 'CPU'} ({systemStats?.cores || 0}C)</span>
         </div>
         <div className={`flex items-center gap-1.5 ${isMemLow ? 'text-error font-bold' : ''}`}>
-          <HardDrive className="w-3.5 h-3.5 text-purple-400" />
+          <HardDrive className="w-3.5 h-3.5 text-secondary" />
           <span>{systemStats?.freeMemGb || 0}G / {systemStats?.totalMemGb || 0}G</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <Activity className="w-3.5 h-3.5 text-emerald-400" />
+          <Activity className="w-3.5 h-3.5 text-success" />
           <span>PID: {systemStats?.workerPid || 'Active'}</span>
         </div>
       </div>
 
-      <div className="flex-none gap-2">
+      <div className="flex-none gap-1 md:gap-2">
         {/* Theme toggle */}
         <button
           className="btn btn-ghost btn-sm btn-circle"
@@ -82,9 +86,9 @@ export const Navbar: React.FC = () => {
           title={theme === 'dark' ? '切换至亮色模式 / Switch to Light' : '切换至暗黑模式 / Switch to Dark'}
         >
           {theme === 'dark' ? (
-            <Sun className="w-4 h-4 text-amber-400" />
+            <Sun className="w-4 h-4 text-warning" />
           ) : (
-            <Moon className="w-4 h-4 text-sky-500" />
+            <Moon className="w-4 h-4 text-primary" />
           )}
         </button>
 

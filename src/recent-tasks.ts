@@ -9,7 +9,7 @@ import { listAllSessionQueues, SessionQueueState } from "./queue.js";
 
 export interface RecentTaskItem {
   taskId: string;
-  status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota";
+  status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota" | "cancelled";
   session_id?: string;
   project?: string;
   agent?: string;
@@ -124,7 +124,8 @@ export function queryRecentTasks(
         if (stateStr === "running" || stateStr === "suspected_stalled") mappedStatus = "running";
         else if (stateStr === "completed") mappedStatus = "completed";
         else if (stateStr === "paused_quota") mappedStatus = "paused_quota";
-        else if (stateStr === "failed" || stateStr === "cancelled") mappedStatus = "failed";
+        else if (stateStr === "cancelled") mappedStatus = "cancelled";
+        else if (stateStr === "failed") mappedStatus = "failed";
         else mappedStatus = "queued";
 
         // Read metadata from tasks/<taskId>.md
@@ -303,14 +304,14 @@ export function registerRecentTasksTool(
 ): void {
   const toolDefinition = {
     limit: z.number().int().optional().describe("Maximum number of tasks to return (default 20, max 100)"),
-    status: z.enum(["running", "completed", "failed", "queued", "paused"]).optional().describe("Filter by task status"),
+    status: z.enum(["running", "completed", "failed", "queued", "paused", "cancelled"]).optional().describe("Filter by task status"),
     project: z.string().optional().describe("Filter by project identifier"),
     session_id: z.string().optional().describe("Filter by topic / session ID"),
   };
 
   const handler = async ({ limit, status, project, session_id }: {
     limit?: number;
-    status?: "running" | "completed" | "failed" | "queued" | "paused";
+    status?: "running" | "completed" | "failed" | "queued" | "paused" | "cancelled";
     project?: string;
     session_id?: string;
   }) => {

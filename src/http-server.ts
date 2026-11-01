@@ -35,6 +35,7 @@ import {
   cancelQueueItem,
   pauseQueue,
   resumeQueue,
+  findItemInQueues,
 } from "./queue.js";
 import {
   queryPoolStatus,
@@ -48,6 +49,8 @@ import {
   detectProfileLoginStatus,
   removePoolProfile,
 } from "./account-pool.js";
+import { removeGitWorktree, resolveWorktreeRoot } from "./worktree.js";
+import { resolveDeviceToken } from "./token.js";
 import { queryAccountOverview, isCustomPoolEnabled, setCustomPoolEnabled, resumeEmail } from "./dual-pool.js";
 import { fileURLToPath } from "node:url";
 import { listAccountsFromCockpitStorage, switchAgentAccount } from "./account-manager.js";
@@ -85,7 +88,7 @@ interface SessionRecord {
  */
 export async function startHttpServer(options: HttpServerOptions = {}): Promise<HttpServerHandle> {
   const port = options.port ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : 38080);
-  const host = options.host ?? (process.env.HOST || "0.0.0.0");
+  const host = options.host ?? (process.env.HOST || "127.0.0.1");
 
   const defaultInstance = createBridgeMcpServer(options.customRootDir);
   const { logger } = defaultInstance;
@@ -110,12 +113,37 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     const pathname = url.pathname;
     const method = req.method || "GET";
 
-    // 1. CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // 1. CORS headers:
+    // Only MCP endpoints (/mcp, /sse, /messages) and public health/status check endpoints allow wildcard CORS (*).
+    // Sensitive REST APIs (/api/*) do NOT expose wildcard CORS to arbitrary web pages.
+    const isMcpOrPublic =
+      pathname.startsWith("/mcp") ||
+      pathname.startsWith("/sse") ||
+      pathname.startsWith("/messages") ||
+      pathname === "/health" ||
+      pathname === "/status";
+
+    const origin = req.headers["origin"];
+    if (isMcpOrPublic) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else if (origin) {
+      // For local dashboard / admin, allow same-host origins
+      try {
+        const originUrl = new URL(origin);
+        if (
+          originUrl.hostname === "localhost" ||
+          originUrl.hostname === "127.0.0.1" ||
+          originUrl.hostname === req.headers.host?.split(":")[0]
+        ) {
+          res.setHeader("Access-Control-Allow-Origin", origin);
+        }
+      } catch {}
+    }
+
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD, DELETE");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Accept, mcp-session-id, x-mcp-session-id, authorization"
+      "Content-Type, Accept, mcp-session-id, x-mcp-session-id, authorization, x-device-token, x-admin-token"
     );
     res.setHeader("Access-Control-Expose-Headers", "mcp-session-id, x-mcp-session-id, content-type");
 
@@ -124,6 +152,34 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       res.end();
       return;
     }
+
+    // Helper: Verify authorization for state-mutating or sensitive REST APIs
+    // Allowed if:
+    // 1. Request is from localhost (127.0.0.1 / ::1 / local loopback)
+    // 2. OR request provides valid device token via header: Authorization: Bearer <token>, x-device-token: <token>, or x-admin-token: <token>
+    const isAuthorizedRequest = (): boolean => {
+      const clientIp = req.socket.remoteAddress || "";
+      const isLocalhost =
+        clientIp === "127.0.0.1" ||
+        clientIp === "::1" ||
+        clientIp === "::ffff:127.0.0.1" ||
+        clientIp.startsWith("fe80::");
+
+      if (isLocalhost) return true;
+
+      const expectedToken = resolveDeviceToken().token;
+      if (!expectedToken || expectedToken === "dev_default") return true;
+
+      const authHeader = req.headers["authorization"] || "";
+      const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : authHeader.trim();
+      const devTokenHeader = req.headers["x-device-token"] || req.headers["x-admin-token"] || "";
+
+      return (
+        bearerToken === expectedToken ||
+        devTokenHeader === expectedToken ||
+        url.searchParams.get("token") === expectedToken
+      );
+    };
 
     // 2. Normalize Accept header
     // The MCP Streamable HTTP SDK strictly requires both application/json and text/event-stream in Accept.
@@ -197,12 +253,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       if (pathname === "/api/config") {
         if (method === "GET") {
           res.setHeader("Content-Type", "application/json; charset=utf-8");
-          let deviceToken = "dev_default";
+          let rawDeviceToken = "dev_default";
           const cfgPath = path.join(os.homedir(), ".agent-bridge", "config.json");
           if (fs.existsSync(cfgPath)) {
             try {
               const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-              if (cfg.deviceToken) deviceToken = cfg.deviceToken;
+              if (cfg.deviceToken) rawDeviceToken = cfg.deviceToken;
             } catch {}
           }
           let agents: any = {};
@@ -211,7 +267,11 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           } catch {}
           const routing = loadRoutingConfig(defaultInstance.rootDir);
           const relayHttp = process.env.RELAY_HTTP || "https://bridge.krow.top/mcp";
-          const deviceUrl = `${relayHttp}/${deviceToken}`;
+
+          // Only expose raw deviceToken if client is authorized (localhost or valid token)
+          const authorized = isAuthorizedRequest();
+          const deviceToken = authorized ? rawDeviceToken : (rawDeviceToken ? `${rawDeviceToken.slice(0, 6)}...***` : "");
+          const deviceUrl = `${relayHttp}/${authorized ? rawDeviceToken : "******"}`;
 
           res.statusCode = 200;
           res.end(JSON.stringify({ deviceToken, deviceUrl, agents, routing }, null, 2));
@@ -219,6 +279,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         }
 
         if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
           const body = await readBody();
           if (!body || typeof body !== "object") {
             res.statusCode = 400;
@@ -315,6 +381,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
       // API: Cancel Recent Task
       if (pathname === "/api/recent-tasks/cancel" && method === "POST") {
+        if (!isAuthorizedRequest()) {
+          res.statusCode = 403;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+          return;
+        }
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         try {
           const body = await readBody();
@@ -450,7 +522,9 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       if (pathname === "/api/recent-tasks/logs" && method === "GET") {
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         const taskId = url.searchParams.get("taskId") || "";
-        const maxLines = parseInt(url.searchParams.get("lines") || "100", 10);
+        const rawLines = parseInt(url.searchParams.get("lines") || "100", 10);
+        const maxLines = Math.max(1, Math.min(500, Number.isFinite(rawLines) ? rawLines : 100));
+
         if (!taskId || !isValidTaskId(taskId)) {
           res.statusCode = 400;
           res.end(JSON.stringify({ success: false, error: "Invalid or missing taskId" }));
@@ -463,19 +537,30 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           const outPath = path.join(logsDir, `${taskId}.out`);
           const errPath = path.join(logsDir, `${taskId}.err`);
 
-          let stdout = "";
-          let stderr = "";
+          // Efficient tail reader: reads only the end of the file up to 64KB instead of entire file
+          const readTail = (filePath: string, lineLimit: number): string => {
+            if (!fs.existsSync(filePath)) return "";
+            try {
+              const stat = fs.statSync(filePath);
+              const readLength = Math.min(stat.size, 65536);
+              const startOffset = Math.max(0, stat.size - readLength);
+              const fd = fs.openSync(filePath, "r");
+              const buf = Buffer.alloc(readLength);
+              let bytesRead = 0;
+              try {
+                bytesRead = fs.readSync(fd, buf, 0, readLength, startOffset);
+              } finally {
+                fs.closeSync(fd);
+              }
+              const lines = buf.subarray(0, bytesRead).toString("utf8").split(/\r?\n/);
+              return lines.slice(-lineLimit).join("\n");
+            } catch {
+              return "";
+            }
+          };
 
-          if (fs.existsSync(outPath)) {
-            const raw = fs.readFileSync(outPath, "utf8");
-            const lines = raw.split(/\r?\n/);
-            stdout = lines.slice(-maxLines).join("\n");
-          }
-          if (fs.existsSync(errPath)) {
-            const raw = fs.readFileSync(errPath, "utf8");
-            const lines = raw.split(/\r?\n/);
-            stderr = lines.slice(-maxLines).join("\n");
-          }
+          const stdout = readTail(outPath, maxLines);
+          const stderr = readTail(errPath, maxLines);
 
           res.statusCode = 200;
           res.end(JSON.stringify({
@@ -493,6 +578,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
       // API: Task Retry / Resume
       if (pathname === "/api/recent-tasks/retry" && method === "POST") {
+        if (!isAuthorizedRequest()) {
+          res.statusCode = 403;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+          return;
+        }
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         try {
           const body = await readBody();
@@ -596,8 +687,14 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         return;
       }
 
-      // API: Task Archive / Delete
+      // API: Task Archive / Move to archive/
       if (pathname === "/api/recent-tasks/archive" && method === "POST") {
+        if (!isAuthorizedRequest()) {
+          res.statusCode = 403;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+          return;
+        }
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         try {
           const body = await readBody();
@@ -613,83 +710,100 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           const rootDir = defaultInstance.rootDir;
           let deletedCount = 0;
           const cleanedWorktrees: string[] = [];
+          const errors: string[] = [];
+
+          // Base archive directory under bridge root
+          const archiveRootDir = path.join(rootDir, "archive");
+          fs.mkdirSync(path.join(archiveRootDir, "status"), { recursive: true });
+          fs.mkdirSync(path.join(archiveRootDir, "tasks"), { recursive: true });
+          fs.mkdirSync(path.join(archiveRootDir, "results"), { recursive: true });
+          fs.mkdirSync(path.join(archiveRootDir, "logs"), { recursive: true });
 
           for (const tid of taskIds) {
             if (!isValidTaskId(tid)) continue;
 
-            // Optional worktree cleanup
-            if (cleanWorktree) {
-              const status = readStatus(rootDir, tid);
-              let workDir = status?.workDir;
-              if (!workDir) {
-                const taskPath = path.join(rootDir, "tasks", `${tid}.md`);
-                if (fs.existsSync(taskPath)) {
-                  try {
-                    const text = fs.readFileSync(taskPath, "utf8");
-                    const m = text.match(/- \*\*(?:Worktree Dir|Project Dir)\*\*:\s*([^\r\n]+)/i);
-                    if (m) workDir = m[1].trim();
-                  } catch {}
-                }
-              }
-              if (workDir && fs.existsSync(workDir)) {
-                // Safety check: ensure workDir is not root / or home directory
-                const homeDir = os.homedir();
-                if (workDir !== "/" && workDir !== homeDir && (workDir.includes("worktree") || workDir.includes("/tmp/") || workDir.includes("/temp/"))) {
-                  try {
-                    fs.rmSync(workDir, { recursive: true, force: true });
-                    cleanedWorktrees.push(workDir);
-                  } catch {}
-                }
+            // 1. Check if task is running or queued: REFUSE archive if active!
+            const status = readStatus(rootDir, tid);
+            if (status && (status.state === "running" || status.state === "suspected_stalled")) {
+              errors.push(`Task "${tid}" is currently running and cannot be archived.`);
+              continue;
+            }
+            if (findItemInQueues(rootDir, tid)) {
+              errors.push(`Task "${tid}" is currently queued and cannot be archived.`);
+              continue;
+            }
+
+            // 2. Optional safe worktree cleanup:
+            // ONLY allowed if status.workDir is strictly inside bridge's worktrees root!
+            // NEVER fall back to project directory, NEVER use substring heuristics.
+            if (cleanWorktree && status?.workDir) {
+              const worktreeResult = removeGitWorktree(rootDir, status.workDir, undefined, (lvl, msg) => {
+                logger[lvl.toLowerCase() as "info" | "warn" | "error"](msg);
+              });
+              if (worktreeResult.success) {
+                cleanedWorktrees.push(status.workDir);
+              } else if (worktreeResult.error) {
+                errors.push(`Task "${tid}" worktree removal refused: ${worktreeResult.error}`);
               }
             }
 
-            // Remove status/taskId.json
-            const statusPath = path.join(rootDir, "status", `${tid}.json`);
-            if (fs.existsSync(statusPath)) {
-              try { fs.unlinkSync(statusPath); } catch {}
-            }
-            // Remove tasks/taskId.md
-            const taskPath = path.join(rootDir, "tasks", `${tid}.md`);
-            if (fs.existsSync(taskPath)) {
-              try { fs.unlinkSync(taskPath); } catch {}
-            }
-            // Remove results/taskId.md
-            const resultPath = path.join(rootDir, "results", `${tid}.md`);
-            if (fs.existsSync(resultPath)) {
-              try { fs.unlinkSync(resultPath); } catch {}
-            }
-            // Remove logs/taskId.out and .err
-            const outPath = path.join(rootDir, "logs", `${tid}.out`);
-            if (fs.existsSync(outPath)) {
-              try { fs.unlinkSync(outPath); } catch {}
-            }
-            const errPath = path.join(rootDir, "logs", `${tid}.err`);
-            if (fs.existsSync(errPath)) {
-              try { fs.unlinkSync(errPath); } catch {}
-            }
-            // Remove control files
+            // 3. Move files to archive/ directory instead of permanently deleting
+            const safeMove = (src: string, dest: string) => {
+              if (fs.existsSync(src)) {
+                try {
+                  fs.renameSync(src, dest);
+                } catch {
+                  try {
+                    fs.copyFileSync(src, dest);
+                    fs.unlinkSync(src);
+                  } catch {}
+                }
+              }
+            };
+
+            safeMove(
+              path.join(rootDir, "status", `${tid}.json`),
+              path.join(archiveRootDir, "status", `${tid}.json`)
+            );
+            safeMove(
+              path.join(rootDir, "tasks", `${tid}.md`),
+              path.join(archiveRootDir, "tasks", `${tid}.md`)
+            );
+            safeMove(
+              path.join(rootDir, "results", `${tid}.md`),
+              path.join(archiveRootDir, "results", `${tid}.md`)
+            );
+            safeMove(
+              path.join(rootDir, "logs", `${tid}.out`),
+              path.join(archiveRootDir, "logs", `${tid}.out`)
+            );
+            safeMove(
+              path.join(rootDir, "logs", `${tid}.err`),
+              path.join(archiveRootDir, "logs", `${tid}.err`)
+            );
+
+            // Clean any stale control files
             const cancelPath = path.join(rootDir, "control", `${tid}.cancel`);
             if (fs.existsSync(cancelPath)) {
               try { fs.unlinkSync(cancelPath); } catch {}
             }
-
-            // Remove from queue if present
-            cancelQueueItem(rootDir, tid);
 
             deletedCount++;
           }
 
           audit(rootDir, {
             tool: "http_tasks_archive",
-            state: `deleted_${deletedCount}_tasks`,
+            state: `archived_${deletedCount}_tasks`,
           });
 
           res.statusCode = 200;
           res.end(JSON.stringify({
             success: true,
             deletedCount,
+            archivedCount: deletedCount,
             cleanedWorktrees,
-            message: `成功归档并清理 ${deletedCount} 条任务记录` + (cleanedWorktrees.length > 0 ? `，并清理了 ${cleanedWorktrees.length} 个 worktree 目录` : ""),
+            errors: errors.length > 0 ? errors : undefined,
+            message: `成功归档 ${deletedCount} 条任务${cleanedWorktrees.length > 0 ? `，清理 ${cleanedWorktrees.length} 个 Worktree` : ""}${errors.length > 0 ? `（${errors.join("; ")}）` : ""}`,
           }));
         } catch (err: any) {
           res.statusCode = 500;
@@ -718,6 +832,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         }
 
         if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
           const body = await readBody();
           const action = body?.action;
 
@@ -875,6 +995,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         }
 
         if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
           const body = await readBody();
           const action = body?.action;
 
@@ -971,6 +1097,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         }
 
         if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
           const body = await readBody();
           const action = body?.action;
 
@@ -1150,6 +1282,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       // 4. Streamable HTTP endpoint (/mcp)
       if (pathname === "/mcp") {
         if (method === "POST") {
+          if (!isAuthorizedRequest()) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ success: false, error: "Forbidden: Write operation requires authorization" }));
+            return;
+          }
           const body = await readBody();
           const sessionId = (req.headers["mcp-session-id"] || req.headers["x-mcp-session-id"]) as string | undefined;
 

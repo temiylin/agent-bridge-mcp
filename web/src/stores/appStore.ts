@@ -28,6 +28,7 @@ interface AppStore {
   selectedTaskIds: Set<string>;
   toggleSelectTask: (tid: string) => void;
   toggleSelectAllTasks: (all: boolean) => void;
+  toggleSelectFilteredTasks: (taskIds: string[], select: boolean) => void;
   clearSelectedTasks: () => void;
   loadTasks: () => Promise<void>;
   cancelTask: (taskId: string) => Promise<boolean>;
@@ -50,6 +51,8 @@ interface AppStore {
   loadRequirements: () => Promise<void>;
   queues: QueueSession[];
   loadQueues: () => Promise<void>;
+  pauseQueueSession: (sessionId: string) => Promise<void>;
+  resumeQueueSession: (sessionId: string) => Promise<void>;
 
   // UI state
   settingsOpen: boolean;
@@ -98,6 +101,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   toggleSelectAllTasks: (all: boolean) => {
     if (all) {
       set({ selectedTaskIds: new Set(get().tasks.map((t) => t.taskId)) });
+    } else {
+      set({ selectedTaskIds: new Set() });
+    }
+  },
+
+  toggleSelectFilteredTasks: (taskIds: string[], select: boolean) => {
+    if (select) {
+      set({ selectedTaskIds: new Set(taskIds) });
     } else {
       set({ selectedTaskIds: new Set() });
     }
@@ -294,6 +305,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  pauseQueueSession: async (sessionId: string) => {
+    try {
+      const res = await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pause', session_id: sessionId }),
+      });
+      const d = await res.json();
+      if (d.success) {
+        get().showToast(`已暂停会话 ${sessionId} 的排队`);
+        get().loadTasks();
+      }
+    } catch {}
+  },
+
+  resumeQueueSession: async (sessionId: string) => {
+    try {
+      const res = await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resume', session_id: sessionId }),
+      });
+      const d = await res.json();
+      if (d.success) {
+        get().showToast(`已恢复会话 ${sessionId} 的排队`);
+        get().loadTasks();
+      }
+    } catch {}
+  },
   syncAuth: async (alias: string) => {
     const res = await fetch('/api/pool', {
       method: 'POST',

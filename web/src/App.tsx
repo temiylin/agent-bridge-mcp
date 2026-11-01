@@ -30,8 +30,11 @@ export const App: React.FC = () => {
     loadTasks();
     loadPool();
 
-    // Auto-refresh tasks every 5 seconds
+    // Auto-refresh tasks every 5 seconds (pause when document is hidden)
     const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        return;
+      }
       loadTasks();
     }, 5000);
     return () => clearInterval(timer);

@@ -1,6 +1,6 @@
 export interface TaskItem {
   taskId: string;
-  status: 'running' | 'completed' | 'failed' | 'paused' | 'paused_quota' | 'queued' | string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'paused_quota' | 'queued' | string;
   session_id?: string;
   project?: string;
   agent?: string;
