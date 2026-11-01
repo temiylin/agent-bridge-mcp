@@ -40,7 +40,12 @@ Core Capabilities & Calling Guidelines:
    - Pass task_id to pr_create to automatically attach newly opened PRs to the corresponding task.
    - Call attach_pr_to_task({ task_id, pr_url }) anytime to link PRs to existing tasks and execution plan steps.
 
-6. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
+6. High-Leverage Developer Intelligence & Workflows:
+   - Call project_summary({ project_id }) for an instant 360° snapshot of working tree cleanliness, active plan progress, draft requirements, and running tasks in a single turn.
+   - Query branch topology via git_branches and safely fork feature branches via git_create_branch.
+   - Pass previous_task_id to send_task or enqueue_task to chain tasks across agents or steps without context loss.
+
+7. Call help({ topic }) at any time for detailed syntax, workflows, and parameter recipes.`;
 
 export const HELP_TOPICS = [
   "overview",
@@ -65,6 +70,7 @@ export function getHelpContent(topic?: string): string {
 Projects allow callers to dispatch tasks without repeating repository paths, branch rules, remote targets, and callback configurations.
 
 #### Key MCP Tools:
+- \`project_summary\`: Unified 360° overview of project Git status, active execution plans, draft requirements, and active/recent tasks in 1 turn.
 - \`add_project\`: Register a project. Validates that \`repo_path\` exists and is a valid Git repository.
 - \`list_projects\`: List registered projects, paths, and status.
 - \`update_project\`: Modify project fields.
@@ -172,11 +178,17 @@ The web dashboard (\`http://localhost:38080\`) features 3 focused sections:
   - \`prompt\`: Prompt text.
   - \`project_id\`: Optional project ID to inherit configurations.
   - \`plan_id\` & \`step_id\`: Optional execution plan linkage.
+  - \`previous_task_id\`: Optional previous task ID to inherit context from (summary, outcome, PR URL, project linkage).
   - \`session_id\`: Named conversation lane for multi-turn continuity (e.g. \`"auth_refactor"\`).
   - \`continue_session\`: Set to \`true\` to resume the agent's prior conversational context.
   - \`notify\`: Boolean or object configuring desktop notifications.
   - \`notify.timeout_seconds\`: Soft overdue alert threshold (does not kill process).
   - \`timeout_seconds\`: Hard timeout threshold (sends SIGTERM/SIGKILL).
+
+#### Multi-Agent Task Chaining:
+- Pass \`previous_task_id\` in \`send_task\` or \`enqueue_task\` to automatically inherit:
+  - Previous task outcome, summary, and blocking question as prompt context prefix.
+  - Associated PR URL and project binding without manually copying them.
 
 #### Auto Task Queue (\`enqueue_task\`):
 - Queues tasks behind in-flight sessions.
@@ -214,6 +226,8 @@ Manages multiple isolated Antigravity (\`agy\`) CLI accounts concurrently on a s
 
 #### Git Tools:
 - \`repo_status\`: Read-only Git branch, unstaged/staged file status, and recent commits.
+- \`git_branches\`: List local and remote branches with current HEAD indicator and tracking upstreams.
+- \`git_create_branch\`: Safely create and checkout a new feature branch from verified base branch.
 - \`git_diff\`: Compare working tree or branch diffs (\`--stat\` supported).
 - \`git_check_fast_forward\`: Verify whether incoming branch can be fast-forward merged.
 - \`git_log\`: Query commit history across branch ranges (\`<base>..<head>\`).
@@ -258,13 +272,13 @@ Call \`help({ topic: "<topic>" })\` for in-depth documentation:
 - \`help({ topic: "git" })\`: Git operations, GitHub PR lifecycle (\`pr_*\`), automated verification, and deploy.
 - \`help({ topic: "all" })\`: Full comprehensive manual.
 
-### Core Tool Categories (88 Dedicated Tools)
+### Core Tool Categories (92 Dedicated Tools)
 1. **Telemetry & System**: \`device_info\`, \`check_port\`, \`worker_alive_summary\`, \`self_check\`, \`notify_device\`.
 2. **Plans**: \`create_plan\`, \`get_plan\`, \`update_plan\`, \`list_plans\`, \`set_plan_step_status\`, \`archive_plan\`.
-3. **Projects**: \`add_project\`, \`list_projects\`, \`update_project\`, \`remove_project\`, \`list_project_tasks\`.
+3. **Projects**: \`add_project\`, \`list_projects\`, \`update_project\`, \`remove_project\`, \`list_project_tasks\`, \`project_summary\`.
 4. **Agent Dispatch & Lifecycle**: \`send_task\`, \`read_result\`, \`read_result_page\`, \`read_task_output\`, \`get_task_status\`, \`wait_task\`, \`cancel_task\`, \`list_tasks_summary\`, \`list_recent_tasks\`, \`dashboard\`, \`agent_registry_summary\`, \`list_models\`.
 5. **Task Queue & Backlog**: \`save_requirement\`, \`list_requirements\`, \`get_requirement\`, \`update_requirement\`, \`merge_requirements\`, \`archive_requirement\`, \`delete_requirement\`, \`dispatch_requirement\`, \`enqueue_task\`, \`list_queue\`, \`reorder_queue\`, \`update_queue_item\`, \`cancel_queue_item\`, \`pause_queue\`, \`resume_queue\`.
-6. **Git & GitHub PR**: \`repo_status\`, \`git_diff\`, \`git_check_fast_forward\`, \`git_log\`, \`git_fetch\`, \`git_push\`, \`verify_pr\`, \`merge_and_deploy\`, \`pr_list\`, \`pr_view\`, \`pr_diff\`, \`pr_checks\`, \`pr_create\`, \`pr_review\`, \`pr_merge\`.
+6. **Git & GitHub PR**: \`repo_status\`, \`git_branches\`, \`git_create_branch\`, \`git_diff\`, \`git_check_fast_forward\`, \`git_log\`, \`git_fetch\`, \`git_push\`, \`verify_pr\`, \`merge_and_deploy\`, \`pr_list\`, \`pr_view\`, \`pr_diff\`, \`pr_checks\`, \`pr_create\`, \`pr_review\`, \`pr_merge\`, \`attach_pr_to_task\`.
 7. **Filesystem & Code Editing**: \`list_directory\`, \`read_file\`, \`read_multiple_files\`, \`write_file\`, \`edit_block\`, \`search_files\`, \`search_code\`, \`tail_file\`, \`move_file\`, \`create_directory\`, \`get_file_info\`, \`inspect_project_directories\`, \`execute_command\`.
 8. **Account Pool & Integrations**: \`pool_status\`, \`pool_init_profile\`, \`pool_pause\`, \`pool_resume\`, \`pool_bind_email\`, \`pool_sync_auth\`, \`pool_remove_profile\`, \`pool_set_custom_enabled\`, \`resume_after_account_switch\`, \`auto_resume_on_account_ready\`, \`list_agent_accounts\`, \`switch_agent_account\`, \`set_task_webhook\`, \`clear_task_webhook\`, \`restart_service\`, \`slack_post\`.
 9. **Documentation**: \`help\`.

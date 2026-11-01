@@ -6,7 +6,7 @@ import { isValidTaskId, generateTaskId, resolveSafePath } from "./validator.js";
 import { BridgeLogger } from "./logger.js";
 import { loadAgents } from "./agents.js";
 import { audit } from "./audit.js";
-import { writeStatus, readStatus, TaskStatusInfo } from "./status.js";
+import { writeStatus, readStatus, formatPreviousTaskContext, TaskStatusInfo } from "./status.js";
 import { isPidAlive } from "./task-reconcile.js";
 import path from "node:path";
 import { registerOpsTools } from "./ops-tools.js";
@@ -170,8 +170,9 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
       plan_id: z.string().optional().describe("Optional plan identifier to associate this task with"),
       step_id: z.string().optional().describe("Optional step identifier within the plan"),
       pr_url: z.string().optional().describe("Optional GitHub Pull Request URL to associate with this task (e.g. for PR review, testing, or rework)"),
+      previous_task_id: z.string().optional().describe("Optional previous task ID to inherit context from (summary, outcome, PR URL, project linkage)"),
     },
-    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete, plan_id, step_id, pr_url }) => {
+    async ({ prompt, title, agent, model, reasoning_effort, continue_session, session_id, account, notify, timeout_seconds, project_id, project_dir, callback_url, callback_headers, worktree, on_success, on_complete, plan_id, step_id, pr_url, previous_task_id }) => {
       try {
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
           return {
@@ -233,10 +234,27 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
           };
         }
 
-        // If project_id is omitted but the plan is bound to a project, inherit it automatically
+        // Previous task context extraction if previous_task_id is provided
+        const cleanPrevTaskId =
+          previous_task_id && typeof previous_task_id === "string" && previous_task_id.trim().length > 0
+            ? previous_task_id.trim()
+            : undefined;
+        let prevTaskContextPrefix = "";
+        let prevTaskPrUrl: string | undefined;
+        let prevTaskProjectId: string | undefined;
+
+        if (cleanPrevTaskId) {
+          const prevCtx = formatPreviousTaskContext(rootDir, cleanPrevTaskId);
+          prevTaskContextPrefix = prevCtx.prefix;
+          prevTaskPrUrl = prevCtx.prUrl;
+          prevTaskProjectId = prevCtx.projectId;
+        }
+
+        // If project_id is omitted, inherit from plan or previous task automatically
         const effectiveProjectId =
           (project_id && project_id.trim()) ||
           (effectivePlan?.project_id && effectivePlan.project_id.trim()) ||
+          prevTaskProjectId ||
           undefined;
 
         // Resolve project early so project-level defaults (agent, model, account, timeout, repo_path, base_branch, callback) apply
@@ -437,8 +455,10 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         if (continue_session) headerMeta += `- **Continue Session**: true\n`;
         if (session_id && session_id.trim()) headerMeta += `- **Session ID**: ${session_id.trim()}\n`;
         if (effectiveAccount) headerMeta += `- **Account**: ${effectiveAccount}\n`;
-        const cleanPrUrl = pr_url && typeof pr_url === "string" && pr_url.trim().length > 0 ? pr_url.trim() : undefined;
+        const rawPrUrl = pr_url && typeof pr_url === "string" && pr_url.trim().length > 0 ? pr_url.trim() : undefined;
+        const cleanPrUrl = rawPrUrl || prevTaskPrUrl;
         if (cleanPrUrl) headerMeta += `- **PR URL**: ${cleanPrUrl}\n`;
+        if (cleanPrevTaskId) headerMeta += `- **Previous Task ID**: ${cleanPrevTaskId}\n`;
         if (effectivePlan) {
           headerMeta += `- **Plan ID**: ${effectivePlan.id}\n`;
           headerMeta += `- **Plan Step ID**: ${effectiveStep!.id}\n`;
@@ -486,7 +506,8 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
         const reportPromptNote = prompt.includes("[Structured Report Requirement]")
           ? ""
           : buildReportJsonPromptInstruction(taskReportDir);
-        const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${prompt}` : prompt;
+        const promptWithPrev = prevTaskContextPrefix ? `${prevTaskContextPrefix}${prompt}` : prompt;
+        const promptWithPlan = planPromptPrefix ? `${planPromptPrefix}${promptWithPrev}` : promptWithPrev;
         const finalPrompt = `${promptWithPlan}${gitPromptNote}${reportPromptNote}`;
 
         const content = `# ${taskTitle}
@@ -538,6 +559,9 @@ ${finalPrompt}
               pr_urls: [cleanPrUrl],
               pr_open: true,
             } : {}),
+            ...(cleanPrevTaskId ? {
+              previousTaskId: cleanPrevTaskId,
+            } : {}),
           });
           if (effectivePlan && cleanPrUrl) {
             try {
@@ -577,6 +601,7 @@ ${finalPrompt}
         if (hardTimeoutSec) metaDetails += `\nhard_timeout_seconds: ${hardTimeoutSec}`;
         if (notifyOverdueSec) metaDetails += `\nnotify_overdue_seconds: ${notifyOverdueSec}`;
         if (cleanPrUrl) metaDetails += `\npr_url: ${cleanPrUrl}`;
+        if (cleanPrevTaskId) metaDetails += `\nprevious_task_id: ${cleanPrevTaskId}`;
 
         const [quota, early] = await Promise.all([
           withTimeout(

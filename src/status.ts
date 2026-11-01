@@ -65,6 +65,8 @@ export interface TaskStatusInfo {
   stepId?: string;
   planVersion?: number;
   planTitle?: string;
+  previousTaskId?: string;
+  previous_task_id?: string;
 }
 
 export function getStatusDir(root: string): string {
@@ -122,6 +124,9 @@ export function writeStatus(
         if (!info.plan_title && !info.planTitle && (exAny?.plan_title || exAny?.planTitle)) {
           info.plan_title = exAny.plan_title || exAny.planTitle;
         }
+        if (!info.previousTaskId && !info.previous_task_id && (exAny?.previousTaskId || exAny?.previous_task_id)) {
+          info.previousTaskId = exAny.previousTaskId || exAny.previous_task_id;
+        }
       } catch {}
     }
 
@@ -178,6 +183,9 @@ export function writeStatus(
       ? { plan_version: info.plan_version !== undefined ? info.plan_version : info.planVersion }
       : {}),
     ...(info.plan_title || info.planTitle ? { plan_title: info.plan_title || info.planTitle } : {}),
+    ...(info.previousTaskId || info.previous_task_id
+      ? { previousTaskId: info.previousTaskId || info.previous_task_id }
+      : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");
@@ -215,6 +223,58 @@ export function readStatus(root: string, taskId: string): TaskStatusInfo | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * Loads context from a previous task to support multi-agent relay handoffs and task chaining.
+ */
+export function formatPreviousTaskContext(
+  rootDir: string,
+  previousTaskId: string
+): {
+  prefix: string;
+  status: TaskStatusInfo | null;
+  prUrl?: string;
+  projectId?: string;
+} {
+  const cleanId = previousTaskId.trim();
+  if (!isValidTaskId(cleanId)) {
+    return {
+      prefix: `[Context from Previous Task: ${cleanId}]\n- Warning: Invalid previous task ID format.\n\n`,
+      status: null,
+    };
+  }
+
+  let status: TaskStatusInfo | null = null;
+  try {
+    status = readStatus(rootDir, cleanId);
+  } catch {
+    status = null;
+  }
+
+  if (!status) {
+    return {
+      prefix: `[Context from Previous Task: ${cleanId}]\n- Note: Previous task status record not found.\n\n`,
+      status: null,
+    };
+  }
+
+  const lines: string[] = [`[Context from Previous Task: ${cleanId}]`];
+  if (status.state) lines.push(`- Previous State: ${status.state}`);
+  if (status.stage) lines.push(`- Previous Stage: ${status.stage}`);
+  if (status.outcome) lines.push(`- Previous Outcome: ${status.outcome}`);
+  if (status.pr_url) lines.push(`- Associated PR: ${status.pr_url}`);
+  const summaryText = status.report?.summary || (status as any).summary;
+  if (summaryText) lines.push(`- Previous Summary: ${summaryText}`);
+  const questionText = status.question || status.report?.question;
+  if (questionText) lines.push(`- Pending/Blocking Question: ${questionText}`);
+
+  return {
+    prefix: lines.join("\n") + "\n\n",
+    status,
+    prUrl: status.pr_url || undefined,
+    projectId: status.projectId || undefined,
+  };
 }
 
 /**
