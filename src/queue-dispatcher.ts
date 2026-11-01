@@ -19,6 +19,7 @@ import {
   validateGitRepoPath,
   buildProjectGitRulesPromptNote,
 } from "./project-router.js";
+import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
 
 export interface TaskDispatchParams {
   prompt: string;
@@ -123,7 +124,11 @@ export function dispatchTaskDirect(
   headerMeta += `- **Created At**: ${createdAt}\n`;
 
   const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
-  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}${gitPromptNote}\n`;
+  const taskReportDir = getTaskReportDir(rootDir, taskId);
+  const reportPromptNote = prompt.includes("[Structured Report Requirement]")
+    ? ""
+    : buildReportJsonPromptInstruction(taskReportDir);
+  const content = `# ${taskTitle}\n\n${headerMeta}---\n\n## Prompt\n\n${prompt}${gitPromptNote}${reportPromptNote}\n`;
 
   fs.writeFileSync(taskFilePath, content, "utf8");
 

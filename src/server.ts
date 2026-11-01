@@ -40,6 +40,7 @@ import {
   buildProjectGitRulesPromptNote,
 } from "./project-router.js";
 import { registerProjectTools } from "./project-tools.js";
+import { getTaskReportDir, buildReportJsonPromptInstruction } from "./task-stage.js";
 
 export interface BridgeMcpServerInstance {
   server: McpServer;
@@ -406,9 +407,13 @@ export function createBridgeMcpServer(customRootDir?: string): BridgeMcpServerIn
 
         headerMeta += `- **Created At**: ${createdAt}\n`;
 
-        // Append non-intrusive git branch/remote rules note into prompt when project defines them
+        // Append non-intrusive git branch/remote rules note and structured report.json instruction into prompt
         const gitPromptNote = buildProjectGitRulesPromptNote(matchedProject);
-        const finalPrompt = `${prompt}${gitPromptNote}`;
+        const taskReportDir = getTaskReportDir(rootDir, taskId);
+        const reportPromptNote = prompt.includes("[Structured Report Requirement]")
+          ? ""
+          : buildReportJsonPromptInstruction(taskReportDir);
+        const finalPrompt = `${prompt}${gitPromptNote}${reportPromptNote}`;
 
         const content = `# ${taskTitle}
 

@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isValidTaskId, resolveSafePath } from "./validator.js";
+import {
+  deriveStage,
+  type TaskStage,
+  type TaskReport,
+  type ReportSource,
+  type TaskOutcome,
+} from "./task-stage.js";
 
 export type TaskState = "queued" | "running" | "suspected_stalled" | "completed" | "failed" | "cancelled" | "paused_quota";
 
@@ -10,6 +17,7 @@ export const ACTIVE_STATES: TaskState[] = ["running", "suspected_stalled"];
 export interface TaskStatusInfo {
   taskId?: string;
   state: TaskState;
+  stage?: TaskStage;
   projectId?: string;
   projectName?: string;
   agent?: string;
@@ -39,6 +47,14 @@ export interface TaskStatusInfo {
   activity_source?: string;
   /** Last lines of the task log when the task failed or stalled. */
   logTail?: string;
+  /** Structured or heuristic report */
+  report?: TaskReport;
+  report_source?: ReportSource;
+  outcome?: TaskOutcome;
+  pr_url?: string | null;
+  question?: string | null;
+  pr_open?: boolean;
+  hasFollowUp?: boolean;
 }
 
 export function getStatusDir(root: string): string {
@@ -75,12 +91,34 @@ export function writeStatus(
         }
         if (!info.projectId && existing?.projectId) info.projectId = existing.projectId;
         if (!info.projectName && existing?.projectName) info.projectName = existing.projectName;
+        if (!info.report && existing?.report) info.report = existing.report;
+        if (!info.report_source && existing?.report_source) info.report_source = existing.report_source;
+        if (info.hasFollowUp === undefined && existing?.hasFollowUp !== undefined) {
+          info.hasFollowUp = existing.hasFollowUp;
+        }
+        if (info.pr_open === undefined && existing?.pr_open !== undefined) {
+          info.pr_open = existing.pr_open;
+        }
       } catch {}
     }
+
+  const computedStage =
+    info.stage ||
+    deriveStage({
+      state: info.state,
+      reason: info.reason,
+      hasFollowUp: info.hasFollowUp,
+      report: info.report,
+      outcome: info.outcome ?? info.report?.outcome,
+      pr_url: info.pr_url ?? info.report?.pr_url,
+      question: info.question ?? info.report?.question,
+      pr_open: info.pr_open,
+    });
 
   const payload: TaskStatusInfo = {
     taskId,
     state: info.state,
+    stage: computedStage,
     ...(info.projectId ? { projectId: info.projectId } : {}),
     ...(info.projectName ? { projectName: info.projectName } : {}),
     agent: info.agent || "",
@@ -103,6 +141,13 @@ export function writeStatus(
     ...(info.idle_seconds !== undefined ? { idle_seconds: info.idle_seconds } : {}),
     ...(info.activity_source ? { activity_source: info.activity_source } : {}),
     ...(info.logTail ? { logTail: info.logTail } : {}),
+    ...(info.report ? { report: info.report } : {}),
+    ...(info.report_source ? { report_source: info.report_source } : {}),
+    ...(info.outcome !== undefined ? { outcome: info.outcome } : (info.report?.outcome ? { outcome: info.report.outcome } : {})),
+    ...(info.pr_url !== undefined ? { pr_url: info.pr_url } : (info.report?.pr_url ? { pr_url: info.report.pr_url } : {})),
+    ...(info.question !== undefined ? { question: info.question } : (info.report?.question ? { question: info.report.question } : {})),
+    ...(info.pr_open !== undefined ? { pr_open: info.pr_open } : {}),
+    ...(info.hasFollowUp !== undefined ? { hasFollowUp: info.hasFollowUp } : {}),
   };
 
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf8");

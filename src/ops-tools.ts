@@ -8,6 +8,7 @@ import { readStatus, writeStatus, ACTIVE_STATES } from "./status.js";
 import { readReconciledStatus, reconcileTaskStatus, isPidAlive, getDescendantPids } from "./task-reconcile.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
+import { deriveStage } from "./task-stage.js";
 
 export function getControlDir(root: string): string {
   const controlDir = path.join(root, "control");
@@ -93,6 +94,7 @@ export function registerOpsTools(
         if (!sanitizedStatus.activity_source) {
           sanitizedStatus.activity_source = "none";
         }
+        sanitizedStatus.stage = deriveStage(sanitizedStatus);
         return {
           content: [
             {
@@ -124,6 +126,7 @@ export function registerOpsTools(
               text: JSON.stringify({
                 taskId: task_id,
                 state: "queued",
+                stage: deriveStage({ state: "queued" }),
                 ...(pm.projectId ? { projectId: pm.projectId } : {}),
                 ...(pm.projectName ? { projectName: pm.projectName } : {}),
                 activity: "idle",
@@ -148,6 +151,7 @@ export function registerOpsTools(
                 text: JSON.stringify({
                   taskId: task_id,
                   state: "completed",
+                  stage: deriveStage({ state: "completed" }),
                   activity: "idle",
                   idle_seconds: 0,
                   activity_source: "none",

@@ -6,10 +6,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { audit } from "./audit.js";
 import { BridgeLogger } from "./logger.js";
 import { listAllSessionQueues, SessionQueueState } from "./queue.js";
+import {
+  deriveStage,
+  type TaskStage,
+  type TaskReport,
+  type TaskOutcome,
+  type ReportSource,
+} from "./task-stage.js";
 
 export interface RecentTaskItem {
   taskId: string;
   status: "running" | "completed" | "failed" | "queued" | "paused" | "paused_quota" | "cancelled";
+  stage: TaskStage;
+  outcome?: TaskOutcome;
+  question?: string | null;
+  report?: TaskReport;
+  report_source?: ReportSource;
+  hasFollowUp?: boolean;
+  pr_open?: boolean;
   session_id?: string;
   project?: string;
   project_id?: string;
@@ -110,7 +124,7 @@ export function queryRecentTasks(
     } catch {}
 
     for (const file of files) {
-      if (!file.endsWith(".json") || file.endsWith(".tmp")) continue;
+      if (!file.endsWith(".json") || file.endsWith(".tmp") || file.startsWith("_")) continue;
       const statusFilePath = path.join(statusDir, file);
       try {
         const raw = fs.readFileSync(statusFilePath, "utf8");
@@ -135,7 +149,7 @@ export function queryRecentTasks(
         let projectId: string | undefined = statusObj.projectId;
         let projectName: string | undefined = statusObj.projectName;
         let project: string | undefined = projectName || projectId;
-        let prUrl: string | undefined = undefined;
+        let prUrl: string | undefined = (statusObj.pr_url ?? statusObj.report?.pr_url) || undefined;
         let createdAt: string | undefined = undefined;
         let taskAgent: string | undefined = statusObj.agent;
         let taskModel: string | undefined = statusObj.model;
@@ -207,19 +221,19 @@ export function queryRecentTasks(
           lastActivityAt = finished_at || statusObj.startedAt || createdAt;
         }
 
-        // Check for PR URL in out log or result file
-        if (fs.existsSync(outFilePath)) {
+        // Check for PR URL in out log or result file if not already in status/report
+        if (!prUrl && fs.existsSync(outFilePath)) {
           try {
             const outContent = fs.readFileSync(outFilePath, "utf8");
             prUrl = extractPrUrl(outContent);
           } catch {}
         }
-        if (!prUrl) {
+        if (!prUrl || !lastLogLine) {
           const resPath = path.join(resultsDir, `${taskId}.md`);
           if (fs.existsSync(resPath)) {
             try {
               const resContent = fs.readFileSync(resPath, "utf8");
-              prUrl = extractPrUrl(resContent);
+              if (!prUrl) prUrl = extractPrUrl(resContent);
               if (!lastLogLine) {
                 // If no .out log, extract from result output
                 const outMatch = resContent.match(/## Output\s*\n([\s\S]*?)(?:\n## Error Details|$)/i);
@@ -247,9 +261,38 @@ export function queryRecentTasks(
           if (!matchProj) continue;
         }
 
+        const effectiveOutcome: TaskOutcome | undefined =
+          statusObj.outcome ||
+          statusObj.report?.outcome ||
+          (stateStr === "completed" ? "ready" : undefined);
+        const effectiveQuestion: string | null | undefined =
+          statusObj.question !== undefined
+            ? statusObj.question
+            : statusObj.report?.question !== undefined
+              ? statusObj.report.question
+              : undefined;
+        const derivedStage = deriveStage({
+          state: stateStr,
+          status: mappedStatus,
+          reason: statusObj.reason,
+          hasFollowUp: statusObj.hasFollowUp,
+          report: statusObj.report,
+          outcome: effectiveOutcome,
+          pr_url: prUrl || null,
+          question: effectiveQuestion ?? null,
+          pr_open: statusObj.pr_open,
+        });
+
         items.push({
           taskId,
           status: mappedStatus,
+          stage: derivedStage,
+          ...(effectiveOutcome ? { outcome: effectiveOutcome } : {}),
+          ...(effectiveQuestion !== undefined ? { question: effectiveQuestion } : {}),
+          ...(statusObj.report ? { report: statusObj.report } : {}),
+          ...(statusObj.report_source ? { report_source: statusObj.report_source } : {}),
+          ...(statusObj.hasFollowUp !== undefined ? { hasFollowUp: statusObj.hasFollowUp } : {}),
+          ...(statusObj.pr_open !== undefined ? { pr_open: statusObj.pr_open } : {}),
           session_id: sessionId,
           project,
           ...(projectId ? { project_id: projectId } : {}),
@@ -299,6 +342,7 @@ export function queryRecentTasks(
       items.push({
         taskId: item.id,
         status: itemStatus,
+        stage: deriveStage({ state: itemStatus, status: itemStatus }),
         session_id: q.session_id,
         project,
         ...(projectId ? { project_id: projectId } : {}),
