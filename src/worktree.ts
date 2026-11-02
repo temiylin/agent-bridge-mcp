@@ -570,6 +570,7 @@ export function setupGitWorktree(options: SetupWorktreeOptions): SetupWorktreeRe
     project_id: projectId,
     plan_ids: planId ? [planId] : undefined,
     pr_url: prUrl,
+    lock: created ? { locked: false } : undefined,
   });
 
   return {

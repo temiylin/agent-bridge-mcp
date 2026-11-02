@@ -170,15 +170,22 @@ export function registerWorktreeTools(
     "worktree_status",
     "Inspect comprehensive status of a specific Git worktree: dirty files, commit diff vs base branch, active tasks, associated PR status, lock state, and cross-task file conflict warnings.",
     {
-      name: z.string().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      name: z.string().optional().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      worktree: z.string().optional().describe("Alias for name"),
       project_id: z.string().optional().describe("Optional project identifier"),
       repo_path: z.string().optional().describe("Optional repo path"),
       base_branch: z.string().optional().describe("Base branch to diff against (defaults to project default_base_branch or 'main')"),
       check_conflicts: z.boolean().optional().describe("Whether to check for cross-task file modifications in other active worktrees (default: true)"),
     },
-    async ({ name, project_id, repo_path, base_branch, check_conflicts = true }) => {
+    async ({ name, worktree, project_id, repo_path, base_branch, check_conflicts = true }) => {
       audit(rootDir, { tool: "worktree_status", projectId: project_id });
-      const cleanName = name.trim();
+      const cleanName = (name || worktree || "").trim();
+      if (!cleanName) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Error: Missing worktree name or path." }],
+        };
+      }
       const { cwd, project: activeProject } = resolveRepoAndProject(rootDir, repo_path, project_id);
 
       // Locate worktree directory
@@ -466,8 +473,10 @@ export function registerWorktreeTools(
     "lock_worktree",
     "Manage exclusive write locks on a Git worktree to prevent race conditions when multiple AI agents run in parallel.",
     {
-      name: z.string().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      name: z.string().optional().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      worktree: z.string().optional().describe("Alias for name"),
       action: z.enum(["lock", "unlock", "status"]).default("lock").describe("Action to perform: 'lock' (default), 'unlock', or 'status'"),
+      lock: z.boolean().optional().describe("Boolean shorthand: true to lock, false to unlock"),
       mode: z.enum(["read_write", "read_only"]).optional().describe("Worktree task mode: 'read_write' (exclusive write lock, default) or 'read_only' (concurrent read)"),
       project_id: z.string().optional().describe("Optional project identifier"),
       repo_path: z.string().optional().describe("Optional repo path"),
@@ -475,12 +484,19 @@ export function registerWorktreeTools(
       task_id: z.string().optional().describe("Optional task ID to bind the lock to"),
       force: z.boolean().optional().describe("Force lock or unlock regardless of current holder or running task (default: false)"),
     },
-    async ({ name, action = "lock", mode = "read_write", project_id, repo_path, reason, task_id, force = false }) => {
+    async ({ name, worktree, action = "lock", lock, mode = "read_write", project_id, repo_path, reason, task_id, force = false }) => {
       audit(rootDir, { tool: "lock_worktree", projectId: project_id });
-      const cleanName = name.trim();
+      const cleanName = (name || worktree || "").trim();
+      if (!cleanName) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Error: Missing worktree name or path." }],
+        };
+      }
+      const effectiveAction = lock !== undefined ? (lock ? "lock" : "unlock") : action;
       const { cwd } = resolveRepoAndProject(rootDir, repo_path, project_id);
 
-      if (action === "status") {
+      if (effectiveAction === "status") {
         const state = getWorktreeLockState(rootDir, cleanName, cwd);
         return {
           content: [
@@ -503,7 +519,7 @@ export function registerWorktreeTools(
         };
       }
 
-      if (action === "lock") {
+      if (effectiveAction === "lock") {
         const lockRes = acquireWorktreeLock(
           rootDir,
           cleanName,
@@ -542,7 +558,7 @@ export function registerWorktreeTools(
         };
       }
 
-      if (action === "unlock") {
+      if (effectiveAction === "unlock") {
         const unlockRes = releaseWorktreeLock(rootDir, cleanName, force, task_id);
         if (!unlockRes.success) {
           return {
@@ -570,7 +586,7 @@ export function registerWorktreeTools(
 
       return {
         isError: true,
-        content: [{ type: "text", text: `Error: Unknown action "${action}".` }],
+        content: [{ type: "text", text: `Error: Unknown action "${effectiveAction}".` }],
       };
     }
   );
@@ -580,15 +596,22 @@ export function registerWorktreeTools(
     "remove_worktree",
     "Safely remove an idle Git worktree after verifying safety conditions (no active tasks, no uncommitted changes, no open unmerged PRs, not locked). Retains PR workspaces until merged or accepted.",
     {
-      name: z.string().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      name: z.string().optional().describe("Worktree name or directory path (e.g. 'mobile-sidebar-safe-area')"),
+      worktree: z.string().optional().describe("Alias for name"),
       project_id: z.string().optional().describe("Optional project identifier"),
       repo_path: z.string().optional().describe("Optional repo path"),
       force: z.boolean().optional().describe("Override safety checks (dirty files, open PR, lock) and force removal (default: false)"),
       delete_branch: z.boolean().optional().describe("Also delete local Git branch after worktree removal (default: false)"),
     },
-    async ({ name, project_id, repo_path, force = false, delete_branch = false }) => {
+    async ({ name, worktree, project_id, repo_path, force = false, delete_branch = false }) => {
       audit(rootDir, { tool: "remove_worktree", projectId: project_id });
-      const cleanName = name.trim();
+      const cleanName = (name || worktree || "").trim();
+      if (!cleanName) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Error: Missing worktree name or path." }],
+        };
+      }
       const { cwd, project: activeProject } = resolveRepoAndProject(rootDir, repo_path, project_id);
 
       // Locate worktree
@@ -699,7 +722,8 @@ export function registerWorktreeTools(
     "acquire_worktree_lock",
     "Acquire exclusive write lock (or shared read lock) on a Git worktree before executing tasks, preventing multiple AI agents from colliding.",
     {
-      name: z.string().describe("Worktree name or path (e.g. 'mobile-sidebar-safe-area')"),
+      name: z.string().optional().describe("Worktree name or path (e.g. 'mobile-sidebar-safe-area')"),
+      worktree: z.string().optional().describe("Alias for name"),
       mode: z.enum(["read_write", "read_only"]).default("read_write").describe("Lock mode: 'read_write' (exclusive writer, default) or 'read_only' (shared reader)"),
       task_id: z.string().optional().describe("Task ID holding the lock"),
       reason: z.string().optional().describe("Reason for locking"),
@@ -707,9 +731,15 @@ export function registerWorktreeTools(
       project_id: z.string().optional().describe("Optional project identifier"),
       repo_path: z.string().optional().describe("Optional repo path"),
     },
-    async ({ name, mode = "read_write", task_id, reason, force = false, project_id, repo_path }) => {
+    async ({ name, worktree, mode = "read_write", task_id, reason, force = false, project_id, repo_path }) => {
       audit(rootDir, { tool: "acquire_worktree_lock", projectId: project_id });
-      const cleanName = name.trim();
+      const cleanName = (name || worktree || "").trim();
+      if (!cleanName) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Error: Missing worktree name or path." }],
+        };
+      }
       const lockRes = acquireWorktreeLock(
         rootDir,
         cleanName,
@@ -754,15 +784,22 @@ export function registerWorktreeTools(
     "release_worktree_lock",
     "Release an acquired lock on a Git worktree so subsequent AI agents or tasks can safely proceed.",
     {
-      name: z.string().describe("Worktree name or path (e.g. 'mobile-sidebar-safe-area')"),
+      name: z.string().optional().describe("Worktree name or path (e.g. 'mobile-sidebar-safe-area')"),
+      worktree: z.string().optional().describe("Alias for name"),
       task_id: z.string().optional().describe("Task ID releasing the lock"),
       force: z.boolean().optional().describe("Force release even if owned by another task (default: false)"),
       project_id: z.string().optional().describe("Optional project identifier"),
       repo_path: z.string().optional().describe("Optional repo path"),
     },
-    async ({ name, task_id, force = false, project_id, repo_path }) => {
+    async ({ name, worktree, task_id, force = false, project_id, repo_path }) => {
       audit(rootDir, { tool: "release_worktree_lock", projectId: project_id });
-      const cleanName = name.trim();
+      const cleanName = (name || worktree || "").trim();
+      if (!cleanName) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Error: Missing worktree name or path." }],
+        };
+      }
       const unlockRes = releaseWorktreeLock(rootDir, cleanName, force, task_id);
       if (!unlockRes.success) {
         return {

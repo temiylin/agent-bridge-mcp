@@ -200,6 +200,30 @@ export function evaluateTaskConflicts(
         runningTaskConflicts.push(conflict);
       }
     }
+
+    // Worktree lock collision (explicit worktree lock or active lock record)
+    if (wt.name && wt.mode === "read_write") {
+      const lockState = getWorktreeLockState(rootDir, wt.name, repoPath);
+      if (lockState.locked) {
+        const holder = lockState.lock?.locked_by || lockState.lock?.task_id || "another task";
+        const targetWtName = wt.name.toLowerCase();
+        const alreadyFlagged = runningTaskConflicts.some(
+          (c) => c.type === "worktree_write_collision" && c.resource.toLowerCase() === targetWtName
+        );
+        if (!alreadyFlagged) {
+          const conflict: TaskConflict = {
+            type: "worktree_write_collision",
+            severity: "blocker",
+            tasks_involved: [taskLabel, `Lock holder: ${holder}`],
+            resource: wt.name,
+            reason: `Worktree "${wt.name}" is locked by "${holder}" (${lockState.lock?.reason || "active write lock"}).`,
+            suggested_action: "queue",
+          };
+          conflicts.push(conflict);
+          runningTaskConflicts.push(conflict);
+        }
+      }
+    }
   });
 
   // 2. Cross-check candidate tasks against each other
@@ -432,8 +456,9 @@ export function registerSchedulerTools(
       project_id: z.string().optional().describe("Project identifier fallback"),
       auto_worktree: z.boolean().optional().describe("Auto-assign isolated worktrees if tasks lack one (default: false)"),
       max_parallel: z.number().int().positive().optional().describe("Maximum tasks to dispatch concurrently (default: 3)"),
+      dry_run: z.boolean().optional().describe("If true, simulate scheduling and return conflict plan without writing task files or queue entries (default: false)"),
     },
-    async ({ tasks, project_id, auto_worktree = false, max_parallel = 3 }) => {
+    async ({ tasks, project_id, auto_worktree = false, max_parallel = 3, dry_run = false }) => {
       audit(rootDir, { tool: "schedule_tasks", projectId: project_id });
       if (!tasks || tasks.length === 0) {
         return {
@@ -478,6 +503,45 @@ export function registerSchedulerTools(
           queueCandidates.push(task);
         }
       });
+
+      if (dry_run) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  success: true,
+                  dry_run: true,
+                  total_tasks: candidateList.length,
+                  has_conflicts: evalRes.has_conflicts,
+                  can_parallelize: evalRes.can_parallelize,
+                  conflicts: evalRes.conflicts,
+                  parallel_groups: evalRes.parallel_groups,
+                  running_task_conflicts: evalRes.running_task_conflicts,
+                  planned_immediate_dispatch: immediateDispatchCandidates.map((t) => ({
+                    title: t.title,
+                    prompt: t.prompt,
+                    worktree: t.worktree,
+                    worktree_mode: t.worktree_mode || "read_write",
+                    target_files: t.target_files,
+                  })),
+                  planned_queued: queueCandidates.map((t) => ({
+                    title: t.title,
+                    prompt: t.prompt,
+                    worktree: t.worktree,
+                    worktree_mode: t.worktree_mode || "read_write",
+                    target_files: t.target_files,
+                    reason: "Conflicts with running task, locked worktree, or preceding parallel group",
+                  })),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
 
       // 1. Dispatch immediate tasks
       for (const t of immediateDispatchCandidates) {
