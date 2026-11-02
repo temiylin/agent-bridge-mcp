@@ -216,8 +216,12 @@ export function withWorktreesLock<T>(
             continue;
           }
         } catch {}
-        const sleepUntil = Date.now() + retryDelayMs;
-        while (Date.now() < sleepUntil) {}
+        try {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryDelayMs);
+        } catch {
+          const sleepUntil = Date.now() + retryDelayMs;
+          while (Date.now() < sleepUntil) {}
+        }
         continue;
       }
       throw err;
@@ -1113,20 +1117,30 @@ export function detectWorktreeFileConflicts(
   const allTargetFiles = new Set([...targetDirtyFiles, ...targetCommittedFiles]);
   if (allTargetFiles.size === 0) return warnings;
 
-  // 2. Discover all other worktrees for this repo
+  // 2. Discover relevant worktrees for this repo (focusing on Agent Bridge managed worktrees)
   const allWorktrees = listGitWorktrees(repoDir);
+  const registry = loadWorktreesRegistry();
+  const bridgeWorktreeRoot = resolveWorktreeRoot();
+
   let targetCanonical = targetWorktreePath;
   try {
     targetCanonical = fs.realpathSync(targetWorktreePath);
   } catch {}
 
-  for (const wt of allWorktrees) {
-    if (wt.is_main) continue; // Skip main repo root
+  const candidateWorktrees = allWorktrees.filter((wt) => {
+    if (wt.is_main) return false;
+    if (!fs.existsSync(wt.path)) return false;
+    const isTracked = !!registry.worktrees[wt.name] || Object.values(registry.worktrees).some((w) => path.resolve(w.path) === path.resolve(wt.path));
+    const isUnderBridge = path.resolve(wt.path).startsWith(bridgeWorktreeRoot);
+    return isTracked || isUnderBridge;
+  });
+
+  const targetList = candidateWorktrees.length > 0 ? candidateWorktrees : allWorktrees.filter((w) => !w.is_main && fs.existsSync(w.path)).slice(0, 5);
+
+  for (const wt of targetList) {
     let wtCanonical = wt.path;
     try {
-      if (fs.existsSync(wt.path)) {
-        wtCanonical = fs.realpathSync(wt.path);
-      }
+      wtCanonical = fs.realpathSync(wt.path);
     } catch {
       continue;
     }

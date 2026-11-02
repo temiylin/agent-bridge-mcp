@@ -12,6 +12,7 @@ import {
   loadWorktreesRegistry,
   evaluateWorktreeDynamicStatus,
   detectWorktreeFileConflicts,
+  resolveWorktreeRoot,
 } from "./worktree.js";
 import { listAllSessionQueues } from "./queue.js";
 import {
@@ -669,8 +670,15 @@ export function registerProjectTools(
             };
           });
 
-          // Check cross-worktree file conflicts for active worktrees
-          for (const wt of gitWorktrees.filter((w) => !w.is_main)) {
+          // Check cross-worktree file conflicts only for active Agent Bridge worktrees
+          const bridgeWorktreeRoot = resolveWorktreeRoot(rootDir);
+          const activeWorktrees = gitWorktrees.filter(
+            (w) =>
+              !w.is_main &&
+              fs.existsSync(w.path) &&
+              (!!registry.worktrees[w.name] || path.resolve(w.path).startsWith(bridgeWorktreeRoot))
+          );
+          for (const wt of activeWorktrees) {
             const conflicts = detectWorktreeFileConflicts(wt.path, cwd, proj.default_base_branch || "main");
             if (conflicts.length > 0) {
               conflictWarnings.push(...conflicts);
