@@ -83,6 +83,7 @@ export function registerWorktreeTools(
 
       const gitWorktrees = listGitWorktrees(cwd);
       const registry = loadWorktreesRegistry(rootDir);
+      const seenWorktreeIds = new Set<string>();
 
       const items = gitWorktrees.map((wt) => {
         const lockState = getWorktreeLockState(rootDir, wt.name, cwd);
@@ -99,8 +100,21 @@ export function registerWorktreeTools(
               dirtyStats: dirty,
             };
 
-        const safety = checkWorktreeRemovalSafety(rootDir, wt.name, cwd);
-        const worktreeId = regRecord?.worktree_id || `wt_${wt.name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+        const safety = checkWorktreeRemovalSafety(rootDir, wt.path, cwd);
+        let worktreeId = regRecord?.worktree_id;
+        if (!worktreeId) {
+          if (wt.is_main) {
+            worktreeId = "wt_main";
+          } else {
+            const baseSlug = wt.name.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+            worktreeId = `wt_${baseSlug}`;
+          }
+        }
+        if (seenWorktreeIds.has(worktreeId)) {
+          const hash = Math.abs(wt.path.split("").reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)).toString(36).slice(0, 4);
+          worktreeId = `${worktreeId}_${hash}`;
+        }
+        seenWorktreeIds.add(worktreeId);
         const prUrls = regRecord?.pr_urls || (regRecord?.pr_url ? [regRecord.pr_url] : []);
         const prNumbers = regRecord?.pr_numbers || [];
 
@@ -245,12 +259,20 @@ export function registerWorktreeTools(
           };
 
       // 7. Safety check
-      const safety = checkWorktreeRemovalSafety(rootDir, targetWt.name, cwd);
+      const safety = checkWorktreeRemovalSafety(rootDir, wtPath, cwd);
 
       // 8. Cross-task file conflicts
       const conflictWarnings = check_conflicts ? detectWorktreeFileConflicts(wtPath, cwd, effectiveBase) : [];
 
-      const worktreeId = record?.worktree_id || `wt_${targetWt.name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+      let worktreeId = record?.worktree_id;
+      if (!worktreeId) {
+        if (targetWt.is_main) {
+          worktreeId = "wt_main";
+        } else {
+          const baseSlug = targetWt.name.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+          worktreeId = `wt_${baseSlug}`;
+        }
+      }
       const prUrls = record?.pr_urls || (record?.pr_url ? [record.pr_url] : []);
       const prNumbers = record?.pr_numbers || [];
 
@@ -577,8 +599,20 @@ export function registerWorktreeTools(
         };
       }
 
+      if (targetWt.is_main) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Error: Cannot remove the main Git repository root "${targetWt.path}". Only secondary worktrees can be removed.`,
+            },
+          ],
+        };
+      }
+
       // Precondition safety check
-      const safety = checkWorktreeRemovalSafety(rootDir, targetWt.name, cwd);
+      const safety = checkWorktreeRemovalSafety(rootDir, targetWt.path, cwd);
       if (!safety.can_remove && !force) {
         return {
           isError: true,

@@ -658,7 +658,16 @@ export function listGitWorktrees(repoDir: string): WorktreeGitInfo[] {
     } catch {}
 
     const isMain = canonicalWt === canonicalRepo || path.resolve(wtPath) === path.resolve(repoDir);
-    const name = isMain ? "main" : path.basename(wtPath);
+    const repoBase = path.basename(repoDir);
+    let name = isMain ? "main" : path.basename(wtPath);
+    if (!isMain && (name === repoBase || name === "vision_hub")) {
+      const parentDir = path.basename(path.dirname(wtPath));
+      if (parentDir && parentDir !== "/" && parentDir !== "." && parentDir !== "worktrees" && parentDir !== "tmp") {
+        name = parentDir;
+      } else if (branch && !isDetached) {
+        name = branch.replace(/^feat\/|^fix\/|^codex\//, "").replace(/\//g, "-");
+      }
+    }
 
     entries.push({
       path: wtPath,
@@ -669,6 +678,23 @@ export function listGitWorktrees(repoDir: string): WorktreeGitInfo[] {
       is_bare: isBare,
       is_detached: isDetached,
     });
+  }
+
+  // Ensure unique, collision-free names across all worktrees
+  const seenNames = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.is_main) {
+      entry.name = "main";
+      continue;
+    }
+    const count = seenNames.get(entry.name) || 0;
+    if (count > 0) {
+      const suffix = entry.branch && !entry.is_detached && entry.branch !== entry.name
+        ? entry.branch.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 20)
+        : Math.abs(entry.path.split("").reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)).toString(36).slice(0, 4);
+      entry.name = `${entry.name}-${suffix}`;
+    }
+    seenNames.set(entry.name, (seenNames.get(entry.name) || 0) + 1);
   }
 
   return entries;
@@ -1195,10 +1221,30 @@ export function checkWorktreeRemovalSafety(
   let record: WorktreeRecord | undefined = reg.worktrees[clean];
   if (!record) {
     const resolved = path.resolve(clean);
-    record = Object.values(reg.worktrees).find((w) => path.resolve(w.path) === resolved);
+    record = Object.values(reg.worktrees).find((w) => w.worktree_id === clean || path.resolve(w.path) === resolved);
   }
 
-  const effectivePath = record ? record.path : path.resolve(resolveWorktreeRoot(bridgeRoot), clean);
+  let effectivePath: string;
+  if (record) {
+    effectivePath = record.path;
+  } else if (path.isAbsolute(clean) && fs.existsSync(clean)) {
+    effectivePath = path.resolve(clean);
+  } else if (repoDir && fs.existsSync(path.join(repoDir, ".git"))) {
+    const gts = listGitWorktrees(repoDir);
+    const match = gts.find((g) => g.path === clean || g.name === clean || g.branch === clean || path.resolve(g.path) === path.resolve(clean));
+    if (match) {
+      effectivePath = match.path;
+    } else if (clean === "main" || clean === "wt_main") {
+      effectivePath = path.resolve(repoDir);
+    } else {
+      effectivePath = path.resolve(resolveWorktreeRoot(bridgeRoot), clean);
+    }
+  } else if (clean === "main" || clean === "wt_main") {
+    effectivePath = repoDir ? path.resolve(repoDir) : path.resolve(resolveWorktreeRoot(bridgeRoot), clean);
+  } else {
+    effectivePath = path.resolve(resolveWorktreeRoot(bridgeRoot), clean);
+  }
+
   const effectiveRepo = repoDir || record?.repo_path || findRepoFromWorktree(effectivePath);
 
   // 1. Check if main repo
@@ -1206,12 +1252,21 @@ export function checkWorktreeRemovalSafety(
   if (effectiveRepo) {
     try {
       const mainCanon = fs.realpathSync(effectiveRepo);
-      const wtCanon = fs.existsSync(effectivePath) ? fs.realpathSync(effectivePath) : effectivePath;
-      if (mainCanon === wtCanon) {
+      const wtCanon = fs.existsSync(effectivePath) ? fs.realpathSync(effectivePath) : path.resolve(effectivePath);
+      if (mainCanon === wtCanon || path.resolve(effectivePath) === path.resolve(effectiveRepo) || clean === "main" || clean === "wt_main") {
         isMain = true;
-        blockers.push("Target directory is the main Git repository and cannot be deleted.");
+        blockers.push("Target directory is the main Git repository root and cannot be removed as a worktree.");
       }
-    } catch {}
+    } catch {
+      if (path.resolve(effectivePath) === path.resolve(effectiveRepo) || clean === "main" || clean === "wt_main") {
+        isMain = true;
+        blockers.push("Target directory is the main Git repository root and cannot be removed as a worktree.");
+      }
+    }
+  }
+  if (!isMain && (clean === "main" || clean === "wt_main")) {
+    isMain = true;
+    blockers.push("Target directory is the main Git repository root and cannot be removed as a worktree.");
   }
 
   // 2. Check running tasks
