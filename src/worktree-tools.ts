@@ -221,11 +221,30 @@ export function registerWorktreeTools(
       }
 
       const wtPath = targetWt.path;
-      const effectiveBase = (base_branch && base_branch.trim()) || activeProject?.default_base_branch || "main";
+      const registry = loadWorktreesRegistry(rootDir);
+      const record = registry.worktrees[targetWt.name] || Object.values(registry.worktrees).find((w) => path.resolve(w.path) === path.resolve(wtPath));
 
       // 1. Current Branch & HEAD
       const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: wtPath, encoding: "utf8", timeout: 3000 });
       const currentBranch = branchRes.status === 0 ? branchRes.stdout.trim() : targetWt.branch;
+
+      let effectiveBase =
+        (base_branch && base_branch.trim()) ||
+        record?.base_branch ||
+        activeProject?.default_base_branch ||
+        activeProject?.merge_deploy?.target_branch;
+
+      if (!effectiveBase) {
+        if (targetWt.is_main) {
+          effectiveBase = currentBranch;
+        } else {
+          const hasDevelop = spawnSync("git", ["rev-parse", "--verify", "develop"], { cwd: wtPath, encoding: "utf8" }).status === 0;
+          effectiveBase = hasDevelop ? "develop" : "main";
+        }
+      } else if (targetWt.is_main && !base_branch) {
+        // When checking main repository worktree without explicit base_branch override, diff against its own branch
+        effectiveBase = currentBranch;
+      }
 
       const headRes = spawnSync("git", ["log", "-1", "--oneline"], { cwd: wtPath, encoding: "utf8", timeout: 3000 });
       const headCommit = headRes.status === 0 ? headRes.stdout.trim() : targetWt.head;
@@ -246,8 +265,6 @@ export function registerWorktreeTools(
       const activeTasks = findActiveTasksInWorktree(rootDir, wtPath);
 
       // 6. Linked PR & Plan details
-      const registry = loadWorktreesRegistry(rootDir);
-      const record = registry.worktrees[targetWt.name] || Object.values(registry.worktrees).find((w) => path.resolve(w.path) === path.resolve(wtPath));
       const dyn = record
         ? evaluateWorktreeDynamicStatus(rootDir, record, cwd)
         : {

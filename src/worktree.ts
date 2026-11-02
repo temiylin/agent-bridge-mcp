@@ -716,25 +716,37 @@ export function getWorktreeDirtyStats(worktreePath: string): WorktreeDirtyStats 
     return { is_clean: true, dirty_count: 0, staged: 0, modified: 0, untracked: 0, files: [] };
   }
 
-  const lines = res.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // NOTE: Git porcelain lines have fixed column layout:
+  // Position 0: Index status (staged)
+  // Position 1: Worktree status (unstaged / modified)
+  // Position 2: Space separator
+  // Position 3+: File path
+  // DO NOT trim lines before slicing columns, or leading space for unstaged files is lost!
+  const rawLines = res.stdout.split(/\r?\n/).filter((l) => l.length >= 3);
   let staged = 0;
   let modified = 0;
   let untracked = 0;
   const files: { path: string; status: string }[] = [];
 
-  for (const line of lines) {
-    const code = line.slice(0, 2);
-    const filePath = line.slice(3).trim();
-    if (code.startsWith("?")) {
+  for (const line of rawLines) {
+    const x = line[0];
+    const y = line[1];
+    const rawPath = line.slice(3).trim();
+    const filePath = rawPath.replace(/^"|"$/g, "");
+
+    if (x === "?" && y === "?") {
       untracked++;
+      files.push({ path: filePath, status: "??" });
     } else {
-      if (/^[MADRC]/.test(code)) staged++;
-      if (/^.[MD]/.test(code)) modified++;
+      const isStaged = x !== " " && x !== "?";
+      const isModified = y !== " " && y !== "?";
+      if (isStaged) staged++;
+      if (isModified) modified++;
+      files.push({ path: filePath, status: `${x}${y}`.trim() });
     }
-    files.push({ path: filePath, status: code.trim() });
   }
 
-  const dirty_count = lines.length;
+  const dirty_count = files.length;
   return {
     is_clean: dirty_count === 0,
     dirty_count,

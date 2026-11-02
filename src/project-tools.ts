@@ -13,6 +13,7 @@ import {
   evaluateWorktreeDynamicStatus,
   detectWorktreeFileConflicts,
   resolveWorktreeRoot,
+  getWorktreeDirtyStats,
 } from "./worktree.js";
 import { listAllSessionQueues } from "./queue.js";
 import {
@@ -555,23 +556,18 @@ export function registerProjectTools(
         const curBranchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8", timeout: 3000 });
         const curBranch = curBranchRes.status === 0 ? curBranchRes.stdout.trim() : "unknown";
 
-        const statusRes = spawnSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8", timeout: 5000 });
-        const statusLines = statusRes.status === 0 ? statusRes.stdout.split(/\r?\n/).filter(Boolean) : [];
-        const stagedCount = statusLines.filter((l) => /^[MADRC]/.test(l)).length;
-        const modifiedCount = statusLines.filter((l) => /^.[MD]/.test(l)).length;
-        const untrackedCount = statusLines.filter((l) => /^\?\?/.test(l)).length;
-
+        const dirtyStats = getWorktreeDirtyStats(cwd);
         const logRes = spawnSync("git", ["log", "-n", "3", "--oneline"], { cwd, encoding: "utf8", timeout: 3000 });
         const recentCommits = logRes.status === 0 ? logRes.stdout.split(/\r?\n/).filter(Boolean) : [];
 
         gitInfo = {
           repo_path: cwd,
           current_branch: curBranch,
-          is_clean: statusLines.length === 0,
-          dirty_files_count: statusLines.length,
-          staged: stagedCount,
-          modified: modifiedCount,
-          untracked: untrackedCount,
+          is_clean: dirtyStats.is_clean,
+          dirty_files_count: dirtyStats.dirty_count,
+          staged: dirtyStats.staged,
+          modified: dirtyStats.modified,
+          untracked: dirtyStats.untracked,
           recent_commits: recentCommits,
         };
       }
